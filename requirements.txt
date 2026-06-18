@@ -1,0 +1,27 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Python 足底压力分析后端依赖
+#   服务入口：api_server.py        （FastAPI，默认端口 8766）
+#   核心算法：OneStep_report.py    （出 PDF 报告 + base64 图）
+#   热力图：  heatmap_renderer.py
+#
+# 安装：  pip install -r requirements.txt
+# 启动：  python api_server.py            # 端口可用环境变量 PYTHON_API_PORT 覆盖
+# 对接：  开发模式经 Vite 代理 /pyapi -> http://127.0.0.1:8766
+#         （见 vite.config.ts 的 server.proxy；前端封装见 client/src/lib/pythonApi.ts）
+#
+# 与 huisheng-system 行为完全一致。
+# ─────────────────────────────────────────────────────────────────────────────
+
+fastapi
+uvicorn
+pydantic
+numpy
+pandas
+scipy
+matplotlib
+seaborn
+opencv-python
+
+# 可选依赖（缺失不影响 /analyze 主链路，OneStep_report.py 已用 try/except 兜底）：
+# - playwright：仅 OneStep_template“精美模板报告”分支会用到
+# playwright
