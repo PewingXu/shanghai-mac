@@ -1,20 +1,32 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useApp, User } from "@/contexts/AppContext";
-import PageBackground from "@/components/PageBackground";
-import TopNavBar from "@/components/TopNavBar";
 import MeasurePage from "./MeasurePage";
 import ReportPage from "./ReportPage";
 import SolutionPage from "./SolutionPage";
 import HistoryPage from "./HistoryPage";
 import UserRecordsPage from "./UserRecordsPage";
 
-// ─── 永久存储图标 URL ─────────────────────────────────────────────────────────
-const ICONS = {
-  closeIcon: "/assets/icons/form-page/close-icon.svg",
-  dropdown: "/assets/icons/form-page/dropdown.svg",
+const HOME_ASSETS = {
+  brandLogo: "/assets/icons/home-page/brand-logo.svg",
+  heroTitle: "/assets/icons/home-page/hero-title.svg",
+  stepIndicator: "/assets/icons/home-page/step-indicator.svg",
+  userManagement: "/assets/icons/home-page/user-management.svg",
+  startButton: "/assets/icons/home-page/start-experience-button.svg",
+  deviceConnected: "/assets/icons/home-page/device-connected.svg",
+  deviceDisconnected: "/assets/icons/home-page/device-disconnected.svg",
+  hourglassLeft: "/assets/icons/home-page/hourglass-left.svg",
+  hourglassRight: "/assets/icons/home-page/hourglass-right.svg",
 };
 
-// ─── 表单数据类型 ─────────────────────────────────────────────────────────────
+type AppView =
+  | "landing"
+  | "create"
+  | "measure"
+  | "report"
+  | "solution"
+  | "history"
+  | "userRecords";
+
 interface UserFormData {
   name: string;
   birthDate: string;
@@ -23,37 +35,147 @@ interface UserFormData {
   weight?: number;
 }
 
-// ─── 样式常量 ─────────────────────────────────────────────────────────────────
-const labelStyle: React.CSSProperties = {
-  display: "block",
-  fontSize: "13px",
-  color: "#6A4020",
-  marginBottom: "8px",
-  fontWeight: "500",
+type SerialNavigator = Navigator & {
+  serial?: EventTarget & {
+    getPorts?: () => Promise<unknown[]>;
+  };
 };
 
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  height: "42px",
-  borderRadius: "6px",
-  border: "1.5px solid #E8C9A0",
-  backgroundColor: "#FFFFFF",
-  padding: "0 14px",
-  fontSize: "14px",
-  color: "#3D2000",
-  outline: "none",
-  boxSizing: "border-box",
-};
+function useDeviceConnectionStatus() {
+  const [connected, setConnected] = useState(false);
 
-// ─── 创建用户弹窗 ─────────────────────────────────────────────────────────────
-function CreateUserDialog({
-  userId,
-  onClose,
-  onSubmit,
+  useEffect(() => {
+    let disposed = false;
+    const serial = (navigator as SerialNavigator).serial;
+
+    const applyOverride = () => {
+      const stored = window.localStorage.getItem("aciki-device-connected");
+      if (stored === "true" || stored === "false") {
+        setConnected(stored === "true");
+        return true;
+      }
+      return false;
+    };
+
+    const updateFromSerial = async () => {
+      if (applyOverride()) return;
+      if (!serial?.getPorts) return;
+
+      try {
+        const ports = await serial.getPorts();
+        if (!disposed) setConnected(ports.length > 0);
+      } catch {
+        if (!disposed) setConnected(false);
+      }
+    };
+
+    const handleConnect = () => setConnected(true);
+    const handleDisconnect = () => void updateFromSerial();
+    const handleCustomStatus = (event: Event) => {
+      const detail = (event as CustomEvent<{ connected?: boolean }>).detail;
+      if (typeof detail?.connected === "boolean") {
+        setConnected(detail.connected);
+      }
+    };
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === "aciki-device-connected") {
+        applyOverride();
+      }
+    };
+
+    void updateFromSerial();
+    serial?.addEventListener("connect", handleConnect);
+    serial?.addEventListener("disconnect", handleDisconnect);
+    window.addEventListener("aciki-device-status", handleCustomStatus);
+    window.addEventListener("storage", handleStorage);
+
+    return () => {
+      disposed = true;
+      serial?.removeEventListener("connect", handleConnect);
+      serial?.removeEventListener("disconnect", handleDisconnect);
+      window.removeEventListener("aciki-device-status", handleCustomStatus);
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, []);
+
+  return connected;
+}
+
+function HomeBackground() {
+  return (
+    <>
+      <div className="home-gradient-base" />
+      <img
+        className="home-hourglass home-hourglass-left"
+        src={HOME_ASSETS.hourglassLeft}
+        alt=""
+        aria-hidden="true"
+      />
+      <img
+        className="home-hourglass home-hourglass-right"
+        src={HOME_ASSETS.hourglassRight}
+        alt=""
+        aria-hidden="true"
+      />
+    </>
+  );
+}
+
+function DeviceStatusBadge({ connected }: { connected: boolean }) {
+  return (
+    <img
+      className="home-device-status"
+      src={connected ? HOME_ASSETS.deviceConnected : HOME_ASSETS.deviceDisconnected}
+      alt={connected ? "设备连接正常" : "设备连接异常"}
+    />
+  );
+}
+
+function LandingPage({
+  onStart,
+  onHistory,
 }: {
-  userId: number;
-  onClose: () => void;
+  onStart: () => void;
+  onHistory: () => void;
+}) {
+  const deviceConnected = useDeviceConnectionStatus();
+
+  return (
+    <div className="home-page-shell">
+      <HomeBackground />
+
+      <header className="home-header">
+        <img className="home-brand-logo" src={HOME_ASSETS.brandLogo} alt="ACIKI 动态足底压力解析系统" />
+        <div className="home-header-actions">
+          <img className="home-step-indicator" src={HOME_ASSETS.stepIndicator} alt="创建 测量 报告 方案" />
+          <button className="home-user-button" onClick={onHistory} aria-label="用户管理">
+            <img src={HOME_ASSETS.userManagement} alt="用户管理" />
+          </button>
+        </div>
+      </header>
+
+      <main className="home-hero">
+        <img className="home-hero-title" src={HOME_ASSETS.heroTitle} alt="嘿！发现你的动态平衡足迹" />
+        <button className="home-start-button" onClick={onStart} aria-label="开始体验">
+          <img src={HOME_ASSETS.startButton} alt="开始体验" />
+        </button>
+      </main>
+
+      <footer className="home-footer">
+        <DeviceStatusBadge connected={deviceConnected} />
+      </footer>
+    </div>
+  );
+}
+
+function CreateUserPage({
+  onSubmit,
+  onBack,
+  onHistory,
+}: {
   onSubmit: (data: UserFormData) => void;
+  onBack: () => void;
+  onHistory: () => void;
 }) {
   const [name, setName] = useState("果果");
   const [birthDate, setBirthDate] = useState("");
@@ -61,388 +183,107 @@ function CreateUserDialog({
   const [height, setHeight] = useState("");
   const [weight, setWeight] = useState("");
 
-  const isFormValid = name.trim() !== "";
+  const canSubmit = name.trim().length > 0;
 
-  const handleSubmit = () => {
-    if (!isFormValid) return;
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!canSubmit) return;
+
     onSubmit({
-      name,
+      name: name.trim(),
       birthDate,
       gender,
-      height: height ? parseFloat(height) : undefined,
-      weight: weight ? parseFloat(weight) : undefined,
+      height: height ? Number(height) : undefined,
+      weight: weight ? Number(weight) : undefined,
     });
   };
 
   return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 200,
-        pointerEvents: "none",
-      }}
-    >
-      <div
-        style={{
-          width: "460px",
-          backgroundColor: "#FFF8EE",
-          borderRadius: "16px",
-          padding: "40px 44px 36px",
-          boxShadow: "0 12px 48px rgba(180, 100, 20, 0.15)",
-          position: "relative",
-          pointerEvents: "auto",
-          animation: "dialogIn 0.25s cubic-bezier(0.23, 1, 0.32, 1)",
-        }}
-      >
-        {/* 标题行 */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            marginBottom: "32px",
-          }}
-        >
-          <h2
-            style={{
-              margin: 0,
-              fontSize: "22px",
-              fontWeight: "600",
-              color: "#3D2000",
-              letterSpacing: "0.03em",
-            }}
-          >
-            创建用户&nbsp;&nbsp;
-            <span
-              style={{
-                fontWeight: "400",
-                color: "#6A4020",
-                fontSize: "20px",
-              }}
-            >
-              （ID：{userId}）
-            </span>
-          </h2>
-          <button
-            onClick={onClose}
-            style={{
-              background: "none",
-              border: "none",
-              cursor: "pointer",
-              padding: "4px",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              opacity: 0.6,
-              transition: "opacity 0.15s",
-            }}
-            onMouseEnter={(e) =>
-              ((e.currentTarget as HTMLButtonElement).style.opacity = "1")
-            }
-            onMouseLeave={(e) =>
-              ((e.currentTarget as HTMLButtonElement).style.opacity = "0.6")
-            }
-          >
-            <img
-              src={ICONS.closeIcon}
-              alt="关闭"
-              style={{ width: "18px", height: "18px" }}
-            />
+    <div className="home-page-shell">
+      <HomeBackground />
+
+      <header className="home-header">
+        <button className="home-logo-button" onClick={onBack} aria-label="返回首页">
+          <img className="home-brand-logo" src={HOME_ASSETS.brandLogo} alt="ACIKI 动态足底压力解析系统" />
+        </button>
+        <div className="home-header-actions">
+          <img className="home-step-indicator" src={HOME_ASSETS.stepIndicator} alt="创建 测量 报告 方案" />
+          <button className="home-user-button" onClick={onHistory} aria-label="用户管理">
+            <img src={HOME_ASSETS.userManagement} alt="用户管理" />
           </button>
         </div>
+      </header>
 
-        {/* 第一行：姓名 + 出生年/月/日 */}
-        <div style={{ display: "flex", gap: "20px", marginBottom: "24px" }}>
-          <div style={{ flex: 1 }}>
-            <label style={labelStyle}>姓名</label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              style={inputStyle}
-              placeholder="请输入姓名"
-            />
-          </div>
-
-          <div style={{ flex: 1 }}>
-            <label style={labelStyle}>出生年／月／日</label>
-            <div style={{ position: "relative" }}>
-              <input
-                type="date"
-                value={birthDate}
-                onChange={(e) => setBirthDate(e.target.value)}
-                style={{
-                  ...inputStyle,
-                  paddingRight: "40px",
-                  color: birthDate ? "#3D2000" : "#B8A090",
-                }}
-              />
-              <img
-                src={ICONS.dropdown}
-                alt=""
-                style={{
-                  position: "absolute",
-                  right: "14px",
-                  top: "50%",
-                  transform: "translateY(-50%)",
-                  width: "14px",
-                  pointerEvents: "none",
-                }}
-              />
+      <main className="create-page-main">
+        <form className="create-user-panel" onSubmit={submit}>
+          <div className="create-panel-head">
+            <div>
+              <h1>创建用户</h1>
+              <p>填写基础信息后开始足底压力测量</p>
             </div>
+            <button type="button" className="create-close-button" onClick={onBack} aria-label="关闭">
+              ×
+            </button>
           </div>
-        </div>
 
-        {/* 第二行：性别 + 身高 + 体重 */}
-        <div style={{ display: "flex", gap: "14px", marginBottom: "32px" }}>
-          {/* 性别 */}
-          <div style={{ flex: "0 0 110px" }}>
-            <label style={labelStyle}>性别</label>
-            <div style={{ position: "relative" }}>
-              <select
-                value={gender}
-                onChange={(e) => setGender(e.target.value)}
-                style={{
-                  ...inputStyle,
-                  appearance: "none" as const,
-                  WebkitAppearance: "none" as const,
-                  paddingRight: "36px",
-                  cursor: "pointer",
-                }}
-              >
+          <div className="create-form-grid">
+            <label>
+              <span>姓名</span>
+              <input value={name} onChange={(event) => setName(event.target.value)} placeholder="请输入姓名" />
+            </label>
+            <label>
+              <span>出生日期</span>
+              <input type="date" value={birthDate} onChange={(event) => setBirthDate(event.target.value)} />
+            </label>
+            <label>
+              <span>性别</span>
+              <select value={gender} onChange={(event) => setGender(event.target.value)}>
                 <option value="女">女</option>
                 <option value="男">男</option>
               </select>
-              <img
-                src={ICONS.dropdown}
-                alt=""
-                style={{
-                  position: "absolute",
-                  right: "12px",
-                  top: "50%",
-                  transform: "translateY(-50%)",
-                  width: "14px",
-                  pointerEvents: "none",
-                }}
-              />
-            </div>
-          </div>
-
-          {/* 身高 */}
-          <div style={{ flex: 1 }}>
-            <label style={labelStyle}>身高</label>
-            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            </label>
+            <label>
+              <span>身高 cm</span>
               <input
                 type="number"
+                min="0"
+                max="300"
                 value={height}
-                onChange={(e) => setHeight(e.target.value)}
-                style={{ ...inputStyle, flex: 1 }}
-                placeholder="请填写身高"
-                min={0}
-                max={300}
+                onChange={(event) => setHeight(event.target.value)}
+                placeholder="请输入身高"
               />
-              <span
-                style={{
-                  fontSize: "14px",
-                  color: "#7A5030",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                cm
-              </span>
-            </div>
-          </div>
-
-          {/* 体重 */}
-          <div style={{ flex: 1 }}>
-            <label style={labelStyle}>体重</label>
-            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            </label>
+            <label>
+              <span>体重 kg</span>
               <input
                 type="number"
+                min="0"
+                max="500"
                 value={weight}
-                onChange={(e) => setWeight(e.target.value)}
-                style={{ ...inputStyle, flex: 1 }}
-                placeholder="请填写体重"
-                min={0}
-                max={500}
+                onChange={(event) => setWeight(event.target.value)}
+                placeholder="请输入体重"
               />
-              <span
-                style={{
-                  fontSize: "14px",
-                  color: "#7A5030",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                kg
-              </span>
-            </div>
+            </label>
           </div>
-        </div>
 
-        {/* 开始体验按钮 */}
-        <button
-          onClick={handleSubmit}
-          disabled={!isFormValid}
-          style={{
-            width: "100%",
-            height: "50px",
-            borderRadius: "8px",
-            border: "none",
-            cursor: isFormValid ? "pointer" : "not-allowed",
-            fontSize: "16px",
-            fontWeight: "600",
-            color: "#FFFFFF",
-            backgroundColor: isFormValid ? "#B8906A" : "#C4B0A0",
-            marginBottom: "14px",
-            letterSpacing: "0.08em",
-            transition: "background-color 0.2s, transform 0.1s",
-          }}
-          onMouseDown={(e) => {
-            if (isFormValid)
-              (e.currentTarget as HTMLButtonElement).style.transform =
-                "scale(0.97)";
-          }}
-          onMouseUp={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.transform = "scale(1)";
-          }}
-        >
-          开始体验
-        </button>
-
-        {/* 取消按钮 */}
-        <button
-          onClick={onClose}
-          style={{
-            width: "100%",
-            height: "50px",
-            borderRadius: "8px",
-            border: "1.5px solid #F0C080",
-            cursor: "pointer",
-            fontSize: "16px",
-            fontWeight: "500",
-            color: "#E8944A",
-            backgroundColor: "rgba(255, 220, 150, 0.15)",
-            letterSpacing: "0.08em",
-            transition: "background-color 0.2s, transform 0.1s",
-          }}
-          onMouseDown={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.transform =
-              "scale(0.97)";
-          }}
-          onMouseUp={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.transform = "scale(1)";
-          }}
-        >
-          取消
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// ─── 首页（步骤1：创建用户） ──────────────────────────────────────────────────
-function CreateUserPage({
-  onSubmit,
-  onHistory,
-}: {
-  onSubmit: (data: UserFormData) => void;
-  onHistory: () => void;
-}) {
-  const [showDialog, setShowDialog] = useState(true);
-  const [nextUserId] = useState(1234);
-
-  const handleClose = () => setShowDialog(false);
-
-  return (
-    <div
-      style={{
-        minHeight: "100vh",
-        width: "100%",
-        position: "relative",
-        overflow: "hidden",
-        fontFamily:
-          '"PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif',
-      }}
-    >
-      <PageBackground />
-      <TopNavBar currentStep={1} onHistoryClick={onHistory} />
-
-      <main
-        style={{
-          position: "relative",
-          zIndex: 10,
-          paddingTop: "88px",
-          minHeight: "100vh",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-        }}
-      >
-        {!showDialog && (
-          <div style={{ textAlign: "center" }}>
-            <button
-              onClick={() => setShowDialog(true)}
-              style={{
-                background: "none",
-                border: "none",
-                cursor: "pointer",
-                padding: 0,
-                transition: "transform 0.15s",
-              }}
-              onMouseEnter={(e) => {
-                (e.currentTarget as HTMLButtonElement).style.transform =
-                  "scale(1.05)";
-              }}
-              onMouseLeave={(e) => {
-                (e.currentTarget as HTMLButtonElement).style.transform =
-                  "scale(1)";
-              }}
-            >
-              <div
-                style={{
-                  width: "160px",
-                  height: "52px",
-                  borderRadius: "26px",
-                  backgroundColor: "#E8944A",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontSize: "16px",
-                  fontWeight: "600",
-                  color: "#FFFFFF",
-                  letterSpacing: "0.08em",
-                  boxShadow: "0 4px 16px rgba(232, 148, 74, 0.35)",
-                }}
-              >
-                创建用户
-              </div>
+          <div className="create-actions">
+            <button type="button" onClick={onBack}>
+              取消
+            </button>
+            <button type="submit" disabled={!canSubmit}>
+              开始体验
             </button>
           </div>
-        )}
+        </form>
       </main>
-
-      {showDialog && (
-        <CreateUserDialog
-          userId={nextUserId}
-          onClose={handleClose}
-          onSubmit={onSubmit}
-        />
-      )}
     </div>
   );
 }
-
-// ─── 主路由组件 ───────────────────────────────────────────────────────────────
-type AppView = "create" | "measure" | "report" | "solution" | "history" | "userRecords";
 
 export default function Home() {
   const { setCurrentUser, setCurrentStep, addHistoryUser } = useApp();
-  const [view, setView] = useState<AppView>("create");
-  const [prevView, setPrevView] = useState<AppView>("create");
+  const [view, setView] = useState<AppView>("landing");
+  const [prevView, setPrevView] = useState<AppView>("landing");
 
   const handleCreateUser = (data: UserFormData) => {
     const newUser: User = {
@@ -453,26 +294,11 @@ export default function Home() {
       height: data.height,
       weight: data.weight,
     };
+
     setCurrentUser(newUser);
     addHistoryUser(newUser);
     setCurrentStep(2);
     setView("measure");
-  };
-
-  const handleGoToReport = () => {
-    setCurrentStep(3);
-    setView("report");
-  };
-
-  const handleGoToSolution = () => {
-    setCurrentStep(4);
-    setView("solution");
-  };
-
-  const handleRestart = () => {
-    setCurrentUser(null);
-    setCurrentStep(1);
-    setView("create");
   };
 
   const handleShowHistory = () => {
@@ -480,30 +306,15 @@ export default function Home() {
     setView("history");
   };
 
+  const handleBackFromHistory = () => {
+    setView(prevView);
+  };
+
   const handleSelectHistoryUser = (user: User) => {
     setCurrentUser(user);
     setPrevView("history");
     setView("userRecords");
   };
-
-  const handleGoToMeasureFromRecords = () => {
-    setCurrentStep(2);
-    setView("measure");
-  };
-
-  const handleBackFromHistory = () => {
-    setView(prevView);
-  };
-
-  // 渲染对应视图
-  if (view === "userRecords") {
-    return (
-      <UserRecordsPage
-        onBack={() => setView("history")}
-        onStartMeasure={handleGoToMeasureFromRecords}
-      />
-    );
-  }
 
   if (view === "history") {
     return (
@@ -514,53 +325,408 @@ export default function Home() {
     );
   }
 
+  if (view === "userRecords") {
+    return (
+      <UserRecordsPage
+        onBack={() => setView("history")}
+        onStartMeasure={() => {
+          setCurrentStep(2);
+          setView("measure");
+        }}
+      />
+    );
+  }
+
   if (view === "measure") {
     return (
-      <MeasurePage onNext={handleGoToReport} onHistory={handleShowHistory} />
+      <MeasurePage
+        onNext={() => {
+          setCurrentStep(3);
+          setView("report");
+        }}
+        onHistory={handleShowHistory}
+      />
     );
   }
 
   if (view === "report") {
     return (
-      <ReportPage onNext={handleGoToSolution} onHistory={handleShowHistory} onBack={() => setView("measure")} />
+      <ReportPage
+        onBack={() => setView("measure")}
+        onNext={() => {
+          setCurrentStep(4);
+          setView("solution");
+        }}
+        onHistory={handleShowHistory}
+      />
     );
   }
 
   if (view === "solution") {
     return (
-      <SolutionPage onRestart={handleRestart} onHistory={handleShowHistory} />
+      <SolutionPage
+        onHistory={handleShowHistory}
+        onRestart={() => {
+          setCurrentUser(null);
+          setCurrentStep(1);
+          setView("landing");
+        }}
+      />
     );
   }
 
-  // 默认：步骤1 创建用户
   return (
     <>
-      <style>{`
-        @keyframes dialogIn {
-          from { opacity: 0; transform: scale(0.95) translateY(8px); }
-          to   { opacity: 1; transform: scale(1)    translateY(0);   }
-        }
-        input[type="date"]::-webkit-calendar-picker-indicator {
-          opacity: 0;
-          width: 100%;
-          position: absolute;
-          left: 0;
-          cursor: pointer;
-        }
-        input:focus, select:focus {
-          border-color: #E8944A !important;
-          box-shadow: 0 0 0 3px rgba(232, 148, 74, 0.15);
-        }
-        input[type=number]::-webkit-inner-spin-button,
-        input[type=number]::-webkit-outer-spin-button {
-          -webkit-appearance: none;
-          margin: 0;
-        }
-      `}</style>
-      <CreateUserPage
-        onSubmit={handleCreateUser}
-        onHistory={handleShowHistory}
-      />
+      <style>{homeStyles}</style>
+      {view === "create" ? (
+        <CreateUserPage
+          onBack={() => setView("landing")}
+          onHistory={handleShowHistory}
+          onSubmit={handleCreateUser}
+        />
+      ) : (
+        <LandingPage
+          onStart={() => {
+            setCurrentStep(1);
+            setView("create");
+          }}
+          onHistory={handleShowHistory}
+        />
+      )}
     </>
   );
 }
+
+const homeStyles = `
+  .home-page-shell {
+    position: relative;
+    width: 100%;
+    min-height: 100vh;
+    overflow: hidden;
+    font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+    color: #1f2933;
+    isolation: isolate;
+  }
+
+  .home-gradient-base {
+    position: fixed;
+    inset: 0;
+    z-index: -3;
+    background:
+      linear-gradient(180deg, rgba(255, 219, 181, 0.86) 0%, rgba(255, 249, 237, 0.96) 48%, #eee7d4 100%),
+      linear-gradient(180deg, #f3ebdd 0%, #eee7d4 100%);
+  }
+
+  .home-hourglass {
+    position: fixed;
+    z-index: -2;
+    pointer-events: none;
+    user-select: none;
+    mix-blend-mode: multiply;
+  }
+
+  .home-hourglass-left {
+    left: -16.25vw;
+    top: -1.3vh;
+    width: 31.56vw;
+    max-width: 606px;
+    height: auto;
+    opacity: 0.6;
+  }
+
+  .home-hourglass-right {
+    right: -6.4vw;
+    top: -43.2vh;
+    width: 42.92vw;
+    min-width: 720px;
+    height: auto;
+    transform: rotate(180deg);
+    opacity: 1;
+    filter: drop-shadow(0 6px 50px rgba(252, 236, 222, 0.16));
+  }
+
+  .home-header {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    padding: clamp(28px, 4.72vh, 51px) clamp(48px, 4.22vw, 81px) 0;
+  }
+
+  .home-brand-logo {
+    display: block;
+    width: min(31.93vw, 613px);
+    min-width: 360px;
+    height: auto;
+  }
+
+  .home-logo-button,
+  .home-user-button,
+  .home-start-button {
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+
+  .home-logo-button {
+    display: block;
+  }
+
+  .home-header-actions {
+    display: flex;
+    align-items: flex-start;
+    gap: clamp(28px, 2.6vw, 50px);
+  }
+
+  .home-step-indicator {
+    display: block;
+    width: min(13.39vw, 257px);
+    min-width: 190px;
+    height: auto;
+  }
+
+  .home-user-button {
+    width: min(5vw, 96px);
+    min-width: 84px;
+    transition: transform 160ms ease, opacity 160ms ease;
+  }
+
+  .home-user-button:hover,
+  .home-start-button:hover {
+    transform: translateY(-1px);
+  }
+
+  .home-user-button:active,
+  .home-start-button:active {
+    transform: translateY(1px) scale(0.99);
+  }
+
+  .home-user-button img,
+  .home-start-button img {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  .home-hero {
+    position: relative;
+    z-index: 1;
+    width: min(42vw, 720px);
+    margin-left: clamp(58px, 5.78vw, 111px);
+    margin-top: clamp(200px, 21.2vh, 229px);
+  }
+
+  .home-hero-title {
+    display: block;
+    width: min(32.29vw, 620px);
+    min-width: 440px;
+    height: auto;
+  }
+
+  .home-start-button {
+    display: block;
+    width: min(14.95vw, 287px);
+    min-width: 220px;
+    margin-top: clamp(36px, 3.7vh, 40px);
+    transition: transform 160ms ease, filter 160ms ease;
+    filter: drop-shadow(0 8px 18px rgba(255, 132, 0, 0.12));
+  }
+
+  .home-footer {
+    position: fixed;
+    left: clamp(48px, 4.22vw, 81px);
+    bottom: clamp(32px, 4.72vh, 51px);
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .home-device-status {
+    display: block;
+    width: min(7.1vw, 136px);
+    min-width: 126px;
+    height: auto;
+  }
+
+  .create-page-main {
+    position: relative;
+    z-index: 1;
+    min-height: calc(100vh - 110px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 72px 32px 80px;
+  }
+
+  .create-user-panel {
+    width: min(620px, calc(100vw - 64px));
+    border-radius: 16px;
+    background: rgba(255, 250, 241, 0.94);
+    box-shadow: 0 24px 70px rgba(180, 112, 36, 0.14);
+    border: 1px solid rgba(255, 255, 255, 0.76);
+    padding: 34px 38px 32px;
+  }
+
+  .create-panel-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 24px;
+    margin-bottom: 28px;
+  }
+
+  .create-panel-head h1 {
+    margin: 0;
+    font-size: 24px;
+    line-height: 1.2;
+    color: #2d3138;
+    font-weight: 700;
+    letter-spacing: 0;
+  }
+
+  .create-panel-head p {
+    margin: 8px 0 0;
+    color: #8b7158;
+    font-size: 14px;
+  }
+
+  .create-close-button {
+    width: 34px;
+    height: 34px;
+    border: 1px solid rgba(255, 132, 0, 0.18);
+    border-radius: 8px;
+    color: #ff8400;
+    background: #fff7ed;
+    font-size: 24px;
+    line-height: 28px;
+  }
+
+  .create-form-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px 20px;
+  }
+
+  .create-form-grid label {
+    display: grid;
+    gap: 8px;
+    color: #6e5137;
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .create-form-grid input,
+  .create-form-grid select {
+    width: 100%;
+    height: 44px;
+    border-radius: 8px;
+    border: 1px solid rgba(203, 161, 115, 0.42);
+    background: rgba(255, 255, 255, 0.9);
+    padding: 0 13px;
+    color: #2d3138;
+    font-size: 14px;
+    outline: none;
+  }
+
+  .create-form-grid input:focus,
+  .create-form-grid select:focus {
+    border-color: #ff9c2f;
+    box-shadow: 0 0 0 3px rgba(255, 132, 0, 0.13);
+  }
+
+  .create-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    margin-top: 30px;
+  }
+
+  .create-actions button {
+    min-width: 124px;
+    height: 44px;
+    border-radius: 8px;
+    font-size: 15px;
+    font-weight: 700;
+  }
+
+  .create-actions button:first-child {
+    border: 1px solid rgba(255, 132, 0, 0.32);
+    background: rgba(255, 255, 255, 0.6);
+    color: #ff8400;
+  }
+
+  .create-actions button:last-child {
+    border: 0;
+    background: #ff8400;
+    color: #fff;
+    box-shadow: 0 8px 18px rgba(255, 132, 0, 0.2);
+  }
+
+  .create-actions button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  @media (max-width: 980px) {
+    .home-header {
+      align-items: center;
+      padding: 28px 28px 0;
+    }
+
+    .home-brand-logo {
+      min-width: 0;
+      width: min(58vw, 440px);
+    }
+
+    .home-header-actions {
+      gap: 16px;
+    }
+
+    .home-step-indicator {
+      display: none;
+    }
+
+    .home-user-button {
+      width: 82px;
+      min-width: 82px;
+    }
+
+    .home-hero {
+      width: auto;
+      margin: 22vh 28px 0;
+    }
+
+    .home-hero-title {
+      width: min(76vw, 560px);
+      min-width: 0;
+    }
+
+    .home-start-button {
+      width: 224px;
+      min-width: 0;
+      margin-top: 32px;
+    }
+
+    .home-hourglass-left {
+      left: -31vw;
+      width: 56vw;
+      max-width: 360px;
+    }
+
+    .home-hourglass-right {
+      right: -360px;
+      width: 760px;
+    }
+
+    .home-footer {
+      left: 28px;
+      bottom: 28px;
+    }
+
+    .create-form-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+`;

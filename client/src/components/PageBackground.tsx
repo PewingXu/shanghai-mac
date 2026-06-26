@@ -41,21 +41,6 @@ export default function PageBackground() {
           pointerEvents: "none",
         }}
       />
-      {/* 底部版权 */}
-      <footer
-        style={{
-          position: "fixed",
-          bottom: "24px",
-          left: "40px",
-          zIndex: 50,
-          fontSize: "12px",
-          color: "rgba(80, 50, 20, 0.55)",
-          letterSpacing: "0.03em",
-          pointerEvents: "none",
-        }}
-      >
-        powered by 矩桥工业
-      </footer>
     </>
   );
 }

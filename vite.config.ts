@@ -224,15 +224,6 @@ export default defineConfig({
     port: 3000,
     strictPort: false, // Will find next available port if 3000 is busy
     host: true,
-    // Python 分析后端（FastAPI / OneStep_report.py）代理，与 huisheng-system 行为一致：
-    // 开发模式下前端请求 /pyapi/* 会被转发到 http://127.0.0.1:8766/*
-    proxy: {
-      "/pyapi": {
-        target: "http://127.0.0.1:8766",
-        changeOrigin: true,
-        rewrite: (p) => p.replace(/^\/pyapi/, ""),
-      },
-    },
     allowedHosts: [
       ".manuspre.computer",
       ".manus.computer",

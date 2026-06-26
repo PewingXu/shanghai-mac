@@ -198,11 +198,6 @@ export default function UserRecordsPage({ onBack, onStartMeasure }: UserRecordsP
           返回上一页
         </button>
       </div>
-
-      {/* 底部版权 */}
-      <div style={{ position: "fixed", bottom: "28px", left: "40px", fontSize: "12px", color: "rgba(90,58,26,0.6)", zIndex: 20 }}>
-        powered by 矩桥工业
-      </div>
     </div>
   );
 }

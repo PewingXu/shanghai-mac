@@ -310,7 +310,16 @@ export default function HistoryPage({
           </h1>
 
           {/* 右侧：搜索框 + 删除按钮 */}
-          <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+          <div
+            style={{
+              display: "flex",
+              gap: "12px",
+              alignItems: "center",
+              justifyContent: "flex-end",
+              marginLeft: "auto",
+              minWidth: 0,
+            }}
+          >
             {/* 搜索框 */}
             <div
               style={{
@@ -319,10 +328,12 @@ export default function HistoryPage({
                 backgroundColor: "rgba(255, 255, 255, 0.85)",
                 borderRadius: "24px",
                 border: "1.5px solid rgba(203, 161, 115, 0.4)",
-                padding: "0 16px",
-                height: "42px",
+                padding: "0 22px",
+                height: "54px",
                 gap: "10px",
-                width: "220px",
+                width: "360px",
+                minWidth: "260px",
+                boxSizing: "border-box",
               }}
             >
               <svg
@@ -360,22 +371,24 @@ export default function HistoryPage({
                   color: "#3D2000",
                 }}
               />
-              <button
-                onClick={() => {/* 搜索已实时生效 */}}
-                style={{
-                  background: "none",
-                  border: "none",
-                  cursor: "pointer",
-                  fontSize: "13px",
-                  fontWeight: "600",
-                  color: "#E8944A",
-                  padding: 0,
-                  flexShrink: 0,
-                }}
-              >
-                查询
-              </button>
             </div>
+
+            <button
+              onClick={() => {/* 搜索已实时生效 */}}
+              style={{
+                height: "54px",
+                padding: "0 8px",
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                fontSize: "15px",
+                fontWeight: "700",
+                color: "#E8944A",
+                flexShrink: 0,
+              }}
+            >
+              查询
+            </button>
 
             {/* 删除按钮 */}
             <button
@@ -384,9 +397,9 @@ export default function HistoryPage({
                 display: "flex",
                 alignItems: "center",
                 gap: "8px",
-                height: "42px",
-                padding: "0 20px",
-                borderRadius: "24px",
+                height: "54px",
+                padding: "0 26px",
+                borderRadius: "28px",
                 border: deleteConfirm
                   ? "1.5px solid #E05030"
                   : "1.5px solid rgba(203, 161, 115, 0.5)",
@@ -399,6 +412,8 @@ export default function HistoryPage({
                 fontWeight: "600",
                 color: deleteConfirm ? "#E05030" : "#7A5030",
                 transition: "all 0.18s",
+                whiteSpace: "nowrap",
+                flexShrink: 0,
               }}
             >
               <svg
@@ -424,9 +439,9 @@ export default function HistoryPage({
               <button
                 onClick={() => setDeleteConfirm(false)}
                 style={{
-                  height: "42px",
+                  height: "54px",
                   padding: "0 16px",
-                  borderRadius: "24px",
+                  borderRadius: "28px",
                   border: "1.5px solid rgba(203, 161, 115, 0.5)",
                   backgroundColor: "rgba(255, 255, 255, 0.85)",
                   cursor: "pointer",
@@ -540,20 +555,6 @@ export default function HistoryPage({
         >
           返回上一页
         </button>
-      </div>
-
-      {/* powered by */}
-      <div
-        style={{
-          position: "fixed",
-          bottom: "28px",
-          left: "64px",
-          fontSize: "12px",
-          color: "rgba(120, 80, 40, 0.6)",
-          zIndex: 50,
-        }}
-      >
-        powered by 矩桥工业
       </div>
     </div>
   );

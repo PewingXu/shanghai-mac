@@ -586,10 +586,6 @@ export default function ReportPage({ onNext, onHistory, onBack }: { onNext: () =
           结束体验
         </button>
       </div>
-
-      <div style={{ position: "fixed", bottom: "14px", left: "40px", fontSize: "12px", color: "rgba(90,58,26,0.6)", zIndex: 20 }}>
-        powered by 矩桥工业
-      </div>
     </div>
   );
 }
