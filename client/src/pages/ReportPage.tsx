@@ -409,77 +409,238 @@ function View2DZones() {
   );
 }
 
-// ─── 右侧报告面板 ─────────────────────────────────────────────────────────────
-function ReportPanel({ onNext }: { onNext: () => void }) {
+// ─── 视图3：足弓分析（斜视 3D + 足弓高度标注） ────────────────────────────────
+function ViewArch3D() {
   return (
-    <div style={{ width: "380px", minWidth: "320px", display: "flex", flexDirection: "column", gap: "12px", overflowY: "auto", maxHeight: "calc(100vh - 260px)" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
-        <span style={{ fontSize: "16px", fontWeight: "700", color: "#3A2A10" }}>用户测量报告</span>
-        <button onClick={onNext} style={{ background: "#F5A623", border: "none", borderRadius: "8px", padding: "8px 16px", cursor: "pointer", fontSize: "13px", fontWeight: "600", color: "#fff" }}>
+    <div style={{ width: "100%", height: "100%", minHeight: "400px", position: "relative" }}>
+      <FeetModel3D width="100%" height="100%" modelScale={1.35} autoRotate style={{ minHeight: "400px" }} />
+      {/* 足弓高度标注（左右脚各一条垂直虚线 + 端点圆点） */}
+      {(["30%", "62%"] as const).map((left, i) => (
+        <div key={left} style={{ position: "absolute", left, top: "40%", height: "26%", pointerEvents: "none" }}>
+          <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, borderLeft: "2px dashed #F08614" }} />
+          <div style={{ position: "absolute", left: "-4px", top: "-5px", width: "10px", height: "10px", borderRadius: "50%", background: "#F08614" }} />
+          <div style={{ position: "absolute", left: "-4px", bottom: "-5px", width: "10px", height: "10px", borderRadius: "50%", background: "#F08614" }} />
+          {i === 0 && (
+            <span style={{ position: "absolute", left: "-76px", top: "42%", fontSize: "12px", color: "#8a8275" }}>足弓高度</span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── 右侧报告面板（按设计稿：白卡 + 橙竖条标题 + 双模式压力/面积） ────────────
+const REPORT_ICONS = {
+  flatFoot: "/assets/icons/report-page/flat-foot.svg",
+  normalArch: "/assets/icons/report-page/normal-arch.svg",
+};
+
+/** 演示数据（后续接 Python /analyze 的真实结果） */
+const REPORT_DATA = {
+  dims: { leftLen: 270, rightLen: 272, leftWid: 183, rightWid: 180 },
+  arch: {
+    left: { index: 0.272, type: "扁平足", mli: 0.89, risk: "足内翻风险", riskColor: "#ff5a2c" },
+    right: { index: 0.285, type: "扁平足", mli: 1.02, risk: "正常足弓", riskColor: "#2fb56b" },
+  },
+  pressure: {
+    leftTotal: 15773,
+    rightTotal: 15773,
+    zonesPct: { fore: 46, mid: 36, hind: 46 },
+    leftRatio: 65,
+  },
+  area: {
+    leftTotal: 15773,
+    rightTotal: 15773,
+    zones: { fore: 106, mid: 106, hind: 106 },
+    bothTotal: 15773,
+    diff: 7.4,
+  },
+  cop: [
+    { label: "轨迹长度", value: "126.28", unit: "mm" },
+    { label: "活动总面积", value: "7.74", unit: "mm²" },
+    { label: "最大摆幅", value: "0.94", unit: "mm" },
+    { label: "稳定摆幅", value: "0.04", unit: "mm" },
+    { label: "最大离心", value: "0.71", unit: "mm" },
+    { label: "偏移平衡速度", value: "12.96", unit: "mm/s" },
+    { label: "前后方向标准差", value: "4.72", unit: "mm" },
+    { label: "左右方向标准差", value: "0.21", unit: "mm" },
+  ],
+};
+
+const panelCard: React.CSSProperties = {
+  background: "#ffffff",
+  borderRadius: "12px",
+  padding: "14px 16px",
+  border: "1px solid #ffd9a8",
+  boxShadow: "0 2px 8px rgba(220,185,146,0.28)",
+};
+
+const subCard: React.CSSProperties = {
+  flex: 1,
+  background: "linear-gradient(180deg,#fffdf8,#fff3de)",
+  borderRadius: "10px",
+  padding: "10px 12px",
+  border: "1px solid #ffe3bd",
+};
+
+function BarTitle({ zh, en }: { zh: string; en: string }) {
+  return (
+    <div style={{ display: "flex", alignItems: "baseline", gap: "8px", marginBottom: "10px" }}>
+      <span style={{ width: "4px", height: "16px", background: "#F08614", borderRadius: "2px", alignSelf: "center" }} />
+      <span style={{ fontSize: "15px", fontWeight: "800", color: "#17191c" }}>{zh}</span>
+      <span style={{ fontSize: "11px", fontWeight: "600", color: "#8a8275" }}>{en}</span>
+    </div>
+  );
+}
+
+function ArchSubCard({ side, data }: { side: "左" | "右"; data: typeof REPORT_DATA.arch.left }) {
+  return (
+    <div style={{ ...subCard, display: "grid", gap: "6px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <div style={{ fontSize: "11px", color: "#8a8275" }}>{side}脚足弓指数 {data.index.toFixed(3)}</div>
+          <div style={{ fontSize: "19px", fontWeight: "800", color: "#17191c", marginTop: "2px" }}>{data.type}</div>
+        </div>
+        <img src={data.risk === "正常足弓" ? REPORT_ICONS.normalArch : REPORT_ICONS.flatFoot} alt="" style={{ width: "30px", height: "auto" }} />
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span style={{ fontSize: "11px", color: "#8a8275" }}>足弓内外翻</span>
+        <span style={{ fontSize: "11px", fontWeight: "700", color: data.riskColor }}>{data.risk}</span>
+      </div>
+      <div style={{ fontSize: "11px", color: "#6b6256", textAlign: "right" }}>MLI {data.mli.toFixed(2)}</div>
+    </div>
+  );
+}
+
+function ReportPanel({ onNext }: { onNext: () => void }) {
+  // 压力 / 面积 双模式互切（对应设计图三与图四右下区块）
+  const [mode, setMode] = useState<"pressure" | "area">("pressure");
+  const P = REPORT_DATA;
+
+  return (
+    <div style={{ width: "400px", minWidth: "340px", display: "flex", flexDirection: "column", gap: "12px", overflowY: "auto", maxHeight: "calc(100vh - 220px)", paddingRight: "2px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "2px" }}>
+        <span style={{ fontSize: "18px", fontWeight: "800", color: "#17191c" }}>用户测量报告</span>
+        <button
+          onClick={onNext}
+          style={{ background: "linear-gradient(90deg,#ff9a2e,#ff8400)", border: "none", borderRadius: "10px", padding: "9px 16px", cursor: "pointer", fontSize: "13px", fontWeight: "700", color: "#fff", boxShadow: "0 4px 12px rgba(255,132,0,0.3)" }}
+        >
           查看解决方案 &gt;
         </button>
       </div>
 
       {/* 足底尺寸 */}
-      <div style={{ background: "rgba(255,255,255,0.82)", borderRadius: "12px", padding: "14px 16px", boxShadow: "0 1px 8px rgba(200,120,0,0.07)" }}>
-        <SectionTitle zh="足底尺寸" en="Foot Dimensions" />
-        <MeasureRow items={[
-          { label: "左脚足长", value: "270mm" },
-          { label: "右脚足长", value: "272mm" },
-          { label: "左脚足宽", value: "183mm" },
-          { label: "右脚足宽", value: "180mm" },
-        ]} />
+      <div style={panelCard}>
+        <BarTitle zh="足底尺寸" en="Foot Dimensions" />
+        <div style={{ display: "flex", gap: "10px" }}>
+          {[
+            { pair: [{ l: "左脚足长", v: P.dims.leftLen }, { l: "右脚足长", v: P.dims.rightLen }] },
+            { pair: [{ l: "左脚足宽", v: P.dims.leftWid }, { l: "右脚足宽", v: P.dims.rightWid }] },
+          ].map((g, i) => (
+            <div key={i} style={{ ...subCard, display: "flex", alignItems: "center" }}>
+              {g.pair.map((it, j) => (
+                <div key={it.l} style={{ flex: 1, textAlign: "center", borderLeft: j ? "1px solid #f3ddc0" : "none" }}>
+                  <div style={{ fontSize: "10px", color: "#8a8275", marginBottom: "3px" }}>{it.l}</div>
+                  <div style={{ fontSize: "18px", fontWeight: "800", color: "#17191c" }}>
+                    {it.v}<small style={{ fontSize: "10px", fontWeight: "600", color: "#8a8275" }}>mm</small>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* 足弓分析 */}
-      <div style={{ background: "rgba(255,255,255,0.82)", borderRadius: "12px", padding: "14px 16px", boxShadow: "0 1px 8px rgba(200,120,0,0.07)" }}>
-        <SectionTitle zh="足弓分析" en="Foot Arch Analysis" />
+      <div style={panelCard}>
+        <BarTitle zh="足弓分析" en="Foot Arch Analysis" />
         <div style={{ display: "flex", gap: "10px" }}>
-          <ArchCard side="左" type="扁平足" index="0.272" showTag />
-          <ArchCard side="右" type="扁平足" index="0.272" showTag />
+          <ArchSubCard side="左" data={P.arch.left} />
+          <ArchSubCard side="右" data={P.arch.right} />
         </div>
       </div>
 
-      {/* 压力/面积分析 */}
-      <div style={{ background: "rgba(255,255,255,0.82)", borderRadius: "12px", padding: "14px 16px", boxShadow: "0 1px 8px rgba(200,120,0,0.07)" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
-          <SectionTitle zh="压力/面积分析" en="Foot Pressure Analysis" />
-          <button style={{ background: "none", border: "none", cursor: "pointer", fontSize: "12px", color: "#F5A623", textDecoration: "underline" }}>查看压力分析</button>
+      {/* 压力/面积分析（双模式） */}
+      <div style={panelCard}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <BarTitle zh="压力/面积分析" en="Foot Pressure Analysis" />
+          <button
+            onClick={() => setMode((m) => (m === "pressure" ? "area" : "pressure"))}
+            style={{ background: "none", border: "none", cursor: "pointer", fontSize: "12px", fontWeight: "700", color: "#ff8400", textDecoration: "underline", textUnderlineOffset: "3px", marginBottom: "10px" }}
+          >
+            {mode === "pressure" ? "查看面积分析" : "查看压力分析"}
+          </button>
         </div>
         <div style={{ display: "flex", gap: "10px", marginBottom: "10px" }}>
-          {["左脚", "右脚"].map(side => (
-            <div key={side} style={{ flex: 1, background: "rgba(245,166,35,0.08)", borderRadius: "8px", padding: "10px" }}>
-              <div style={{ fontSize: "11px", color: "#8A6A40", marginBottom: "4px" }}>{side}总面积</div>
-              <div style={{ fontSize: "18px", fontWeight: "700", color: "#3A2A10" }}>15773</div>
-              <div style={{ display: "flex", gap: "4px", marginTop: "6px" }}>
-                {["前足", "中足", "后足"].map(l => (
-                  <div key={l} style={{ flex: 1, textAlign: "center" }}>
-                    <div style={{ fontSize: "12px", fontWeight: "600", color: "#F5A623" }}>106cm²</div>
-                    <div style={{ fontSize: "10px", color: "#8A6A40" }}>{l}面积</div>
+          {(["左", "右"] as const).map((side) => (
+            <div key={side} style={subCard}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontSize: "10px", color: "#8a8275" }}>{side}脚总{mode === "pressure" ? "压力" : "面积"}</div>
+                  <div style={{ fontSize: "19px", fontWeight: "800", color: "#17191c" }}>
+                    {side === "左" ? (mode === "pressure" ? P.pressure.leftTotal : P.area.leftTotal) : (mode === "pressure" ? P.pressure.rightTotal : P.area.rightTotal)}
+                  </div>
+                </div>
+                <img src={REPORT_ICONS.flatFoot} alt="" style={{ width: "26px", height: "auto", opacity: 0.9 }} />
+              </div>
+              <div style={{ display: "flex", marginTop: "8px" }}>
+                {(mode === "pressure"
+                  ? [
+                      { l: "前足压力", v: `${P.pressure.zonesPct.fore}%` },
+                      { l: "中足压力", v: `${P.pressure.zonesPct.mid}%` },
+                      { l: "后足压力", v: `${P.pressure.zonesPct.hind}%` },
+                    ]
+                  : [
+                      { l: "前足面积", v: `${P.area.zones.fore}cm²` },
+                      { l: "中足面积", v: `${P.area.zones.mid}cm²` },
+                      { l: "后足面积", v: `${P.area.zones.hind}cm²` },
+                    ]
+                ).map((z, i) => (
+                  <div key={z.l} style={{ flex: 1, textAlign: "center", borderLeft: i ? "1px solid #f3ddc0" : "none" }}>
+                    <div style={{ fontSize: "12px", fontWeight: "800", color: "#17191c" }}>{z.v}</div>
+                    <div style={{ fontSize: "9px", color: "#8a8275", marginTop: "2px" }}>{z.l}</div>
                   </div>
                 ))}
               </div>
             </div>
           ))}
         </div>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", color: "#5A3A1A", marginBottom: "4px" }}>
-          <span>双脚总面积 15773 cm²</span>
-          <span>左右脚差异 7.4 cm²</span>
-        </div>
+        {mode === "pressure" ? (
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", fontWeight: "700", color: "#3a352e", marginBottom: "6px" }}>
+              <span>左脚压力比 {P.pressure.leftRatio}%</span>
+              <span>右脚压力比 {100 - P.pressure.leftRatio}%</span>
+            </div>
+            <div style={{ height: "8px", borderRadius: "999px", background: "#ffd9a8", overflow: "hidden" }}>
+              <div style={{ width: `${P.pressure.leftRatio}%`, height: "100%", background: "linear-gradient(90deg,#ff8400,#ff9a2e)", borderRadius: "999px" }} />
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: "flex", gap: "10px" }}>
+            <div style={{ ...subCard, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: "11px", color: "#8a8275" }}>双脚总面积</span>
+              <span style={{ fontSize: "16px", fontWeight: "800", color: "#17191c" }}>{P.area.bothTotal}<small style={{ fontSize: "10px", color: "#8a8275" }}> cm²</small></span>
+            </div>
+            <div style={{ ...subCard, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: "11px", color: "#8a8275" }}>左右脚差异</span>
+              <span style={{ fontSize: "16px", fontWeight: "800", color: "#17191c" }}>{P.area.diff}<small style={{ fontSize: "10px", color: "#8a8275" }}> cm²</small></span>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* COP 平衡指标 */}
-      <div style={{ background: "rgba(255,255,255,0.82)", borderRadius: "12px", padding: "14px 16px", boxShadow: "0 1px 8px rgba(200,120,0,0.07)" }}>
-        <SectionTitle zh="cop平衡指标（压力中心）" en="COP Balance Index" />
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: "10px" }}>
-          <CopRow label="轨迹长度" value="126.28" unit="mm" />
-          <CopRow label="活动总面积" value="7.74" unit="mm²" />
-          <CopRow label="最大活程" value="0.94" unit="mm" />
-          <CopRow label="摆动幅度" value="0.04" unit="mm" />
-          <CopRow label="最大离心" value="0.71" unit="mm" />
-          <CopRow label="前后平衡速度" value="12.96" unit="mm/s" />
-          <CopRow label="前后方向标准差" value="4.72" unit="mm" />
-          <CopRow label="左右方向标准差" value="0.21" unit="mm" />
+      <div style={panelCard}>
+        <BarTitle zh="cop平衡指标（压力中心）" en="COP Balance Index" />
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "8px" }}>
+          {REPORT_DATA.cop.map((c) => (
+            <div key={c.label} style={{ ...subCard, padding: "8px 9px" }}>
+              <div style={{ fontSize: "13px", fontWeight: "800", color: "#17191c", whiteSpace: "nowrap" }}>
+                {c.value}<small style={{ fontSize: "9px", fontWeight: "600", color: "#8a8275" }}>{c.unit}</small>
+              </div>
+              <div style={{ fontSize: "9px", color: "#8a8275", marginTop: "3px", whiteSpace: "nowrap" }}>{c.label}</div>
+            </div>
+          ))}
         </div>
       </div>
     </div>
@@ -490,7 +651,10 @@ function ReportPanel({ onNext }: { onNext: () => void }) {
 export default function ReportPage({ onNext, onHistory, onBack }: { onNext: () => void; onHistory: () => void; onBack: () => void }) {
   const { currentUser } = useApp();
   const [showSummary, setShowSummary] = useState(true);
-  const [viewMode, setViewMode] = useState<"arch" | "zones">("arch"); // 视图切换
+  // 三视图轮换：尺寸标注 → 足弓分析(斜视) → 2D 分区
+  const [viewMode, setViewMode] = useState<"dimensions" | "arch3d" | "zones">("dimensions");
+  const VIEW_LABEL = { dimensions: "足底尺寸", arch3d: "足弓分析", zones: "区域分布" } as const;
+  const nextView = (v: typeof viewMode) => (v === "dimensions" ? "arch3d" : v === "arch3d" ? "zones" : "dimensions");
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", position: "relative", overflow: "hidden" }}>
@@ -509,7 +673,7 @@ export default function ReportPage({ onNext, onHistory, onBack }: { onNext: () =
           {/* 切换视图按钮（右上角） */}
           <div style={{ marginLeft: "auto" }}>
             <button
-              onClick={() => setViewMode(v => v === "arch" ? "zones" : "arch")}
+              onClick={() => setViewMode(nextView)}
               style={{
                 background: "#F5A623",
                 border: "none",
@@ -529,7 +693,7 @@ export default function ReportPage({ onNext, onHistory, onBack }: { onNext: () =
                 <rect x="1" y="1" width="12" height="12" rx="2" stroke="#fff" strokeWidth="1.5"/>
                 <path d="M4 7h6M7 4v6" stroke="#fff" strokeWidth="1.5" strokeLinecap="round"/>
               </svg>
-              {viewMode === "arch" ? "切换视图 · 区域热力" : "切换视图 · 足弓标注"}
+              切换视图 · {VIEW_LABEL[nextView(viewMode)]}
             </button>
           </div>
         </div>
@@ -566,7 +730,7 @@ export default function ReportPage({ onNext, onHistory, onBack }: { onNext: () =
         <div style={{ flex: 1, display: "flex", gap: "24px", minHeight: 0 }}>
           {/* 左侧：视图区域 */}
           <div style={{ flex: 1, position: "relative", minHeight: "400px" }}>
-            {viewMode === "arch" ? <View3DAnnotated /> : <View2DZones />}
+            {viewMode === "dimensions" ? <View3DAnnotated /> : viewMode === "arch3d" ? <ViewArch3D /> : <View2DZones />}
           </div>
 
           {/* 右侧：报告面板 */}

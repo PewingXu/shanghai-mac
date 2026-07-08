@@ -13,6 +13,8 @@ interface TopNavBarProps {
   currentStep: number;
   onHistoryClick?: () => void;
   showHistory?: boolean;
+  /** 透明页眉：去掉填充背景/毛玻璃/底边线，让 Logo 与步骤条直接浮在页面背景上 */
+  transparent?: boolean;
 }
 
 function HistoryButton({ onClick }: { onClick?: () => void }) {
@@ -49,6 +51,7 @@ export default function TopNavBar({
   currentStep,
   onHistoryClick,
   showHistory = true,
+  transparent = false,
 }: TopNavBarProps) {
   return (
     <header
@@ -58,9 +61,9 @@ export default function TopNavBar({
         left: 0,
         right: 0,
         height: "88px",
-        backgroundColor: "rgba(255, 240, 210, 0.92)",
-        backdropFilter: "blur(12px)",
-        borderBottom: "1px solid rgba(203, 161, 115, 0.2)",
+        backgroundColor: transparent ? "transparent" : "rgba(255, 240, 210, 0.92)",
+        backdropFilter: transparent ? "none" : "blur(12px)",
+        borderBottom: transparent ? "none" : "1px solid rgba(203, 161, 115, 0.2)",
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",

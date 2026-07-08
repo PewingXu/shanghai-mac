@@ -5,6 +5,7 @@ import ReportPage from "./ReportPage";
 import SolutionPage from "./SolutionPage";
 import HistoryPage from "./HistoryPage";
 import UserRecordsPage from "./UserRecordsPage";
+import ExceptionModal, { type ExceptionType } from "@/components/ExceptionModal";
 
 const HOME_ASSETS = {
   brandLogo: "/assets/icons/home-page/brand-logo.svg",
@@ -45,54 +46,26 @@ function useDeviceConnectionStatus() {
   const [connected, setConnected] = useState(false);
 
   useEffect(() => {
-    let disposed = false;
-    const serial = (navigator as SerialNavigator).serial;
-
-    const applyOverride = () => {
+    // 只反映 App 真实的连接状态（连接设备时通过事件/localStorage 广播）。
+    // 注意：navigator.serial.getPorts() 返回的是"曾授权过"的串口，不代表当前已连接，
+    // 因此这里不再用它判断，默认未连接，避免误报"设备连接正常"。
+    const applyStored = () => {
       const stored = window.localStorage.getItem("aciki-device-connected");
-      if (stored === "true" || stored === "false") {
-        setConnected(stored === "true");
-        return true;
-      }
-      return false;
+      setConnected(stored === "true");
     };
+    applyStored();
 
-    const updateFromSerial = async () => {
-      if (applyOverride()) return;
-      if (!serial?.getPorts) return;
-
-      try {
-        const ports = await serial.getPorts();
-        if (!disposed) setConnected(ports.length > 0);
-      } catch {
-        if (!disposed) setConnected(false);
-      }
-    };
-
-    const handleConnect = () => setConnected(true);
-    const handleDisconnect = () => void updateFromSerial();
     const handleCustomStatus = (event: Event) => {
       const detail = (event as CustomEvent<{ connected?: boolean }>).detail;
-      if (typeof detail?.connected === "boolean") {
-        setConnected(detail.connected);
-      }
+      if (typeof detail?.connected === "boolean") setConnected(detail.connected);
     };
     const handleStorage = (event: StorageEvent) => {
-      if (event.key === "aciki-device-connected") {
-        applyOverride();
-      }
+      if (event.key === "aciki-device-connected") applyStored();
     };
 
-    void updateFromSerial();
-    serial?.addEventListener("connect", handleConnect);
-    serial?.addEventListener("disconnect", handleDisconnect);
     window.addEventListener("aciki-device-status", handleCustomStatus);
     window.addEventListener("storage", handleStorage);
-
     return () => {
-      disposed = true;
-      serial?.removeEventListener("connect", handleConnect);
-      serial?.removeEventListener("disconnect", handleDisconnect);
       window.removeEventListener("aciki-device-status", handleCustomStatus);
       window.removeEventListener("storage", handleStorage);
     };
@@ -316,83 +289,98 @@ export default function Home() {
     setView("userRecords");
   };
 
-  if (view === "history") {
-    return (
-      <HistoryPage
-        onSelectUser={handleSelectHistoryUser}
-        onBack={handleBackFromHistory}
-      />
-    );
-  }
+  // 全局异常弹窗（除首页外，任意页面运行时检测到异常即弹出，优先级最高）
+  const [exception, setException] = useState<ExceptionType | null>(null);
+  const isHome = view === "landing" || view === "create";
 
-  if (view === "userRecords") {
-    return (
-      <UserRecordsPage
-        onBack={() => setView("history")}
-        onStartMeasure={() => {
-          setCurrentStep(2);
-          setView("measure");
-        }}
-      />
-    );
-  }
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ type?: ExceptionType }>).detail;
+      if (detail?.type) setException(detail.type);
+    };
+    window.addEventListener("aciki-exception", handler);
+    return () => window.removeEventListener("aciki-exception", handler);
+  }, []);
+  useEffect(() => {
+    if (isHome) setException(null); // 首页不弹异常窗
+  }, [isHome]);
 
-  if (view === "measure") {
-    return (
-      <MeasurePage
-        onNext={() => {
-          setCurrentStep(3);
-          setView("report");
-        }}
-        onHistory={handleShowHistory}
-      />
-    );
-  }
-
-  if (view === "report") {
-    return (
-      <ReportPage
-        onBack={() => setView("measure")}
-        onNext={() => {
-          setCurrentStep(4);
-          setView("solution");
-        }}
-        onHistory={handleShowHistory}
-      />
-    );
-  }
-
-  if (view === "solution") {
-    return (
-      <SolutionPage
-        onHistory={handleShowHistory}
-        onRestart={() => {
-          setCurrentUser(null);
-          setCurrentStep(1);
-          setView("landing");
-        }}
-      />
-    );
-  }
-
-  return (
-    <>
-      <style>{homeStyles}</style>
-      {view === "create" ? (
-        <CreateUserPage
-          onBack={() => setView("landing")}
-          onHistory={handleShowHistory}
-          onSubmit={handleCreateUser}
+  const renderView = () => {
+    if (view === "history") {
+      return <HistoryPage onSelectUser={handleSelectHistoryUser} onBack={handleBackFromHistory} />;
+    }
+    if (view === "userRecords") {
+      return (
+        <UserRecordsPage
+          onBack={() => setView("history")}
+          onStartMeasure={() => {
+            setCurrentStep(2);
+            setView("measure");
+          }}
         />
-      ) : (
-        <LandingPage
-          onStart={() => {
-            setCurrentStep(1);
-            setView("create");
+      );
+    }
+    if (view === "measure") {
+      return (
+        <MeasurePage
+          onNext={() => {
+            setCurrentStep(3);
+            setView("report");
           }}
           onHistory={handleShowHistory}
         />
-      )}
+      );
+    }
+    if (view === "report") {
+      return (
+        <ReportPage
+          onBack={() => setView("measure")}
+          onNext={() => {
+            setCurrentStep(4);
+            setView("solution");
+          }}
+          onHistory={handleShowHistory}
+        />
+      );
+    }
+    if (view === "solution") {
+      return (
+        <SolutionPage
+          onHistory={handleShowHistory}
+          onRestart={() => {
+            setCurrentUser(null);
+            setCurrentStep(1);
+            setView("landing");
+          }}
+        />
+      );
+    }
+    return (
+      <>
+        <style>{homeStyles}</style>
+        {view === "create" ? (
+          <CreateUserPage
+            onBack={() => setView("landing")}
+            onHistory={handleShowHistory}
+            onSubmit={handleCreateUser}
+          />
+        ) : (
+          <LandingPage
+            onStart={() => {
+              setCurrentStep(1);
+              setView("create");
+            }}
+            onHistory={handleShowHistory}
+          />
+        )}
+      </>
+    );
+  };
+
+  return (
+    <>
+      {renderView()}
+      {!isHome && <ExceptionModal type={exception} onClose={() => setException(null)} />}
     </>
   );
 }
