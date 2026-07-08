@@ -118,3 +118,6 @@ __pycache__/
 
 # Manus workspace
 .manus/
+
+# 设计稿源文件，不纳入仓库
+UI/

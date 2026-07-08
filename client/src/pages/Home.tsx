@@ -528,7 +528,12 @@ export default function Home() {
 
   if (view === "solution") {
     return (
-      <SolutionPage onRestart={handleRestart} onHistory={handleShowHistory} />
+      <SolutionPage
+        onRestart={handleRestart}
+        onHistory={handleShowHistory}
+        onBack={() => { setCurrentStep(2); setView("measure"); }}
+        onViewReport={() => { setCurrentStep(3); setView("report"); }}
+      />
     );
   }
 
