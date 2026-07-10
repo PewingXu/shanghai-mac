@@ -1,4 +1,13 @@
 import React, { createContext, useContext, useState } from "react";
+import type { PythonAnalysisResult } from "@/lib/pythonApi";
+
+/** 一次测量的分析结果：Python 指标 + 前端补充（MLI、左右分压/分面积） */
+export interface MeasureAnalysis {
+  python: PythonAnalysisResult | null;
+  mli: { left: number | null; right: number | null };
+  /** 平均帧统计（前端算）：左右 ADC 总和与接触面积 cm² */
+  frontend: { leftPressure: number; rightPressure: number; leftArea: number; rightArea: number } | null;
+}
 
 export interface User {
   id: number;
@@ -33,6 +42,8 @@ interface AppContextType {
   removeCollectionRecord: (id: number) => void;
   selectedRecord: CollectionRecord | null;
   setSelectedRecord: (r: CollectionRecord | null) => void;
+  analysis: MeasureAnalysis | null;
+  setAnalysis: (a: MeasureAnalysis | null) => void;
 }
 
 const AppContext = createContext<AppContextType>({
@@ -49,6 +60,8 @@ const AppContext = createContext<AppContextType>({
   removeCollectionRecord: () => {},
   selectedRecord: null,
   setSelectedRecord: () => {},
+  analysis: null,
+  setAnalysis: () => {},
 });
 
 const DEMO_USERS: User[] = [
@@ -86,6 +99,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [historyUsers, setHistoryUsers] = useState<User[]>(DEMO_USERS);
   const [collectionRecords, setCollectionRecords] = useState<CollectionRecord[]>(DEMO_RECORDS);
   const [selectedRecord, setSelectedRecord] = useState<CollectionRecord | null>(null);
+  const [analysis, setAnalysis] = useState<MeasureAnalysis | null>(null);
 
   const addHistoryUser = (user: User) => {
     setHistoryUsers((prev) => {
@@ -120,6 +134,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         removeCollectionRecord,
         selectedRecord,
         setSelectedRecord,
+        analysis,
+        setAnalysis,
       }}
     >
       {children}

@@ -6,11 +6,13 @@
  *
  * 切换按钮位于左侧区域右上角，与设计图一致
  */
-import { useState, useRef, useEffect, useCallback } from "react";
-import { useApp } from "@/contexts/AppContext";
-import FeetModel3D from "@/components/FeetModel3D";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { useApp, type MeasureAnalysis } from "@/contexts/AppContext";
+import FeetModel3D, { type FootRect } from "@/components/FeetModel3D";
 import TopNavBar from "@/components/TopNavBar";
-import PageBackground from "@/components/PageBackground";
+
+// 报告页图标（设计稿原件切图，均已英文命名迁入项目）
+const RICON = (name: string) => `/assets/icons/report-page/${name}.svg`;
 
 // ─── 通用子组件 ───────────────────────────────────────────────────────────────
 function SectionTitle({ zh, en }: { zh: string; en: string }) {
@@ -139,34 +141,66 @@ function VMeasureLine({ left, top, bottom, color = "#F5A623" }: { left: string; 
   );
 }
 
-function View3DAnnotated() {
+/**
+ * 视图1：俯视 + 工程制图式尺寸标注。
+ * 深色底衬 = 足底投影包围盒（bounding box）；横/竖线 = 尺寸线（dimension line）。
+ * 包围盒由 FeetModel3D 的真实 3D 投影回调（onFootRects）驱动 —— 与脚模自动精确贴合，
+ * 脚模缩放/容器尺寸变化都会重新对齐。脚模缩放取采集页最大档（3.66），与采集时一致。
+ */
+const REPORT_FOOT_SCALE = 3.05; // 报告页脚模缩放（略小于采集页最大档，视觉更协调）
+
+function View3DAnnotated({ dims }: { dims: ReportData["dims"] }) {
+  const d = dims;
+  const [rects, setRects] = useState<{ left: FootRect; right: FootRect } | null>(null);
+  const handleRects = useCallback((r: { left: FootRect; right: FootRect }) => {
+    setRects((prev) => (prev && JSON.stringify(prev) === JSON.stringify(r) ? prev : r));
+  }, []);
+
+  const renderShade = (rc: FootRect, side: string) => (
+    <div key={side} style={{ position: "absolute", left: `${rc.left}%`, top: `${rc.top}%`, width: `${rc.width}%`, height: `${rc.height}%`, background: "rgba(255,183,102,0.22)", borderRadius: "6px" }} />
+  );
+
+  const renderFoot = (rc: FootRect, side: "L" | "R") => {
+    const isL = side === "L";
+    const lineX = isL ? rc.left - 3 : rc.left + rc.width + 3; // 足长尺寸线放外侧
+    return (
+      <div key={side}>
+        {/* 足宽尺寸线（沿包围盒顶边） */}
+        <HMeasureLine top={`${rc.top}%`} left={`${rc.left}%`} right={`${100 - rc.left - rc.width}%`} />
+        <MeasureDot style={{ top: `${rc.top}%`, left: `${rc.left}%` }} />
+        <MeasureDot style={{ top: `${rc.top}%`, left: `${rc.left + rc.width}%` }} />
+        <DimensionLabel
+          text={`${side}:${isL ? d.leftWid : d.rightWid}mm`}
+          style={{ top: `${rc.top - 6}%`, left: `${rc.left + rc.width / 2}%`, transform: "translateX(-50%)" }}
+        />
+        {/* 足长尺寸线（沿包围盒外侧边） */}
+        <VMeasureLine left={`${lineX}%`} top={`${rc.top}%`} bottom={`${100 - rc.top - rc.height}%`} />
+        <MeasureDot style={{ top: `${rc.top}%`, left: `${lineX}%` }} />
+        <MeasureDot style={{ top: `${rc.top + rc.height}%`, left: `${lineX}%` }} />
+        <DimensionLabel
+          text={`${side}:${isL ? d.leftLen : d.rightLen}mm`}
+          style={{ top: `${rc.top + rc.height / 2}%`, left: `${isL ? lineX - 2 : lineX + 2}%`, transform: isL ? "translate(-100%, -50%)" : "translateY(-50%)" }}
+        />
+      </div>
+    );
+  };
+
   return (
     <div style={{ width: "100%", height: "100%", minHeight: "400px", position: "relative" }}>
-      <FeetModel3D width="100%" height="100%" modelScale={1.1} style={{ minHeight: "400px" }} />
-
-      {/* 左脚宽度标注 */}
-      <HMeasureLine top="14%" left="8%" right="56%" />
-      <MeasureDot style={{ top: "14%", left: "8%" }} />
-      <MeasureDot style={{ top: "14%", left: "44%" }} />
-      <DimensionLabel text="L: 106mm" style={{ top: "9%", left: "12%" }} />
-
-      {/* 右脚宽度标注 */}
-      <HMeasureLine top="14%" left="56%" right="8%" />
-      <MeasureDot style={{ top: "14%", right: "44%" }} />
-      <MeasureDot style={{ top: "14%", right: "8%" }} />
-      <DimensionLabel text="R: 108mm" style={{ top: "9%", right: "12%" }} />
-
-      {/* 左脚长度标注（垂直） */}
-      <VMeasureLine left="6%" top="14%" bottom="22%" />
-      <MeasureDot style={{ top: "14%", left: "6%" }} />
-      <MeasureDot style={{ bottom: "22%", left: "6%" }} />
-      <DimensionLabel text="L: 270mm" style={{ bottom: "28%", left: "0%" }} />
-
-      {/* 右脚长度标注（垂直） */}
-      <VMeasureLine left="94%" top="14%" bottom="22%" />
-      <MeasureDot style={{ top: "14%", right: "6%" }} />
-      <MeasureDot style={{ bottom: "22%", right: "6%" }} />
-      <DimensionLabel text="R: 273mm" style={{ bottom: "28%", right: "0%" }} />
+      {/* 底衬在脚模之下 */}
+      {rects && renderShade(rects.left, "sL")}
+      {rects && renderShade(rects.right, "sR")}
+      {/* 俯视固定视角，缩放与采集页最大档一致 */}
+      <FeetModel3D
+        width="100%"
+        height="100%"
+        modelScale={REPORT_FOOT_SCALE}
+        lockedView
+        onFootRects={handleRects}
+        style={{ minHeight: "400px", position: "relative", zIndex: 1 }}
+      />
+      {rects && renderFoot(rects.left, "L")}
+      {rects && renderFoot(rects.right, "R")}
     </div>
   );
 }
@@ -409,32 +443,56 @@ function View2DZones() {
   );
 }
 
-// ─── 视图3：足弓分析（斜视 3D + 足弓高度标注） ────────────────────────────────
+// ─── 视图2：足弓分析（固定斜视 3D + 足弓高度标注，按设计稿） ──────────────────
 function ViewArch3D() {
   return (
     <div style={{ width: "100%", height: "100%", minHeight: "400px", position: "relative" }}>
-      <FeetModel3D width="100%" height="100%" modelScale={1.35} autoRotate style={{ minHeight: "400px" }} />
-      {/* 足弓高度标注（左右脚各一条垂直虚线 + 端点圆点） */}
-      {(["30%", "62%"] as const).map((left, i) => (
-        <div key={left} style={{ position: "absolute", left, top: "40%", height: "26%", pointerEvents: "none" }}>
-          <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, borderLeft: "2px dashed #F08614" }} />
-          <div style={{ position: "absolute", left: "-4px", top: "-5px", width: "10px", height: "10px", borderRadius: "50%", background: "#F08614" }} />
-          <div style={{ position: "absolute", left: "-4px", bottom: "-5px", width: "10px", height: "10px", borderRadius: "50%", background: "#F08614" }} />
-          {i === 0 && (
-            <span style={{ position: "absolute", left: "-76px", top: "42%", fontSize: "12px", color: "#8a8275" }}>足弓高度</span>
-          )}
+      <FeetModel3D width="100%" height="100%" modelScale={2.0} fixedCamera style={{ minHeight: "400px" }} />
+      {/* 足弓高度标注：每只脚下方粗橙横线（地面基准）+ 中点圆点 + 向上垂直虚线 + 标签 */}
+      {([{ left: "18%", width: "26%" }, { left: "56%", width: "26%" }] as const).map((g, i) => (
+        <div key={i} style={{ position: "absolute", left: g.left, width: g.width, bottom: "18%", pointerEvents: "none" }}>
+          <div style={{ height: "5px", background: "#FF8400", borderRadius: "3px" }} />
+          <div style={{ position: "absolute", left: "50%", bottom: "2px", transform: "translateX(-50%)" }}>
+            <div style={{ position: "absolute", left: "-4.5px", bottom: 0, width: "9px", height: "9px", borderRadius: "50%", background: "#FF8400" }} />
+            <div style={{ position: "absolute", left: "-1px", bottom: "8px", height: "110px", borderLeft: "2px dashed #F08614" }} />
+            <div style={{ position: "absolute", left: "-5px", bottom: "116px", width: "10px", height: "10px", borderRadius: "50%", background: "#F08614" }} />
+          </div>
+          <span style={{ position: "absolute", left: "50%", transform: "translateX(-50%)", bottom: "136px", fontSize: "12px", fontWeight: 700, color: "#5A3A1A", whiteSpace: "nowrap", background: "rgba(255,255,255,0.85)", padding: "2px 8px", borderRadius: "6px" }}>
+            {i === 0 ? "左足弓高度" : "右足弓高度"}
+          </span>
         </div>
       ))}
     </div>
   );
 }
 
-// ─── 右侧报告面板（按设计稿：白卡 + 橙竖条标题 + 双模式压力/面积） ────────────
-const REPORT_ICONS = {
-  flatFoot: "/assets/icons/report-page/flat-foot.svg",
-  normalArch: "/assets/icons/report-page/normal-arch.svg",
-};
+// ─── 视图4：COP 压力中心轨迹（俯视 + 轨迹示意） ──────────────────────────────
+function ViewCop() {
+  return (
+    <div style={{ width: "100%", height: "100%", minHeight: "400px", position: "relative" }}>
+      <FeetModel3D width="100%" height="100%" modelScale={1.6} lockedView style={{ minHeight: "400px" }} />
+      {/* COP 轨迹示意（后续接 Python cop 序列真实绘制） */}
+      <svg style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%,-50%)", pointerEvents: "none" }} width="160" height="200" viewBox="0 0 160 200">
+        <polyline
+          points="80,150 76,132 84,118 78,100 86,86 80,70 84,54 79,42"
+          fill="none"
+          stroke="#FF8400"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeDasharray="1 5"
+        />
+        <circle cx="80" cy="150" r="5" fill="#FF8400" />
+        <circle cx="79" cy="42" r="5" fill="#e0592c" />
+      </svg>
+      <span style={{ position: "absolute", left: "50%", bottom: "12%", transform: "translateX(-50%)", fontSize: "12px", fontWeight: 700, color: "#5A3A1A", background: "rgba(255,255,255,0.85)", padding: "2px 10px", borderRadius: "6px" }}>
+        COP 压力中心轨迹
+      </span>
+    </div>
+  );
+}
 
+// ─── 右侧报告面板（按设计稿：白卡 + 橙竖条标题 + 双模式压力/面积） ────────────
 /** 演示数据（后续接 Python /analyze 的真实结果） */
 const REPORT_DATA = {
   dims: { leftLen: 270, rightLen: 272, leftWid: 183, rightWid: 180 },
@@ -446,26 +504,132 @@ const REPORT_DATA = {
     leftTotal: 15773,
     rightTotal: 15773,
     zonesPct: { fore: 46, mid: 36, hind: 46 },
+    zonesPctR: { fore: 46, mid: 46, hind: 46 },
     leftRatio: 65,
   },
   area: {
     leftTotal: 15773,
     rightTotal: 15773,
     zones: { fore: 106, mid: 106, hind: 106 },
+    zonesR: { fore: 106, mid: 106, hind: 106 },
     bothTotal: 15773,
     diff: 7.4,
   },
   cop: [
-    { label: "轨迹长度", value: "126.28", unit: "mm" },
-    { label: "活动总面积", value: "7.74", unit: "mm²" },
-    { label: "最大摆幅", value: "0.94", unit: "mm" },
-    { label: "稳定摆幅", value: "0.04", unit: "mm" },
-    { label: "最大离心", value: "0.71", unit: "mm" },
-    { label: "偏移平衡速度", value: "12.96", unit: "mm/s" },
-    { label: "前后方向标准差", value: "4.72", unit: "mm" },
-    { label: "左右方向标准差", value: "0.21", unit: "mm" },
+    { label: "轨迹长度", value: "126.28", unit: "mm", icon: "cop-track-length" },
+    { label: "活动总面积", value: "7.74", unit: "mm²", icon: "cop-active-area" },
+    { label: "最大摆幅", value: "0.94", unit: "mm", icon: "cop-max-sway" },
+    { label: "稳定摆幅", value: "0.04", unit: "mm", icon: "cop-stable-sway" },
+    { label: "最大离心", value: "0.71", unit: "mm", icon: "cop-max-eccentric" },
+    { label: "偏移平衡速度", value: "12.96", unit: "mm/s", icon: "cop-drift-speed" },
+    { label: "前后方向标准差", value: "4.72", unit: "mm", icon: "cop-std-ap" },
+    { label: "左右方向标准差", value: "0.21", unit: "mm", icon: "cop-std-ml" },
   ],
 };
+
+type ReportData = typeof REPORT_DATA;
+
+/**
+ * 把一次测量的真实分析结果映射成报告数据；任何缺失字段回退演示值。
+ * 数据源：Python /analyze（尺寸/足弓/分区/COP）+ 前端补充（MLI、左右分压分面积）。
+ */
+function buildReportData(a: MeasureAnalysis | null): ReportData {
+  const base = REPORT_DATA;
+  if (!a) return base;
+  const d = a.python?.success ? a.python.data : null;
+  const ad = d?.additional_data;
+  const cop = d?.cop_time_series;
+  const arch = d?.arch_features;
+  const fe = a.frontend;
+
+  const mkArch = (side: "left" | "right") => {
+    const f = side === "left" ? arch?.left_foot : arch?.right_foot;
+    const mli = a.mli[side];
+    let { risk, riskColor } = base.arch[side];
+    if (mli != null) {
+      if (mli < 0.9) {
+        risk = "足内翻风险";
+        riskColor = "#ff5a2c";
+      } else if (mli > 1.1) {
+        risk = "足外翻风险";
+        riskColor = "#ff5a2c";
+      } else {
+        risk = "正常足弓";
+        riskColor = "#2fb56b";
+      }
+    }
+    return {
+      index: f?.area_index ?? base.arch[side].index,
+      type: f?.area_type ?? base.arch[side].type,
+      mli: mli ?? base.arch[side].mli,
+      risk,
+      riskColor,
+    };
+  };
+
+  const pct = (rec: Record<string, number> | undefined, key: string, fb: number) =>
+    rec?.[key] != null ? Math.round(rec[key] * 100) : fb;
+  const zone = (arr: number[] | undefined, i: number, fb: number) =>
+    arr?.[i] != null ? Math.round(arr[i]) : fb;
+
+  const lp = fe?.leftPressure ?? base.pressure.leftTotal;
+  const rp = fe?.rightPressure ?? base.pressure.rightTotal;
+  const la = ad ? Math.round(ad.left_area.total_area_cm2) : fe?.leftArea ?? base.area.leftTotal;
+  const ra = ad ? Math.round(ad.right_area.total_area_cm2) : fe?.rightArea ?? base.area.rightTotal;
+
+  return {
+    dims: {
+      leftLen: ad ? Math.round(ad.left_length) : base.dims.leftLen,
+      rightLen: ad ? Math.round(ad.right_length) : base.dims.rightLen,
+      leftWid: ad ? Math.round(ad.left_width) : base.dims.leftWid,
+      rightWid: ad ? Math.round(ad.right_width) : base.dims.rightWid,
+    },
+    arch: { left: mkArch("left"), right: mkArch("right") },
+    pressure: {
+      leftTotal: lp,
+      rightTotal: rp,
+      zonesPct: {
+        fore: pct(ad?.left_pressure, "前足", base.pressure.zonesPct.fore),
+        mid: pct(ad?.left_pressure, "中足", base.pressure.zonesPct.mid),
+        hind: pct(ad?.left_pressure, "后足", base.pressure.zonesPct.hind),
+      },
+      zonesPctR: {
+        fore: pct(ad?.right_pressure, "前足", base.pressure.zonesPctR.fore),
+        mid: pct(ad?.right_pressure, "中足", base.pressure.zonesPctR.mid),
+        hind: pct(ad?.right_pressure, "后足", base.pressure.zonesPctR.hind),
+      },
+      leftRatio: lp + rp > 0 ? Math.round((lp / (lp + rp)) * 100) : base.pressure.leftRatio,
+    },
+    area: {
+      leftTotal: la,
+      rightTotal: ra,
+      zones: {
+        fore: zone(ad?.left_area.area_cm2, 0, base.area.zones.fore),
+        mid: zone(ad?.left_area.area_cm2, 1, base.area.zones.mid),
+        hind: zone(ad?.left_area.area_cm2, 2, base.area.zones.hind),
+      },
+      zonesR: {
+        fore: zone(ad?.right_area.area_cm2, 0, base.area.zonesR.fore),
+        mid: zone(ad?.right_area.area_cm2, 1, base.area.zonesR.mid),
+        hind: zone(ad?.right_area.area_cm2, 2, base.area.zonesR.hind),
+      },
+      bothTotal: la + ra,
+      diff: Math.round(Math.abs(la - ra) * 10) / 10,
+    },
+    cop: cop
+      ? [
+          { label: "轨迹长度", value: cop.path_length.toFixed(2), unit: "mm", icon: "cop-track-length" },
+          { label: "活动总面积", value: cop.contact_area.toFixed(2), unit: "mm²", icon: "cop-active-area" },
+          { label: "最大摆幅", value: cop.major_axis.toFixed(2), unit: "mm", icon: "cop-max-sway" },
+          { label: "稳定摆幅", value: cop.minor_axis.toFixed(2), unit: "mm", icon: "cop-stable-sway" },
+          { label: "最大离心", value: cop.max_displacement.toFixed(2), unit: "mm", icon: "cop-max-eccentric" },
+          { label: "偏移平衡速度", value: cop.avg_velocity.toFixed(2), unit: "mm/s", icon: "cop-drift-speed" },
+          { label: "前后方向标准差", value: cop.std_x.toFixed(2), unit: "mm", icon: "cop-std-ap" },
+          { label: "左右方向标准差", value: cop.std_y.toFixed(2), unit: "mm", icon: "cop-std-ml" },
+        ]
+      : base.cop,
+  };
+}
 
 const panelCard: React.CSSProperties = {
   background: "#ffffff",
@@ -501,7 +665,11 @@ function ArchSubCard({ side, data }: { side: "左" | "右"; data: typeof REPORT_
           <div style={{ fontSize: "11px", color: "#8a8275" }}>{side}脚足弓指数 {data.index.toFixed(3)}</div>
           <div style={{ fontSize: "19px", fontWeight: "800", color: "#17191c", marginTop: "2px" }}>{data.type}</div>
         </div>
-        <img src={data.risk === "正常足弓" ? REPORT_ICONS.normalArch : REPORT_ICONS.flatFoot} alt="" style={{ width: "30px", height: "auto" }} />
+        <img
+          src={RICON(data.risk.includes("内翻") ? "arch-varus" : data.risk.includes("外翻") ? "arch-valgus" : "arch-normal")}
+          alt=""
+          style={{ width: "32px", height: "auto" }}
+        />
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span style={{ fontSize: "11px", color: "#8a8275" }}>足弓内外翻</span>
@@ -512,13 +680,32 @@ function ArchSubCard({ side, data }: { side: "左" | "右"; data: typeof REPORT_
   );
 }
 
-function ReportPanel({ onNext }: { onNext: () => void }) {
+type ReportView = "dims" | "arch" | "pressure" | "cop";
+
+function ReportPanel({
+  onNext,
+  active,
+  onSelect,
+  data,
+}: {
+  onNext: () => void;
+  active: ReportView;
+  onSelect: (v: ReportView) => void;
+  data: ReportData;
+}) {
   // 压力 / 面积 双模式互切（对应设计图三与图四右下区块）
   const [mode, setMode] = useState<"pressure" | "area">("pressure");
-  const P = REPORT_DATA;
+  const P = data;
+  // 点击卡片切换左侧固定视角；选中卡片高亮边框
+  const clickable = (v: ReportView): React.CSSProperties => ({
+    ...panelCard,
+    cursor: "pointer",
+    border: active === v ? "2px solid #4A90E2" : panelCard.border,
+    boxShadow: active === v ? "0 4px 14px rgba(74,144,226,0.25)" : panelCard.boxShadow,
+  });
 
   return (
-    <div style={{ width: "400px", minWidth: "340px", display: "flex", flexDirection: "column", gap: "12px", overflowY: "auto", maxHeight: "calc(100vh - 220px)", paddingRight: "2px" }}>
+    <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: "12px", minHeight: 0 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "2px" }}>
         <span style={{ fontSize: "18px", fontWeight: "800", color: "#17191c" }}>用户测量报告</span>
         <button
@@ -530,7 +717,7 @@ function ReportPanel({ onNext }: { onNext: () => void }) {
       </div>
 
       {/* 足底尺寸 */}
-      <div style={panelCard}>
+      <div style={clickable("dims")} onClick={() => onSelect("dims")}>
         <BarTitle zh="足底尺寸" en="Foot Dimensions" />
         <div style={{ display: "flex", gap: "10px" }}>
           {[
@@ -552,7 +739,7 @@ function ReportPanel({ onNext }: { onNext: () => void }) {
       </div>
 
       {/* 足弓分析 */}
-      <div style={panelCard}>
+      <div style={clickable("arch")} onClick={() => onSelect("arch")}>
         <BarTitle zh="足弓分析" en="Foot Arch Analysis" />
         <div style={{ display: "flex", gap: "10px" }}>
           <ArchSubCard side="左" data={P.arch.left} />
@@ -561,7 +748,7 @@ function ReportPanel({ onNext }: { onNext: () => void }) {
       </div>
 
       {/* 压力/面积分析（双模式） */}
-      <div style={panelCard}>
+      <div style={clickable("pressure")} onClick={() => onSelect("pressure")}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <BarTitle zh="压力/面积分析" en="Foot Pressure Analysis" />
           <button
@@ -581,20 +768,26 @@ function ReportPanel({ onNext }: { onNext: () => void }) {
                     {side === "左" ? (mode === "pressure" ? P.pressure.leftTotal : P.area.leftTotal) : (mode === "pressure" ? P.pressure.rightTotal : P.area.rightTotal)}
                   </div>
                 </div>
-                <img src={REPORT_ICONS.flatFoot} alt="" style={{ width: "26px", height: "auto", opacity: 0.9 }} />
+                <img src={RICON(side === "左" ? "foot-left" : "foot-right")} alt="" style={{ width: "34px", height: "auto" }} />
               </div>
               <div style={{ display: "flex", marginTop: "8px" }}>
                 {(mode === "pressure"
-                  ? [
-                      { l: "前足压力", v: `${P.pressure.zonesPct.fore}%` },
-                      { l: "中足压力", v: `${P.pressure.zonesPct.mid}%` },
-                      { l: "后足压力", v: `${P.pressure.zonesPct.hind}%` },
-                    ]
-                  : [
-                      { l: "前足面积", v: `${P.area.zones.fore}cm²` },
-                      { l: "中足面积", v: `${P.area.zones.mid}cm²` },
-                      { l: "后足面积", v: `${P.area.zones.hind}cm²` },
-                    ]
+                  ? (() => {
+                      const zp = side === "左" ? P.pressure.zonesPct : P.pressure.zonesPctR;
+                      return [
+                        { l: "前足压力", v: `${zp.fore}%` },
+                        { l: "中足压力", v: `${zp.mid}%` },
+                        { l: "后足压力", v: `${zp.hind}%` },
+                      ];
+                    })()
+                  : (() => {
+                      const za = side === "左" ? P.area.zones : P.area.zonesR;
+                      return [
+                        { l: "前足面积", v: `${za.fore}cm²` },
+                        { l: "中足面积", v: `${za.mid}cm²` },
+                        { l: "后足面积", v: `${za.hind}cm²` },
+                      ];
+                    })()
                 ).map((z, i) => (
                   <div key={z.l} style={{ flex: 1, textAlign: "center", borderLeft: i ? "1px solid #f3ddc0" : "none" }}>
                     <div style={{ fontSize: "12px", fontWeight: "800", color: "#17191c" }}>{z.v}</div>
@@ -630,15 +823,20 @@ function ReportPanel({ onNext }: { onNext: () => void }) {
       </div>
 
       {/* COP 平衡指标 */}
-      <div style={panelCard}>
+      <div style={clickable("cop")} onClick={() => onSelect("cop")}>
         <BarTitle zh="cop平衡指标（压力中心）" en="COP Balance Index" />
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "8px" }}>
-          {REPORT_DATA.cop.map((c) => (
+          {P.cop.map((c) => (
             <div key={c.label} style={{ ...subCard, padding: "8px 9px" }}>
-              <div style={{ fontSize: "13px", fontWeight: "800", color: "#17191c", whiteSpace: "nowrap" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "4px" }}>
+                <span style={{ fontSize: "9px", color: "#6b6256", whiteSpace: "nowrap" }}>{c.label}</span>
+                <span style={{ width: "18px", height: "18px", borderRadius: "50%", background: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: "0 1px 3px rgba(200,140,60,0.25)" }}>
+                  <img src={RICON(c.icon)} alt="" style={{ width: "12px", height: "12px" }} />
+                </span>
+              </div>
+              <div style={{ fontSize: "13px", fontWeight: "800", color: "#17191c", whiteSpace: "nowrap", marginTop: "3px" }}>
                 {c.value}<small style={{ fontSize: "9px", fontWeight: "600", color: "#8a8275" }}>{c.unit}</small>
               </div>
-              <div style={{ fontSize: "9px", color: "#8a8275", marginTop: "3px", whiteSpace: "nowrap" }}>{c.label}</div>
             </div>
           ))}
         </div>
@@ -649,58 +847,33 @@ function ReportPanel({ onNext }: { onNext: () => void }) {
 
 // ─── 主页面 ───────────────────────────────────────────────────────────────────
 export default function ReportPage({ onNext, onHistory, onBack }: { onNext: () => void; onHistory: () => void; onBack: () => void }) {
-  const { currentUser } = useApp();
+  const { currentUser, analysis } = useApp();
+  // 真实测量分析结果 → 报告数据（Python 缺席时逐字段回退演示值）
+  const reportData = useMemo(() => buildReportData(analysis), [analysis]);
   const [showSummary, setShowSummary] = useState(true);
   // 三视图轮换：尺寸标注 → 足弓分析(斜视) → 2D 分区
-  const [viewMode, setViewMode] = useState<"dimensions" | "arch3d" | "zones">("dimensions");
-  const VIEW_LABEL = { dimensions: "足底尺寸", arch3d: "足弓分析", zones: "区域分布" } as const;
-  const nextView = (v: typeof viewMode) => (v === "dimensions" ? "arch3d" : v === "arch3d" ? "zones" : "dimensions");
+  // 四个固定视角，由右侧报告卡片点击驱动（足底尺寸/足弓分析/压力面积/COP）
+  const [viewMode, setViewMode] = useState<ReportView>("dims");
 
   return (
-    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", position: "relative", overflow: "hidden" }}>
-      <PageBackground />
-      <TopNavBar currentStep={3} onHistoryClick={onHistory} />
+    <div className="report-shell">
+      <div className="report-grid-bg" />
+      <TopNavBar currentStep={3} onHistoryClick={onHistory} transparent />
 
-      <main style={{ flex: 1, display: "flex", flexDirection: "column", padding: "24px 32px 80px", position: "relative", zIndex: 1, marginTop: "72px" }}>
-
-        {/* 报告分析总结标题行 */}
+      <main className="report-main">
+        {/* 左区：标题 + 视图 + 底部信息 */}
+        <section className="report-stage">
+        {/* 报告分析总结标题行（视角切换由右侧 dashboard 卡片驱动） */}
         <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "14px" }}>
           <span style={{ fontSize: "18px", fontWeight: "700", color: "#5A3A1A" }}>报告分析总结</span>
           <button onClick={() => setShowSummary(v => !v)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "16px", color: "#F5A623" }}>
             {showSummary ? "∧" : "∨"}
           </button>
-
-          {/* 切换视图按钮（右上角） */}
-          <div style={{ marginLeft: "auto" }}>
-            <button
-              onClick={() => setViewMode(nextView)}
-              style={{
-                background: "#F5A623",
-                border: "none",
-                borderRadius: "8px",
-                padding: "8px 16px",
-                cursor: "pointer",
-                fontSize: "13px",
-                fontWeight: "600",
-                color: "#fff",
-                display: "flex",
-                alignItems: "center",
-                gap: "6px",
-                transition: "all 0.2s",
-              }}
-            >
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <rect x="1" y="1" width="12" height="12" rx="2" stroke="#fff" strokeWidth="1.5"/>
-                <path d="M4 7h6M7 4v6" stroke="#fff" strokeWidth="1.5" strokeLinecap="round"/>
-              </svg>
-              切换视图 · {VIEW_LABEL[nextView(viewMode)]}
-            </button>
-          </div>
         </div>
 
         {/* 总结卡片 */}
         {showSummary && (
-          <div style={{ background: "rgba(255,255,255,0.75)", borderRadius: "12px", padding: "14px 20px", marginBottom: "16px", display: "flex", gap: "32px", boxShadow: "0 1px 8px rgba(200,120,0,0.08)", flexWrap: "wrap" }}>
+          <div style={{ width: "fit-content", background: "rgba(255,255,255,0.75)", borderRadius: "12px", padding: "14px 20px", marginBottom: "16px", display: "flex", gap: "32px", boxShadow: "0 1px 8px rgba(200,120,0,0.08)", flexWrap: "wrap" }}>
             <div style={{ display: "flex", gap: "24px" }}>
               <div>
                 <div style={{ fontSize: "11px", color: "#8A6A40", marginBottom: "4px" }}>左脚足弓分析</div>
@@ -726,30 +899,86 @@ export default function ReportPage({ onNext, onHistory, onBack }: { onNext: () =
           </div>
         )}
 
-        {/* 主体左右布局 */}
-        <div style={{ flex: 1, display: "flex", gap: "24px", minHeight: 0 }}>
-          {/* 左侧：视图区域 */}
-          <div style={{ flex: 1, position: "relative", minHeight: "400px" }}>
-            {viewMode === "dimensions" ? <View3DAnnotated /> : viewMode === "arch3d" ? <ViewArch3D /> : <View2DZones />}
-          </div>
-
-          {/* 右侧：报告面板 */}
-          <ReportPanel onNext={onNext} />
+        {/* 视图区域 */}
+        <div style={{ flex: 1, position: "relative", minHeight: 0 }}>
+          {viewMode === "dims" ? <View3DAnnotated dims={reportData.dims} /> : viewMode === "arch" ? <ViewArch3D /> : viewMode === "pressure" ? <View2DZones /> : <ViewCop />}
         </div>
+
+        {/* 左区底部信息栏（融入背景，无填充） */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "28px", padding: "10px 0 2px" }}>
+          <span style={{ fontSize: "14px", fontWeight: 700, color: "#3d3d3d" }}>
+            当前用户：{currentUser?.name ?? "—"}（ID:{currentUser?.id ?? "—"}）
+          </span>
+          <button onClick={onBack} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "14px", color: "#3d3d3d", fontWeight: "700", textDecoration: "underline", textUnderlineOffset: "4px" }}>
+            重新测量
+          </button>
+          <button onClick={onNext} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "14px", color: "#ff8400", fontWeight: "700", textDecoration: "underline", textUnderlineOffset: "4px" }}>
+            结束体验
+          </button>
+          <span style={{ fontSize: "14px", color: "#c0b6a6", fontWeight: 700 }}>下载文件</span>
+        </div>
+        </section>
+
+        {/* 右区：橙色渐变 dashboard */}
+        <aside className="report-dash">
+          <ReportPanel onNext={onNext} active={viewMode} onSelect={setViewMode} data={reportData} />
+        </aside>
       </main>
 
-      {/* 底部操作栏 */}
-      <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, padding: "14px 40px", display: "flex", alignItems: "center", gap: "24px", background: "rgba(253,245,216,0.85)", backdropFilter: "blur(8px)", borderTop: "1px solid rgba(245,166,35,0.2)", zIndex: 20 }}>
-        <span style={{ fontSize: "14px", color: "#8A6A40", marginRight: "auto" }}>
-          当前用户：{currentUser?.name ?? "—"} （ID:{currentUser?.id ?? "—"}）
-        </span>
-        <button onClick={onBack} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "14px", color: "#5A3A1A", fontWeight: "600", textDecoration: "underline", textUnderlineOffset: "3px" }}>
-          重新测量
-        </button>
-        <button onClick={onNext} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "14px", color: "#F5A623", fontWeight: "700", textDecoration: "underline", textUnderlineOffset: "3px" }}>
-          结束体验
-        </button>
-      </div>
+      <style>{`
+        .report-shell {
+          position: relative;
+          width: 100vw;
+          height: 100vh;
+          overflow: hidden;
+          background:
+            linear-gradient(180deg, rgba(255, 250, 240, 0.98) 0%, rgba(255, 255, 255, 0.98) 66%, #ffffff 100%),
+            #fffdf8;
+          font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+          color: #1f1f1f;
+        }
+        .report-grid-bg {
+          position: fixed;
+          left: -18vw;
+          right: -18vw;
+          top: 150px;
+          bottom: -42vh;
+          pointer-events: none;
+          background:
+            linear-gradient(rgba(184, 177, 166, 0.32) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(184, 177, 166, 0.3) 1px, transparent 1px);
+          background-size: 26px 26px;
+          transform-origin: center top;
+          transform: perspective(1180px) rotateX(54deg) translateY(12px) scaleX(1.04) scaleY(1.04);
+          opacity: 0.5;
+          /* 自下而上渐隐：底部清晰、越往上越淡 */
+          -webkit-mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.35) 62%, transparent 96%);
+          mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.35) 62%, transparent 96%);
+          z-index: 0;
+        }
+        .report-main {
+          position: relative;
+          z-index: 1;
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) clamp(430px, 32vw, 540px);
+          height: 100vh;
+        }
+        .report-stage {
+          display: flex;
+          flex-direction: column;
+          min-width: 0;
+          padding: clamp(92px, 10vh, 112px) clamp(16px, 1.6vw, 28px) 10px clamp(28px, 2.8vw, 48px);
+        }
+        .report-dash {
+          background:
+            url("/assets/icons/report-page/dash-background.svg") right center / cover no-repeat,
+            linear-gradient(200deg, #fbd09a 0%, #f8b96e 40%, #f6a44c 100%);
+          padding: clamp(88px, 9.6vh, 108px) clamp(16px, 1.4vw, 26px) 14px;
+          overflow: hidden;
+          display: flex;
+          min-height: 0;
+        }
+      `}</style>
     </div>
   );
 }

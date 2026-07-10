@@ -224,6 +224,14 @@ export default defineConfig({
     port: 3000,
     strictPort: false, // Will find next available port if 3000 is busy
     host: true,
+    proxy: {
+      // Python 足压分析后端（api_server.py，端口 8766）
+      "/pyapi": {
+        target: "http://127.0.0.1:8766",
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/pyapi/, ""),
+      },
+    },
     allowedHosts: [
       ".manuspre.computer",
       ".manus.computer",

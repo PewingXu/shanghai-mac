@@ -114,3 +114,6 @@ client/public/__manus__/version.json
 
 # Claude Code local settings
 .claude/
+
+# 测试数据（本地采集样本，不入库）
+*.xlsx

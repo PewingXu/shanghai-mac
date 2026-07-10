@@ -6,6 +6,7 @@ import SolutionPage from "./SolutionPage";
 import HistoryPage from "./HistoryPage";
 import UserRecordsPage from "./UserRecordsPage";
 import ExceptionModal, { type ExceptionType } from "@/components/ExceptionModal";
+import type { MeasureAnalysis } from "@/contexts/AppContext";
 
 const HOME_ASSETS = {
   brandLogo: "/assets/icons/home-page/brand-logo.svg",
@@ -254,7 +255,18 @@ function CreateUserPage({
 }
 
 export default function Home() {
-  const { setCurrentUser, setCurrentStep, addHistoryUser } = useApp();
+  const { setCurrentUser, setCurrentStep, addHistoryUser, setAnalysis } = useApp();
+
+  // 后台分析完成兜底入库：即使测量页已被切走，报告数据也不丢
+  useEffect(() => {
+    const h = (e: Event) => {
+      const detail = (e as CustomEvent<MeasureAnalysis>).detail;
+      if (detail) setAnalysis(detail);
+    };
+    window.addEventListener("aciki-analysis-done", h);
+    return () => window.removeEventListener("aciki-analysis-done", h);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [view, setView] = useState<AppView>("landing");
   const [prevView, setPrevView] = useState<AppView>("landing");
 

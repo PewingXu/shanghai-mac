@@ -196,16 +196,26 @@ function buildHeatmapTexture(
   return tex;
 }
 
+/** 单只脚在视口中的投影矩形（均为容器百分比 0-100） */
+export interface FootRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
 function FeetMesh({
   scale,
   lockedView,
   pressureData,
   heatVmax,
+  onFootRects,
 }: {
   scale: number;
   lockedView: boolean;
   pressureData?: number[][] | null;
   heatVmax?: number;
+  onFootRects?: (rects: { left: FootRect; right: FootRect }) => void;
 }) {
   const { scene } = useGLTF(MODEL_URL);
   const model = useMemo(() => scene.clone(true), [scene]);
@@ -232,6 +242,44 @@ function FeetMesh({
     });
     return { left, right };
   }, [model, bbox]);
+
+  // 把每只脚的包围盒投影到屏幕（容器百分比），供报告页把底衬/尺寸线精确贴合脚模
+  const { camera: projCamera, size: viewSize } = useThree();
+  useEffect(() => {
+    if (!lockedView || !onFootRects) return;
+    // 复现渲染用的 group 变换（scale + 居中补偿 + 锁定视角旋转）与模型自身变换
+    const G = new THREE.Matrix4().compose(
+      new THREE.Vector3(-scale * centerX, -0.05, 0),
+      new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(LOCKED_VIEW_ROTATION[0], LOCKED_VIEW_ROTATION[1], LOCKED_VIEW_ROTATION[2]),
+      ),
+      new THREE.Vector3(scale, scale, scale),
+    );
+    model.updateMatrix();
+    const full = new THREE.Matrix4().multiplyMatrices(G, model.matrix);
+    projCamera.updateMatrixWorld();
+
+    const project = (box: THREE.Box3): FootRect => {
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      const p = new THREE.Vector3();
+      for (const x of [box.min.x, box.max.x])
+        for (const y of [box.min.y, box.max.y])
+          for (const z of [box.min.z, box.max.z]) {
+            p.set(x, y, z).applyMatrix4(full).project(projCamera);
+            if (p.x < minX) minX = p.x;
+            if (p.x > maxX) maxX = p.x;
+            if (p.y < minY) minY = p.y;
+            if (p.y > maxY) maxY = p.y;
+          }
+      return {
+        left: ((minX + 1) / 2) * 100,
+        top: ((1 - maxY) / 2) * 100,
+        width: ((maxX - minX) / 2) * 100,
+        height: ((maxY - minY) / 2) * 100,
+      };
+    };
+    onFootRects({ left: project(footBoxes.left), right: project(footBoxes.right) });
+  }, [lockedView, onFootRects, scale, centerX, model, footBoxes, projCamera, viewSize.width, viewSize.height]);
 
   // 左右脚各自的热力图纹理（各取一半列范围），并释放旧纹理
   const leftTex = useMemo(() => {
@@ -394,12 +442,16 @@ function SceneContents({
   lockedView,
   pressureData,
   heatVmax,
+  fixedCamera,
+  onFootRects,
 }: {
   modelScale: number;
   autoRotate: boolean;
   lockedView: boolean;
   pressureData?: number[][] | null;
   heatVmax?: number;
+  fixedCamera?: boolean;
+  onFootRects?: (rects: { left: FootRect; right: FootRect }) => void;
 }) {
   const { camera } = useThree();
 
@@ -434,8 +486,9 @@ function SceneContents({
     ce(
       Suspense,
       { fallback: null },
-      ce(FeetMesh, { scale: modelScale, lockedView, pressureData, heatVmax }),
+      ce(FeetMesh, { scale: modelScale, lockedView, pressureData, heatVmax, onFootRects }),
       !lockedView &&
+        !fixedCamera &&
         ce(OrbitControls, {
           enablePan: false,
           enableZoom: true,
@@ -459,6 +512,10 @@ interface FeetModel3DProps {
   pressureData?: number[][] | null;
   /** 热力图颜色映射上限（colorbar 上限，越小低压越鲜艳） */
   heatVmax?: number;
+  /** 固定视角：非 lockedView 下也禁用拖动/旋转（报告页固定视图用） */
+  fixedCamera?: boolean;
+  /** lockedView 下回调每只脚的屏幕投影矩形（容器百分比），供外层贴合标注 */
+  onFootRects?: (rects: { left: FootRect; right: FootRect }) => void;
 }
 
 export default function FeetModel3D({
@@ -470,6 +527,8 @@ export default function FeetModel3D({
   style,
   pressureData = null,
   heatVmax,
+  fixedCamera = false,
+  onFootRects,
 }: FeetModel3DProps) {
   return (
     <div style={{ position: "relative", width, height, ...style }}>
@@ -484,6 +543,8 @@ export default function FeetModel3D({
           lockedView={lockedView}
           pressureData={pressureData}
           heatVmax={heatVmax}
+          fixedCamera={fixedCamera}
+          onFootRects={onFootRects}
         />
       </Canvas>
     </div>

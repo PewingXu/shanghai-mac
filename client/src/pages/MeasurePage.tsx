@@ -5,12 +5,172 @@ import Pressure2DHeatmap from "@/components/Pressure2DHeatmap";
 import TopNavBar from "@/components/TopNavBar";
 import { SerialService } from "@/lib/SerialService";
 import { broadcastException, classifySerialError } from "@/components/ExceptionModal";
+import { parseCSVData, parseJSONCollectionData } from "@/lib/collectionData";
+import { analyzePython, type PythonAnalysisResult } from "@/lib/pythonApi";
+import { computeMliLine } from "@/lib/mli";
+import type { MeasureAnalysis } from "@/contexts/AppContext";
+import * as XLSX from "xlsx";
 
 // 单个传感点面积：传感器 7mm 间距 → 0.7cm × 0.7cm ≈ 0.49 cm²
 const CELL_AREA_CM2 = 0.49;
 // 指标 UI 刷新节流（约 12fps，避免每帧 setState）
 const METRIC_UI_INTERVAL_MS = 80;
 const EMPTY_METRICS = { realtime: 0, average: 0, peak: 0, total: 0 };
+
+/**
+ * 从 xlsx 工作簿提取压力帧（每帧 4096 值）。
+ * 多 sheet 时优先名字含"静态站立"的；单 sheet 直接用。
+ * 行内取第一个解析后长度为 4096 的 *_data 列（如 foot1_data）。
+ */
+function extractFramesFromWorkbook(wb: XLSX.WorkBook): number[][] {
+  const names = wb.SheetNames;
+  const target =
+    names.find((n) => n.includes("静态站立")) ??
+    (names.length === 1 ? names[0] : names.find((n) => n.toLowerCase().includes("standing"))) ??
+    names[0];
+  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[target], { defval: "" });
+  const frames: number[][] = [];
+  for (const row of rows) {
+    for (const key of Object.keys(row)) {
+      if (!key.endsWith("_data")) continue;
+      const cell = row[key];
+      if (typeof cell !== "string" || !cell.startsWith("[")) continue;
+      try {
+        const arr = JSON.parse(cell) as number[];
+        if (Array.isArray(arr) && arr.length === 4096 && arr.some((v) => v > 0)) {
+          frames.push(arr);
+          break; // 每行取第一个有效 data 列
+        }
+      } catch {
+        /* 跳过坏行 */
+      }
+    }
+  }
+  return frames;
+}
+
+/** 4096 平铺帧 → 64×64 矩阵（与串口帧回调同构） */
+function reshapeFrame(flat: number[]): number[][] {
+  const m: number[][] = [];
+  for (let r = 0; r < 64; r++) m.push(flat.slice(r * 64, (r + 1) * 64));
+  return m;
+}
+
+/**
+ * 对整段采集帧做前端补充统计：平均帧 → 左右脚 MLI、左右 ADC 总和与接触面积。
+ * display 变换与 2D 网格一致（display[r][c]=raw[c][r]，左脚列 0-31 / 右脚 32-63）。
+ */
+function summarizeFrames(frames: number[][]) {
+  if (frames.length === 0) return null;
+  const n = frames.length;
+  const avg = new Float64Array(4096);
+  for (const f of frames) for (let i = 0; i < 4096; i++) avg[i] += f[i];
+  for (let i = 0; i < 4096; i++) avg[i] /= n;
+  const display: number[][] = Array.from({ length: 64 }, (_, r) =>
+    Array.from({ length: 64 }, (_, c) => avg[c * 64 + r]),
+  );
+  let lp = 0, rp = 0, la = 0, ra = 0;
+  for (let r = 0; r < 64; r++) {
+    for (let c = 0; c < 64; c++) {
+      const v = display[r][c];
+      if (v > 1) {
+        if (c < 32) { lp += v; la += 1; } else { rp += v; ra += 1; }
+      }
+    }
+  }
+  const mliL = computeMliLine(display, 0, 32, "left");
+  const mliR = computeMliLine(display, 32, 64, "right");
+  return {
+    mli: {
+      left: mliL && mliL.lateralSum > 0 ? mliL.medialSum / mliL.lateralSum : null,
+      right: mliR && mliR.lateralSum > 0 ? mliR.medialSum / mliR.lateralSum : null,
+    },
+    frontend: {
+      leftPressure: Math.round(lp),
+      rightPressure: Math.round(rp),
+      leftArea: Math.round(la * CELL_AREA_CM2),
+      rightArea: Math.round(ra * CELL_AREA_CM2),
+    },
+  };
+}
+
+// ===== 后台回放/分析任务（模块级单例，切走页面也持续运行） =====
+type BgPhase = "idle" | "replaying" | "analyzing";
+interface BgListener {
+  onFrame?: (matrix: number[][], progress: number) => void;
+  onPhase?: (phase: BgPhase) => void;
+}
+const bgJob: { phase: BgPhase; timer: number | null; listeners: Set<BgListener> } = {
+  phase: "idle",
+  timer: null,
+  listeners: new Set(),
+};
+function bgEmitPhase() {
+  bgJob.listeners.forEach((l) => l.onPhase?.(bgJob.phase));
+}
+function subscribeBgJob(l: BgListener) {
+  bgJob.listeners.add(l);
+  return () => {
+    bgJob.listeners.delete(l);
+  };
+}
+function stopBgReplay() {
+  if (bgJob.timer !== null) {
+    window.clearInterval(bgJob.timer);
+    bgJob.timer = null;
+  }
+  if (bgJob.phase === "replaying") {
+    bgJob.phase = "idle";
+    bgEmitPhase();
+  }
+}
+/** 完成后通过 "aciki-analysis-done" 事件广播结果（Home 兜底入库，测量页在场则跳报告） */
+async function runBgAnalysis(frames: number[][]) {
+  if (bgJob.phase === "analyzing") return; // 防重（回放完成路径已启动时，done effect 不再重复）
+  bgJob.phase = "analyzing";
+  bgEmitPhase();
+  const minDelay = new Promise((r) => window.setTimeout(r, 1500));
+  let python: PythonAnalysisResult | null = null;
+  try {
+    if (frames.length >= 5) python = await analyzePython(frames);
+  } catch (err) {
+    console.warn("[report] Python 分析不可用，报告页将回退演示数据：", err);
+  }
+  const extra = summarizeFrames(frames);
+  await minDelay;
+  bgJob.phase = "idle";
+  bgEmitPhase();
+  const detail: MeasureAnalysis = {
+    python,
+    mli: extra?.mli ?? { left: null, right: null },
+    frontend: extra?.frontend ?? null,
+  };
+  window.dispatchEvent(new CustomEvent("aciki-analysis-done", { detail }));
+}
+function startBgReplay(frames: number[][]) {
+  stopBgReplay();
+  bgJob.phase = "replaying";
+  bgEmitPhase();
+  const n = frames.length;
+  const FRAME_MS = 70;
+  const startAt = performance.now();
+  let last = -1;
+  // 时间戳追帧：后台标签页 setInterval 被节流到 ~1s/次时，每次醒来按真实耗时
+  // 直接跳到应播帧，总时长不变，播完照常触发分析（不会"停住"）
+  bgJob.timer = window.setInterval(() => {
+    const idx = Math.min(n - 1, Math.floor((performance.now() - startAt) / FRAME_MS));
+    if (idx > last) {
+      last = idx;
+      const m = reshapeFrame(frames[idx]);
+      const progress = (idx + 1) / n;
+      bgJob.listeners.forEach((l) => l.onFrame?.(m, progress));
+    }
+    if (idx >= n - 1) {
+      stopBgReplay();
+      void runBgAnalysis(frames);
+    }
+  }, FRAME_MS);
+}
 
 /** 广播设备连接状态（localStorage + 事件），供其它页面/弹窗读取，保持全局一致 */
 function broadcastDeviceStatus(connected: boolean) {
@@ -357,7 +517,7 @@ export default function MeasurePage({
   onNext: () => void;
   onHistory: () => void;
 }) {
-  const { currentUser } = useApp();
+  const { currentUser, setAnalysis } = useApp();
   const [collectState, setCollectState] = useState<CollectState>("idle");
   const [elapsedMs, setElapsedMs] = useState(0);
   const [modelScale, setModelScale] = useState(MODEL_SCALE_DEFAULT);
@@ -392,6 +552,8 @@ export default function MeasurePage({
   const lastMetricUiRef = useRef(0);
   const lastFrameUiRef = useRef(0);
   const collectingRef = useRef(false);
+  // 采集/回放期间记录全部帧（4096 平铺），完成后送分析
+  const framesRef = useRef<number[][]>([]);
   const [latestFrame, setLatestFrame] = useState<number[][] | null>(null);
 
   // 噪声阈值变化时同步到串口服务（也供帧回调读取）
@@ -433,6 +595,11 @@ export default function MeasurePage({
     const area = active * CELL_AREA_CM2; // cm²
     const pressure = sum; // ADC 总和（压力代理值，后续可标定为 pa）
 
+    // 采集/回放中记录帧（供完成后送 Python 分析），上限 900 帧防内存膨胀
+    if (collectingRef.current && framesRef.current.length < 900) {
+      framesRef.current.push(frame.flat());
+    }
+
     // 连上设备即实时累计平均/峰值/总值（开始测量/重新测量会清零重新统计）
     const acc = metricAccRef.current;
     acc.frames += 1;
@@ -465,6 +632,7 @@ export default function MeasurePage({
   const resetMetrics = () => {
     metricAccRef.current = { frames: 0, areaSum: 0, areaPeak: 0, pressSum: 0, pressPeak: 0 };
     lastMetricUiRef.current = 0;
+    framesRef.current = [];
     setAreaData(EMPTY_METRICS);
     setPressureData(EMPTY_METRICS);
     setAreaHistory([]);
@@ -514,13 +682,11 @@ export default function MeasurePage({
     };
   }, []);
 
-  // 采集完成 → 弹"正在生成报告"loading，稍后自动跳转报告页
+  // 采集完成 → 启动后台分析（不随组件卸载而取消），结果经 "aciki-analysis-done" 事件回流
   useEffect(() => {
     if (collectState !== "done") return;
     setGenerating(true);
-    const timer = window.setTimeout(() => onNext(), 2200);
-    return () => window.clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    void runBgAnalysis(framesRef.current.slice()); // 回放路径已在分析时内部防重
   }, [collectState]);
 
   useEffect(() => {
@@ -576,9 +742,11 @@ export default function MeasurePage({
     }
   };
 
+  // 倒计时用 setInterval + 时间戳（而非 rAF）：后台标签页 rAF 会完全冻结，
+  // interval 虽被节流到 ~1s/次但仍推进，elapsed 按真实时间差计算，到点照常完成
   const stopRaf = () => {
     if (rafRef.current !== null) {
-      cancelAnimationFrame(rafRef.current);
+      window.clearInterval(rafRef.current);
       rafRef.current = null;
     }
   };
@@ -602,10 +770,12 @@ export default function MeasurePage({
       stopRaf();
       setCollectState("done");
       setElapsedMs(TOTAL_DURATION_MS);
-      return;
     }
+  };
 
-    rafRef.current = requestAnimationFrame(runCollectingFrame);
+  const startCollectTimer = () => {
+    stopRaf();
+    rafRef.current = window.setInterval(() => runCollectingFrame(performance.now()), 120);
   };
 
   useEffect(() => {
@@ -635,17 +805,100 @@ export default function MeasurePage({
     resetMetrics();
     startedAtRef.current = null;
     setCollectState("collecting");
-    rafRef.current = requestAnimationFrame(runCollectingFrame);
+    startCollectTimer();
   };
+
+  // ===== 导入数据回放（xlsx/csv/json，后台 job 驱动，切走页面也继续跑） =====
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [replaying, setReplaying] = useState(false);
 
   const resetCollecting = () => {
     stopRaf();
+    stopBgReplay();
+    setReplaying(false);
     startedAtRef.current = null;
     elapsedBeforeStartRef.current = 0;
     elapsedRef.current = 0;
     setElapsedMs(0);
     setCollectState("idle");
     resetMetrics();
+  };
+
+  /** 逐帧回放：后台 job 播帧（组件订阅刷 UI），完毕后台自动分析并广播结果 */
+  const startReplay = (frames: number[][]) => {
+    if (frames.length === 0) return;
+    stopRaf();
+    resetMetrics();
+    elapsedRef.current = 0;
+    setElapsedMs(0);
+    setCollectState("collecting");
+    setReplaying(true);
+    startBgReplay(frames);
+  };
+
+  // 订阅后台 job：帧 → 复用串口管线刷 UI；相位变化 → 同步采集状态；挂载时恢复进行中的任务
+  const handleFrameRef = useRef<(m: number[][]) => void>(() => {});
+  handleFrameRef.current = handleFrame;
+  useEffect(() => {
+    // 挂载恢复：切回来时接上还在跑的回放/分析
+    if (bgJob.phase === "replaying") {
+      setCollectState("collecting");
+      setReplaying(true);
+    } else if (bgJob.phase === "analyzing") {
+      setCollectState("done");
+      setGenerating(true);
+    }
+    return subscribeBgJob({
+      onFrame: (m, progress) => {
+        handleFrameRef.current(m);
+        const elapsed = Math.round(progress * TOTAL_DURATION_MS);
+        elapsedRef.current = elapsed;
+        setElapsedMs(elapsed);
+      },
+      onPhase: (phase) => {
+        setReplaying(phase === "replaying");
+        if (phase === "analyzing") setCollectState("done"); // 回放播完 → 进入生成报告
+      },
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 分析完成（可能发生在本页或后台）：入库并跳报告页
+  const onNextRef = useRef(onNext);
+  onNextRef.current = onNext;
+  useEffect(() => {
+    const h = (e: Event) => {
+      const detail = (e as CustomEvent<MeasureAnalysis>).detail;
+      if (!detail) return;
+      setAnalysis(detail);
+      setGenerating(false);
+      onNextRef.current();
+    };
+    window.addEventListener("aciki-analysis-done", h);
+    return () => window.removeEventListener("aciki-analysis-done", h);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleImportFile = async (file: File) => {
+    try {
+      let frames: number[][] = [];
+      const name = file.name.toLowerCase();
+      if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
+        const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
+        frames = extractFramesFromWorkbook(wb);
+      } else if (name.endsWith(".csv")) {
+        frames = parseCSVData(await file.text());
+      } else {
+        frames = parseJSONCollectionData(await file.text());
+      }
+      if (frames.length === 0) {
+        window.alert("未在文件中找到有效的压力帧数据（需 4096 值/帧，xlsx 需含『静态站立』sheet 的 *_data 列）");
+        return;
+      }
+      startReplay(frames);
+    } catch (err) {
+      window.alert(`导入失败：${err instanceof Error ? err.message : String(err)}`);
+    }
   };
 
   const zoomModel = (direction: 1 | -1) => {
@@ -776,6 +1029,24 @@ export default function MeasurePage({
           >
             {connecting ? "连接中…" : deviceConnected ? "断开设备" : "连接设备"}
           </button>
+          <button
+            className="measure-connect-btn"
+            type="button"
+            onClick={() => (replaying ? resetCollecting() : fileInputRef.current?.click())}
+          >
+            {replaying ? "停止回放" : "导入数据"}
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".xlsx,.xls,.csv,.json"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void handleImportFile(f);
+              e.target.value = ""; // 允许重复选择同一文件
+            }}
+          />
         </div>
         <div className="measure-footer-right">
           <span className="measure-current-user">
@@ -842,12 +1113,15 @@ const measureStyles = `
     bottom: -42vh;
     pointer-events: none;
     background:
-      linear-gradient(rgba(184, 177, 166, 0.3) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(184, 177, 166, 0.28) 1px, transparent 1px);
-    background-size: 40px 40px;
+      linear-gradient(rgba(184, 177, 166, 0.32) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(184, 177, 166, 0.3) 1px, transparent 1px);
+    background-size: 26px 26px;
     transform-origin: center top;
     transform: perspective(1180px) rotateX(54deg) translateY(12px) scaleX(1.04) scaleY(1.04);
-    opacity: 0.48;
+    opacity: 0.5;
+    /* 自下而上渐隐：底部清晰、越往上越淡 */
+    -webkit-mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.35) 62%, transparent 96%);
+    mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.35) 62%, transparent 96%);
     z-index: 0;
   }
 
