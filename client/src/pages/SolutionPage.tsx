@@ -5,6 +5,7 @@ import TopNavBar from "@/components/TopNavBar";
 interface SolutionPageProps {
   onRestart: () => void;
   onHistory: () => void;
+  onStepBack?: (step: number) => void;
 }
 
 const SOLUTIONS = [
@@ -43,7 +44,7 @@ const SOLUTIONS = [
   },
 ];
 
-export default function SolutionPage({ onRestart, onHistory }: SolutionPageProps) {
+export default function SolutionPage({ onRestart, onHistory, onStepBack }: SolutionPageProps) {
   const { currentUser } = useApp();
 
   return (
@@ -58,7 +59,7 @@ export default function SolutionPage({ onRestart, onHistory }: SolutionPageProps
       }}
     >
       <PageBackground />
-      <TopNavBar currentStep={4} onHistoryClick={onHistory} showHistory={false} />
+      <TopNavBar currentStep={4} onHistoryClick={onHistory} showHistory={false} onStepClick={onStepBack} />
 
       <main
         style={{

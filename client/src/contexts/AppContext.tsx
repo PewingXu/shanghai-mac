@@ -1,5 +1,13 @@
-import React, { createContext, useContext, useState } from "react";
+import React, { createContext, useContext, useState, useEffect, useRef } from "react";
 import type { PythonAnalysisResult } from "@/lib/pythonApi";
+import {
+  apiListUsers,
+  apiCreateUser,
+  apiDeleteUsers,
+  apiListRecords,
+  apiCreateRecord,
+  apiDeleteRecord,
+} from "@/lib/backendApi";
 
 /** 一次测量的分析结果：Python 指标 + 前端补充（MLI、左右分压/分面积） */
 export interface MeasureAnalysis {
@@ -7,6 +15,16 @@ export interface MeasureAnalysis {
   mli: { left: number | null; right: number | null };
   /** 平均帧统计（前端算）：左右 ADC 总和与接触面积 cm² */
   frontend: { leftPressure: number; rightPressure: number; leftArea: number; rightArea: number } | null;
+  /** 本次采集的原始帧（仅内存传递，用于原始 CSV 落盘存档；不进分析 JSON） */
+  rawFrames?: number[][];
+}
+
+/** 入库前瘦身：剥掉 base64 图（报告页不用，自己从 peak_frame_data 现算）与原始帧（另存 CSV） */
+function slimAnalysisForStorage(a: MeasureAnalysis): Omit<MeasureAnalysis, "rawFrames"> {
+  const python = a.python
+    ? ({ success: a.python.success, data: a.python.data } as PythonAnalysisResult) // 丢弃 images
+    : null;
+  return { python, mli: a.mli, frontend: a.frontend };
 }
 
 export interface User {
@@ -36,9 +54,12 @@ interface AppContextType {
   currentView: AppView;
   setCurrentView: (view: AppView) => void;
   historyUsers: User[];
-  addHistoryUser: (user: User) => void;
+  /** 新建用户（走后端持久化，服务端保证 id 唯一；后端不可用时本地兜底），返回创建的用户 */
+  createUser: (data: Omit<User, "id"> & { id?: number }) => Promise<User>;
   removeHistoryUsers: (ids: number[]) => void;
   collectionRecords: CollectionRecord[];
+  /** 从后端拉取某用户的全部采集记录（进入采集信息页时调用） */
+  loadRecordsForUser: (userId: number) => Promise<void>;
   removeCollectionRecord: (id: number) => void;
   selectedRecord: CollectionRecord | null;
   setSelectedRecord: (r: CollectionRecord | null) => void;
@@ -54,9 +75,10 @@ const AppContext = createContext<AppContextType>({
   currentView: "home",
   setCurrentView: () => {},
   historyUsers: [],
-  addHistoryUser: () => {},
+  createUser: async () => ({ id: 0, name: "" }),
   removeHistoryUsers: () => {},
   collectionRecords: [],
+  loadRecordsForUser: async () => {},
   removeCollectionRecord: () => {},
   selectedRecord: null,
   setSelectedRecord: () => {},
@@ -64,33 +86,12 @@ const AppContext = createContext<AppContextType>({
   setAnalysis: () => {},
 });
 
-const DEMO_USERS: User[] = [
-  { id: 1001, name: "果果", gender: "女", height: 158, weight: 50, birthDate: "1998-02-17" },
-  { id: 1002, name: "果果", gender: "女", height: 158, weight: 50, birthDate: "1998-02-17" },
-  { id: 1003, name: "果果", gender: "女", height: 158, weight: 50, birthDate: "1998-02-17" },
-  { id: 1004, name: "果果", gender: "女", height: 158, weight: 50, birthDate: "1998-02-17" },
-  { id: 1005, name: "果果", gender: "女", height: 158, weight: 50, birthDate: "1998-02-17" },
-  { id: 1006, name: "果果", gender: "女", height: 158, weight: 50, birthDate: "1998-02-17" },
-  { id: 1007, name: "果果", gender: "女", height: 158, weight: 50, birthDate: "1998-02-17" },
-  { id: 1008, name: "果果", gender: "女", height: 158, weight: 50, birthDate: "1998-02-17" },
-  { id: 1009, name: "果果", gender: "女", height: 158, weight: 50, birthDate: "1998-02-17" },
-  { id: 1010, name: "果果", gender: "女", height: 158, weight: 50, birthDate: "1998-02-17" },
-  { id: 1011, name: "果果", gender: "女", height: 158, weight: 50, birthDate: "1998-02-17" },
-  { id: 1012, name: "果果", gender: "女", height: 158, weight: 50, birthDate: "1998-02-17" },
-  { id: 1013, name: "果果", gender: "女", height: 158, weight: 50, birthDate: "1998-02-17" },
-  { id: 1014, name: "果果", gender: "女", height: 158, weight: 50, birthDate: "1998-02-17" },
-  { id: 1015, name: "果果", gender: "女", height: 158, weight: 50, birthDate: "1998-02-17" },
-];
+// 用户种子：已清空（原来 15 条重复"果果"是硬编码演示数据，非数据库；现按需求清空）。
+// 名字可重复，id 为唯一标识（新建用户在 Home.handleCreateUser 里生成不撞号的 5 位 id）。
+const DEMO_USERS: User[] = [];
 
-// 演示采集记录（对应 userId=1001 的果果）
-const DEMO_RECORDS: CollectionRecord[] = [
-  { id: 1, userId: 1001, date: "2026-5-1",  time: "14:30:35" },
-  { id: 2, userId: 1001, date: "2026-4-3",  time: "14:30:35" },
-  { id: 3, userId: 1001, date: "2026-4-1",  time: "14:30:35" },
-  { id: 4, userId: 1001, date: "2026-3-12", time: "14:30:35" },
-  { id: 5, userId: 1001, date: "2026-3-9",  time: "14:30:35" },
-  { id: 6, userId: 1001, date: "2026-2-5",  time: "14:30:35" },
-];
+// 采集记录种子：清空（原演示记录挂在已删除的果果 userId 上）
+const DEMO_RECORDS: CollectionRecord[] = [];
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -101,22 +102,83 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [selectedRecord, setSelectedRecord] = useState<CollectionRecord | null>(null);
   const [analysis, setAnalysis] = useState<MeasureAnalysis | null>(null);
 
-  const addHistoryUser = (user: User) => {
-    setHistoryUsers((prev) => {
-      const exists = prev.find((u) => u.id === user.id);
-      if (exists) return prev;
-      return [user, ...prev];
-    });
+  // 开机从后端拉取用户列表（后端不可用则保持空，不报错）
+  useEffect(() => {
+    let alive = true;
+    apiListUsers()
+      .then((us) => {
+        if (alive) setHistoryUsers(us as User[]);
+      })
+      .catch(() => {
+        /* 后端未就绪：保持本地内存 */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const createUser = async (data: Omit<User, "id"> & { id?: number }): Promise<User> => {
+    try {
+      const u = (await apiCreateUser(data as never)) as User;
+      setHistoryUsers((prev) => [u, ...prev.filter((p) => p.id !== u.id)]);
+      return u;
+    } catch {
+      // 后端不可用：本地生成唯一 id 兜底（刷新会丢，仅保证流程可用）
+      const used = new Set(historyUsers.map((u) => u.id));
+      let id = Math.floor(10000 + Math.random() * 90000);
+      while (used.has(id)) id = Math.floor(10000 + Math.random() * 90000);
+      const u: User = { ...data, id };
+      setHistoryUsers((prev) => [u, ...prev]);
+      return u;
+    }
   };
 
   const removeHistoryUsers = (ids: number[]) => {
     const idSet = new Set(ids);
     setHistoryUsers((prev) => prev.filter((u) => !idSet.has(u.id)));
+    apiDeleteUsers(ids).catch(() => {
+      /* 后端不可用：本地已移除，忽略同步失败 */
+    });
+  };
+
+  const loadRecordsForUser = async (userId: number) => {
+    try {
+      const recs = await apiListRecords(userId);
+      setCollectionRecords(recs);
+    } catch {
+      setCollectionRecords([]); // 后端不可用：显示为空
+    }
   };
 
   const removeCollectionRecord = (id: number) => {
     setCollectionRecords((prev) => prev.filter((r) => r.id !== id));
+    apiDeleteRecord(id).catch(() => {
+      /* 后端不可用：本地已移除 */
+    });
   };
+
+  // 测量/导入分析完成 → 自动把这次采集存成当前用户的一条记录：
+  //   分析结果瘦身后落盘 <id>.json；原始帧落盘 <id>.csv（仿 sit 格式，界面不暴露）
+  const currentUserRef = useRef(currentUser);
+  currentUserRef.current = currentUser;
+  useEffect(() => {
+    const h = (e: Event) => {
+      const detail = (e as CustomEvent<MeasureAnalysis>).detail;
+      const user = currentUserRef.current;
+      // 只保存真实分析（python.success）；无用户/演示回退不入库
+      if (!detail?.python?.success || !user) return;
+      const now = new Date();
+      const date = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
+      const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
+      apiCreateRecord(user.id, date, time, slimAnalysisForStorage(detail), detail.rawFrames)
+        .then((rec) => {
+          setCollectionRecords((prev) => [rec, ...prev.filter((r) => r.id !== rec.id)]);
+        })
+        .catch((err) => console.warn("[record] 采集记录入库失败（后端不可用？）:", err));
+    };
+    window.addEventListener("aciki-analysis-done", h);
+    return () => window.removeEventListener("aciki-analysis-done", h);
+  }, []);
 
   return (
     <AppContext.Provider
@@ -128,9 +190,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         currentView,
         setCurrentView,
         historyUsers,
-        addHistoryUser,
+        createUser,
         removeHistoryUsers,
         collectionRecords,
+        loadRecordsForUser,
         removeCollectionRecord,
         selectedRecord,
         setSelectedRecord,

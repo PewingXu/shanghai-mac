@@ -15,6 +15,8 @@ interface TopNavBarProps {
   showHistory?: boolean;
   /** 透明页眉：去掉填充背景/毛玻璃/底边线，让 Logo 与步骤条直接浮在页面背景上 */
   transparent?: boolean;
+  /** 点击已完成步骤（id < currentStep）回退到对应页面 */
+  onStepClick?: (stepId: number) => void;
 }
 
 function HistoryButton({ onClick }: { onClick?: () => void }) {
@@ -52,6 +54,7 @@ export default function TopNavBar({
   onHistoryClick,
   showHistory = true,
   transparent = false,
+  onStepClick,
 }: TopNavBarProps) {
   return (
     <header
@@ -87,11 +90,16 @@ export default function TopNavBar({
           {STEPS.map((step, index) => (
             <React.Fragment key={step.id}>
               <div
+                onClick={() => {
+                  // 仅已完成的步骤可点击回退
+                  if (step.id < currentStep && onStepClick) onStepClick(step.id);
+                }}
                 style={{
                   display: "flex",
                   flexDirection: "column",
                   alignItems: "center",
                   gap: "4px",
+                  cursor: step.id < currentStep && onStepClick ? "pointer" : "default",
                 }}
               >
                 <div

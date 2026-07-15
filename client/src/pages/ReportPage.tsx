@@ -8,11 +8,19 @@
  */
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useApp, type MeasureAnalysis } from "@/contexts/AppContext";
-import FeetModel3D, { type FootRect } from "@/components/FeetModel3D";
+import FeetModel3D, {
+  equalizeZoneBounds,
+  type FootAnno,
+  type ZoneBounds,
+  type ZoneSections,
+} from "@/components/FeetModel3D";
 import TopNavBar from "@/components/TopNavBar";
 
 // 报告页图标（设计稿原件切图，均已英文命名迁入项目）
 const RICON = (name: string) => `/assets/icons/report-page/${name}.svg`;
+
+// COP 热力图颜色映射上限（同采集页 colorLevel 默认；调小更浓）
+const COP_HEAT_VMAX = 128;
 
 // ─── 通用子组件 ───────────────────────────────────────────────────────────────
 function SectionTitle({ zh, en }: { zh: string; en: string }) {
@@ -67,12 +75,12 @@ function DimensionLabel({ text, style }: { text: string; style: React.CSSPropert
   return (
     <div style={{
       position: "absolute",
-      background: "rgba(30,20,10,0.82)",
+      background: "#000000",
       color: "#fff",
-      fontSize: "12px",
-      fontWeight: "600",
-      padding: "3px 8px",
-      borderRadius: "4px",
+      fontSize: "15px",
+      fontWeight: "700",
+      padding: "4px 13px",
+      borderRadius: "6px",
       whiteSpace: "nowrap",
       pointerEvents: "none",
       zIndex: 10,
@@ -87,12 +95,11 @@ function MeasureDot({ style }: { style: React.CSSProperties }) {
   return (
     <div style={{
       position: "absolute",
-      width: "10px",
-      height: "10px",
+      width: "17px",
+      height: "17px",
       borderRadius: "50%",
-      background: "#F5A623",
-      border: "2px solid #fff",
-      boxShadow: "0 1px 4px rgba(0,0,0,0.3)",
+      background: "#F79831",
+      boxShadow: "0 1px 4px rgba(180,110,30,0.35)",
       pointerEvents: "none",
       transform: "translate(-50%, -50%)",
       zIndex: 10,
@@ -148,59 +155,514 @@ function VMeasureLine({ left, top, bottom, color = "#F5A623" }: { left: string; 
  * 脚模缩放/容器尺寸变化都会重新对齐。脚模缩放取采集页最大档（3.66），与采集时一致。
  */
 const REPORT_FOOT_SCALE = 3.05; // 报告页脚模缩放（略小于采集页最大档，视觉更协调）
+// 分区色块相对脚模投影矩形的放大系数（1.0=恰好填满投影矩形；>1 放大整簇，格间距不变）
+const ZONE_FILL_SCALE = 1.15;
 
-function View3DAnnotated({ dims }: { dims: ReportData["dims"] }) {
+/**
+ * 足部主舞台：足底尺寸（俯视）与足弓分析（站姿）共用同一 Canvas。
+ * 切换 mode 时脚模做旋转过渡（pose 动画），动画完成后标注再淡入展开。
+ */
+function FootStage({ dims, arch, mode }: { dims: ReportData["dims"]; arch: ReportData["arch"]; mode: ReportView }) {
+  const { analysis } = useApp();
   const d = dims;
-  const [rects, setRects] = useState<{ left: FootRect; right: FootRect } | null>(null);
-  const handleRects = useCallback((r: { left: FootRect; right: FootRect }) => {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [rects, setRects] = useState<{ left: FootAnno; right: FootAnno } | null>(null);
+  const handleRects = useCallback((r: { left: FootAnno; right: FootAnno }) => {
     setRects((prev) => (prev && JSON.stringify(prev) === JSON.stringify(r) ? prev : r));
   }, []);
 
-  const renderShade = (rc: FootRect, side: string) => (
-    <div key={side} style={{ position: "absolute", left: `${rc.left}%`, top: `${rc.top}%`, width: `${rc.width}%`, height: `${rc.height}%`, background: "rgba(255,183,102,0.22)", borderRadius: "6px" }} />
+  // 足底尺寸/压力面积/COP 同为俯视视角；仅足弓分析为站姿。
+  // 同视角互切不旋转（仅换叠加层），仅进/出足弓分析才做旋转过渡。
+  const pose: "top" | "standing" = mode === "arch" ? "standing" : "top";
+  const [settled, setSettled] = useState(false);
+  const prevPoseRef = useRef<"top" | "standing">(pose);
+  useEffect(() => {
+    if (prevPoseRef.current !== pose) {
+      setSettled(false); // 仅视角切换（进/出足弓分析）才等待旋转过渡
+      prevPoseRef.current = pose;
+    }
+  }, [pose]);
+  const handleSettled = useCallback(() => setSettled(true), []);
+
+  // 容器像素尺寸（分区覆盖层 canvas / 百分比标注换算用）
+  const [box, setBox] = useState<{ w: number; h: number } | null>(null);
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const measure = () => setBox({ w: el.clientWidth, h: el.clientHeight });
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // ===== 压力/面积：足弓分区（Python section_coords；缺失回退 demo）=====
+  const sections = useMemo(() => {
+    const af = analysis?.python?.success ? analysis.python.data.arch_features : null;
+    const L = af ? normalizeSectionCoords(af.left_foot?.section_coords) : [];
+    const R = af ? normalizeSectionCoords(af.right_foot?.section_coords) : [];
+    return {
+      left: L.length >= 4 && L.some((s) => s?.length) ? L : demoSections(false),
+      right: R.length >= 4 && R.some((s) => s?.length) ? R : demoSections(true),
+    };
+  }, [analysis]);
+
+  const zoneCanvasRef = useRef<HTMLCanvasElement>(null);
+  // 分区绘制几何：左右脚 bounds 等化 → 等比缩放、居中于各自脚模投影矩形（放大铺满脚模）
+  const geo = useMemo(() => {
+    if (!rects || !box) return null;
+    const eq = equalizeZoneBounds(sections.left, sections.right);
+    const calc = (secs: ZoneSections, eqB: ZoneBounds | null, rect: FootAnno["rect"]): FootZoneGeo | null => {
+      if (!eqB) return null;
+      const rows = eqB.rMax - eqB.rMin + 1;
+      const cols = eqB.cMax - eqB.cMin + 1;
+      const rx = (rect.left / 100) * box.w;
+      const ry = (rect.top / 100) * box.h;
+      const rw = (rect.width / 100) * box.w;
+      const rh = (rect.height / 100) * box.h;
+      const scale = Math.min(rw / cols, rh / rows) * ZONE_FILL_SCALE; // 放大铺满脚模
+      const x0 = rx + (rw - cols * scale) / 2;
+      const y0 = ry + (rh - rows * scale) / 2;
+      let dMin = Infinity;
+      let dMax = -Infinity;
+      secs.forEach((sec) =>
+        (sec ?? []).forEach(([r]) => {
+          if (r < dMin) dMin = r;
+          if (r > dMax) dMax = r;
+        }),
+      );
+      if (!isFinite(dMin)) return null;
+      const span = dMax - dMin + 1;
+      const at = (cum: number) => ((y0 + (dMin - eqB.rMin + (cum / 15) * span) * scale) / box.h) * 100;
+      return {
+        eqB,
+        scale,
+        x0,
+        y0,
+        centers: [at(1.5), at(5), at(9), at(13)],
+        bounds: [at(3), at(7), at(11)],
+      };
+    };
+    return {
+      left: calc(sections.left, eq.left, rects.left.rect),
+      right: calc(sections.right, eq.right, rects.right.rect),
+    };
+  }, [sections, rects, box]);
+
+  // 分区色块覆盖层（2D 直绘；仅压力/面积模式、且旋转过渡完成后绘制）
+  useEffect(() => {
+    const canvas = zoneCanvasRef.current;
+    if (!canvas || !box) return;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(box.w * dpr);
+    canvas.height = Math.round(box.h * dpr);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, box.w, box.h);
+    if (mode !== "pressure" || !geo || !settled) return;
+    const drawSide = (secs: ZoneSections, g: FootZoneGeo | null) => {
+      if (!g) return;
+      // 格间距固定为"放大前基准格距"的 10%（除掉 FILL_SCALE）→ 整簇放大但缝不变
+      const gap = Math.max(1, (g.scale / ZONE_FILL_SCALE) * 0.1);
+      const size = g.scale - gap;
+      const rad = Math.min(2.5, size * 0.16);
+      secs.forEach((sec, zi) => {
+        ctx.fillStyle = ZONE_CELL_COLORS[zi % ZONE_CELL_COLORS.length];
+        (sec ?? []).forEach((p) => {
+          if (!p || p.length < 2) return;
+          const [r, c] = p;
+          const x = g.x0 + (c - g.eqB.cMin) * g.scale + gap / 2;
+          const y = g.y0 + (r - g.eqB.rMin) * g.scale + gap / 2;
+          ctx.beginPath();
+          ctx.roundRect(x, y, size, size, rad);
+          ctx.fill();
+        });
+      });
+    };
+    drawSide(sections.left, geo.left);
+    drawSide(sections.right, geo.right);
+  }, [sections, geo, box, mode, settled]);
+
+  const chip = (zi: number, count: number, x: number, y: number, alignRight: boolean, key: string) => (
+    <div
+      key={key}
+      style={{
+        position: "absolute",
+        top: `${y}%`,
+        left: `${x}%`,
+        transform: `translate(${alignRight ? "-100%" : "0"}, -50%)`,
+        background: ZONE_META[zi].bg,
+        border: `1.5px solid ${ZONE_META[zi].color}`,
+        color: ZONE_META[zi].color,
+        borderRadius: "8px",
+        padding: "4px 12px",
+        fontSize: "14px",
+        fontWeight: 700,
+        whiteSpace: "nowrap",
+        zIndex: 10,
+        pointerEvents: "none",
+      }}
+    >
+      {ZONE_META[zi].label}({count})
+    </div>
   );
 
-  const renderFoot = (rc: FootRect, side: "L" | "R") => {
+  // ===== COP 平衡指标（压力中心）=====
+  // 底图帧：arch_features.peak_frame_data（多帧=平均帧），与 COP 轨迹/内外侧线同帧同坐标系。
+  const peakMatrix = useMemo(() => {
+    const pd = analysis?.python?.success ? analysis.python.data.arch_features?.peak_frame_data : null;
+    if (!pd || pd.length < 4096) return null;
+    const m: number[][] = [];
+    for (let r = 0; r < 64; r++) m.push(pd.slice(r * 64, r * 64 + 64));
+    return m;
+  }, [analysis]);
+  // 喂给 FeetModel3D 的热力图帧：Python 帧是 [row][col] 已规范化方向，而组件内部 transpose 期望"原始帧"，
+  // 故先转置一次（peakHeat[col][row]）→ 组件 transpose 后恢复正确方向，热力图按采集页方法烤到 3D 脚面。
+  const peakHeat = useMemo(() => {
+    if (!peakMatrix) return null;
+    const t: number[][] = [];
+    for (let c = 0; c < 64; c++) {
+      const row = new Array<number>(64);
+      for (let r = 0; r < 64; r++) row[r] = peakMatrix[r][c];
+      t.push(row);
+    }
+    return t;
+  }, [peakMatrix]);
+  // COP 轨迹：Python left/right_cop_trajectory = [[row, col], ...]（左脚 col 0–31 / 右脚 col 32–63）
+  const cop = useMemo(() => {
+    const d = analysis?.python?.success ? analysis.python.data : null;
+    return { left: d?.left_cop_trajectory ?? null, right: d?.right_cop_trajectory ?? null };
+  }, [analysis]);
+  const hasCop = !!(peakMatrix && (cop.left?.length || cop.right?.length));
+
+  const copCanvasRef = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const canvas = copCanvasRef.current;
+    if (!canvas || !box) return;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(box.w * dpr);
+    canvas.height = Math.round(box.h * dpr);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, box.w, box.h);
+    if (mode !== "cop" || !geo || !settled || !peakMatrix) return;
+
+    const drawFoot = (
+      g: FootZoneGeo | null,
+      colStart: number,
+      colEnd: number,
+      copPts: number[][] | null,
+      side: "left" | "right",
+    ) => {
+      if (!g) return;
+      const cell = g.scale;
+      // 网格(row, 全局col) → 画布像素（+0.5 落到格心）；与热力图贴图区域同一映射 → 天然对齐
+      const toPx = (row: number, colGlobal: number) => ({
+        x: g.x0 + (colGlobal - g.eqB.cMin + 0.5) * cell,
+        y: g.y0 + (row - g.eqB.rMin + 0.5) * cell,
+      });
+      // 热力图已由 FeetModel3D 烤到 3D 脚面（采集页做法），此处只叠 COP 轨迹 + 内外侧线
+      // 平滑折线（二次贝塞尔过中点）→ 线条顺滑不生硬
+      const smoothPath = (ps: { x: number; y: number }[]) => {
+        const path = new Path2D();
+        if (ps.length < 2) return path;
+        path.moveTo(ps[0].x, ps[0].y);
+        for (let i = 1; i < ps.length - 1; i++) {
+          const mx = (ps[i].x + ps[i + 1].x) / 2;
+          const my = (ps[i].y + ps[i + 1].y) / 2;
+          path.quadraticCurveTo(ps[i].x, ps[i].y, mx, my);
+        }
+        path.lineTo(ps[ps.length - 1].x, ps[ps.length - 1].y);
+        return path;
+      };
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+
+      // COP 轨迹：柔白外发光 + 绿→红渐变平滑线 + 起/终点白环标记（无生硬黑边）
+      const pts = (copPts ?? []).filter((p) => Array.isArray(p) && p.length >= 2).map((p) => toPx(p[0], p[1]));
+      const marker = (p: { x: number; y: number }, color: string) => {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+        ctx.fillStyle = "#ffffff";
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 3.3, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.fill();
+      };
+      if (pts.length >= 2) {
+        const path = smoothPath(pts);
+        ctx.save();
+        ctx.strokeStyle = "rgba(255,255,255,0.9)"; // 柔白发光，在暖色底上清楚
+        ctx.lineWidth = 5.5;
+        ctx.stroke(path);
+        const grad = ctx.createLinearGradient(pts[0].x, pts[0].y, pts[pts.length - 1].x, pts[pts.length - 1].y);
+        grad.addColorStop(0, "#16a34a");
+        grad.addColorStop(1, "#ef4444");
+        ctx.strokeStyle = grad;
+        ctx.lineWidth = 2.8;
+        ctx.stroke(path);
+        ctx.restore();
+        marker(pts[0], "#16a34a");
+        marker(pts[pts.length - 1], "#ef4444");
+      } else if (pts.length === 1) {
+        marker(pts[0], "#16a34a");
+      }
+    };
+
+    drawFoot(geo.left, 0, 32, cop.left, "left");
+    drawFoot(geo.right, 32, 64, cop.right, "right");
+  }, [mode, geo, box, settled, peakMatrix, cop]);
+
+  /**
+   * 底衬为两层深浅不同的条带（对齐设计稿），交叠处自然更深：
+   * - 纵向条带（深）：由横向宽度虚线划定，宽=足宽，从宽度线延伸到脚底；
+   * - 横向条带（浅）：由纵向长度虚线划定，高=足长，从长度线延伸到脚另一侧。
+   */
+  const renderShade = (anno: FootAnno, isL: boolean, key: string) => {
+    const rc = anno.rect;
+    const lenX = isL ? rc.left - 4 : rc.left + rc.width + 4; // 与长度尺寸线同位
+    // 浅条带边界：外侧=长度虚线；内侧收到趾尖点 x（脚下半段内缘向内收，
+    // 若延伸到内侧切点 x 会在中缝露出背景）；高度到脚跟切点
+    const bandL = isL ? lenX : Math.max(anno.sideL.x, anno.toe.x);
+    const bandR = isL ? Math.min(anno.sideR.x, anno.toe.x) : lenX;
+    const lightH = anno.heel.y - rc.top;
+    // 纵向深底衬：不规则四边形——顶边=宽度线，左右边界分别延伸到左/右切点（高度不同），
+    // 底边为连接两切点的斜边（用 clip-path 裁出）
+    const bandBottom = Math.max(anno.sideL.y, anno.sideR.y);
+    const bandH = Math.max(0.01, bandBottom - rc.top);
+    const clipL = ((anno.sideL.y - rc.top) / bandH) * 100;
+    const clipR = ((anno.sideR.y - rc.top) / bandH) * 100;
+    return (
+      <div key={key}>
+        {/* 纵向底衬（深）：梯形区域，底边随左右切点高度倾斜 */}
+        <div
+          style={{
+            position: "absolute",
+            left: `${anno.sideL.x}%`,
+            top: `${rc.top}%`,
+            width: `${anno.sideR.x - anno.sideL.x}%`,
+            height: `${bandH}%`,
+            background: "rgba(255,183,102,0.2)",
+            clipPath: `polygon(0% 0%, 100% 0%, 100% ${clipR}%, 0% ${clipL}%)`,
+          }}
+        />
+        {/* 横向条带（浅）：长度虚线到对侧宽度虚线，高度到脚跟切点 */}
+        <div style={{ position: "absolute", left: `${bandL}%`, top: `${rc.top}%`, width: `${bandR - bandL}%`, height: `${lightH}%`, background: "rgba(255,183,102,0.12)" }} />
+      </div>
+    );
+  };
+
+  // 虚线（尺寸界线）与双箭头实线（尺寸线）。宽度组用深橙、长度组用浅橙（设计稿双色）
+  const WID_COLOR = "#F08614";
+  const LEN_COLOR = "#F7B267";
+  const dashV = (x: number, top: number, bottom: number, color: string, key: string) => (
+    <div key={key} className="anno-grow-v" style={{ position: "absolute", left: `${x}%`, top: `${top}%`, height: `${bottom - top}%`, borderLeft: `1.5px dashed ${color}`, pointerEvents: "none", zIndex: 9 }} />
+  );
+  const dashH = (y: number, left: number, right: number, color: string, key: string) => (
+    <div key={key} className="anno-grow-h" style={{ position: "absolute", top: `${y}%`, left: `${left}%`, width: `${right - left}%`, borderTop: `1.5px dashed ${color}`, pointerEvents: "none", zIndex: 9 }} />
+  );
+  const tri = (dir: "l" | "r" | "u" | "d", color: string): React.CSSProperties => ({
+    position: "absolute",
+    width: 0,
+    height: 0,
+    ...(dir === "l" && { left: -1, top: -4.5, borderTop: "4px solid transparent", borderBottom: "4px solid transparent", borderRight: `7px solid ${color}` }),
+    ...(dir === "r" && { right: -1, top: -4.5, borderTop: "4px solid transparent", borderBottom: "4px solid transparent", borderLeft: `7px solid ${color}` }),
+    ...(dir === "u" && { top: -1, left: -4.5, borderLeft: "4px solid transparent", borderRight: "4px solid transparent", borderBottom: `7px solid ${color}` }),
+    ...(dir === "d" && { bottom: -1, left: -4.5, borderLeft: "4px solid transparent", borderRight: "4px solid transparent", borderTop: `7px solid ${color}` }),
+  });
+  const arrowH = (y: number, left: number, right: number, color: string, key: string) => (
+    <div key={key} className="anno-grow-h" style={{ position: "absolute", top: `${y}%`, left: `${left}%`, width: `${right - left}%`, borderTop: `1.5px solid ${color}`, pointerEvents: "none", zIndex: 9 }}>
+      <div style={tri("l", color)} />
+      <div style={tri("r", color)} />
+    </div>
+  );
+  const arrowV = (x: number, top: number, bottom: number, color: string, key: string) => (
+    <div key={key} className="anno-grow-v" style={{ position: "absolute", left: `${x}%`, top: `${top}%`, height: `${bottom - top}%`, borderLeft: `1.5px solid ${color}`, pointerEvents: "none", zIndex: 9 }}>
+      <div style={tri("u", color)} />
+      <div style={tri("d", color)} />
+    </div>
+  );
+
+  const renderFoot = (anno: FootAnno, side: "L" | "R") => {
     const isL = side === "L";
-    const lineX = isL ? rc.left - 3 : rc.left + rc.width + 3; // 足长尺寸线放外侧
+    const rc = anno.rect;
+    const bottom = anno.heel.y; // 底边用脚跟切点真实高度（包围盒底可能被踝后方顶点拉低）
+    // 四个解剖测量点（真实轮廓切点，由 3D 投影给出）：趾尖、脚跟、屏幕左/右最宽点
+    const { toe, heel, sideL, sideR } = anno;
+    const lenX = isL ? rc.left - 4 : rc.left + rc.width + 4; // 长度尺寸线（外侧）
+
     return (
       <div key={side}>
-        {/* 足宽尺寸线（沿包围盒顶边） */}
-        <HMeasureLine top={`${rc.top}%`} left={`${rc.left}%`} right={`${100 - rc.left - rc.width}%`} />
-        <MeasureDot style={{ top: `${rc.top}%`, left: `${rc.left}%` }} />
-        <MeasureDot style={{ top: `${rc.top}%`, left: `${rc.left + rc.width}%` }} />
+        {/* 四个解剖测量点：全部用切点真实坐标，必然贴在脚轮廓上 */}
+        <MeasureDot style={{ top: `${rc.top}%`, left: `${toe.x}%` }} />
+        <MeasureDot style={{ top: `${bottom}%`, left: `${heel.x}%` }} />
+        <MeasureDot style={{ top: `${sideL.y}%`, left: `${sideL.x}%` }} />
+        <MeasureDot style={{ top: `${sideR.y}%`, left: `${sideR.x}%` }} />
+
+        {/* 足宽（深橙）：实线/虚线均以切点 x 为界（前掌最宽），两端虚线上抵标签、下达各自切点 */}
+        {arrowH(rc.top, sideL.x, sideR.x, WID_COLOR, `${side}-aw`)}
+        {dashV(sideL.x, rc.top - 4, sideL.y, WID_COLOR, `${side}-dl`)}
+        {dashV(sideR.x, rc.top - 4, sideR.y, WID_COLOR, `${side}-dr`)}
         <DimensionLabel
           text={`${side}:${isL ? d.leftWid : d.rightWid}mm`}
-          style={{ top: `${rc.top - 6}%`, left: `${rc.left + rc.width / 2}%`, transform: "translateX(-50%)" }}
+          style={{ top: `${rc.top - 6}%`, left: `${(sideL.x + sideR.x) / 2}%`, transform: "translateX(-50%)" }}
         />
-        {/* 足长尺寸线（沿包围盒外侧边） */}
-        <VMeasureLine left={`${lineX}%`} top={`${rc.top}%`} bottom={`${100 - rc.top - rc.height}%`} />
-        <MeasureDot style={{ top: `${rc.top}%`, left: `${lineX}%` }} />
-        <MeasureDot style={{ top: `${rc.top + rc.height}%`, left: `${lineX}%` }} />
+
+        {/* 足长（浅橙）：外侧竖直双箭头实线；顶部虚线只画宽度线外的延伸段（不穿过实线），底部虚线贯穿 */}
+        {arrowV(lenX, rc.top, bottom, LEN_COLOR, `${side}-al`)}
+        {isL
+          ? dashH(rc.top, lenX, sideL.x, LEN_COLOR, `${side}-dt`)
+          : dashH(rc.top, sideR.x, lenX, LEN_COLOR, `${side}-dt`)}
+        {dashH(bottom, Math.min(lenX, rc.left), Math.max(rc.left + rc.width, lenX), LEN_COLOR, `${side}-db`)}
         <DimensionLabel
           text={`${side}:${isL ? d.leftLen : d.rightLen}mm`}
-          style={{ top: `${rc.top + rc.height / 2}%`, left: `${isL ? lineX - 2 : lineX + 2}%`, transform: isL ? "translate(-100%, -50%)" : "translateY(-50%)" }}
+          style={{ top: `${rc.top + rc.height / 2}%`, left: `${isL ? lenX - 1.5 : lenX + 1.5}%`, transform: isL ? "translate(-100%, -50%)" : "translateY(-50%)" }}
         />
       </div>
     );
   };
 
+  // 足弓分析（站姿）标注：圆点 + 水平实线 + 竖直虚线双箭头（位置为站姿视角近似值，可调）
+  const archMark = (dotX: number, dotY: number, lineEndX: number, baseY: number, isL: boolean, key: string) => (
+    <div key={key}>
+      <MeasureDot style={{ top: `${dotY}%`, left: `${dotX}%`, background: WID_COLOR }} />
+      {/* 点旁水平实线 */}
+      <div style={{ position: "absolute", top: `${dotY}%`, left: `${Math.min(dotX, lineEndX)}%`, width: `${Math.abs(lineEndX - dotX)}%`, borderTop: `2px solid ${WID_COLOR}`, zIndex: 9, pointerEvents: "none" }} />
+      {/* 纵向虚线双箭头：从上往下展开 */}
+      <div className="anno-grow-v" style={{ position: "absolute", left: `${lineEndX}%`, top: `${dotY}%`, height: `${baseY - dotY}%`, borderLeft: `1.5px dashed ${WID_COLOR}`, zIndex: 9, pointerEvents: "none" }}>
+        <div style={tri("u", WID_COLOR)} />
+        <div style={tri("d", WID_COLOR)} />
+      </div>
+    </div>
+  );
+
+  /** 底部地面基准线：渲染在脚模下层，伸入脚的部分被脚盖住，端点呈"刚好接触"效果 */
+  const archBase = (lineEndX: number, baseY: number, isL: boolean, key: string) => (
+    <div
+      key={key}
+      style={{ position: "absolute", top: `${baseY}%`, left: `${isL ? lineEndX - 6 : lineEndX - 2.6}%`, width: "8.6%", borderTop: `2px solid ${WID_COLOR}`, pointerEvents: "none" }}
+    />
+  );
+
+  const showDims = mode === "dims" && settled && rects;
+
   return (
-    <div style={{ width: "100%", height: "100%", minHeight: "400px", position: "relative" }}>
-      {/* 底衬在脚模之下 */}
-      {rects && renderShade(rects.left, "sL")}
-      {rects && renderShade(rects.right, "sR")}
-      {/* 俯视固定视角，缩放与采集页最大档一致 */}
+    <div ref={wrapRef} style={{ width: "100%", height: "100%", minHeight: "400px", position: "relative" }}>
+      {/* 底衬在脚模之下（仅俯视尺寸模式） */}
+      {showDims && (
+        <div className="anno-appear-under">
+          {renderShade(rects.left, true, "sL")}
+          {renderShade(rects.right, false, "sR")}
+        </div>
+      )}
       <FeetModel3D
         width="100%"
         height="100%"
-        modelScale={REPORT_FOOT_SCALE}
+        modelScale={REPORT_FOOT_SCALE} // 四视图同一脚模：大小/位置不变，仅进/出足弓分析旋转
         lockedView
+        pose={pose}
+        onPoseSettled={handleSettled}
         onFootRects={handleRects}
+        // COP 视图：把平均帧当纹理烤到 3D 脚面（同采集页做法，自动贴合脚形/按轮廓裁剪）
+        pressureData={mode === "cop" && hasCop ? peakHeat : null}
+        heatVmax={COP_HEAT_VMAX}
         style={{ minHeight: "400px", position: "relative", zIndex: 1 }}
       />
-      {rects && renderFoot(rects.left, "L")}
-      {rects && renderFoot(rects.right, "R")}
+
+      {/* 压力/面积：分区色块 2D 覆盖层（锐利、格间留缝）；随交互从中心向外展开 */}
+      {mode === "pressure" && settled && (
+        <canvas
+          key="zone-canvas"
+          ref={zoneCanvasRef}
+          className="zone-grow"
+          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", zIndex: 5, pointerEvents: "none" }}
+        />
+      )}
+
+      {/* COP：暖色插值热力图 + 内外侧分界线 + COP 轨迹（2D 覆盖层，同 geo 映射，天然对齐） */}
+      {mode === "cop" && settled && hasCop && (
+        <canvas
+          key="cop-canvas"
+          ref={copCanvasRef}
+          className="zone-grow"
+          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", zIndex: 5, pointerEvents: "none" }}
+        />
+      )}
+
+      {/* 足底尺寸标注 */}
+      {showDims && (
+        <div className="anno-appear">
+          {renderFoot(rects.left, "L")}
+          {renderFoot(rects.right, "R")}
+        </div>
+      )}
+
+      {/* 足弓分析标注（站姿） */}
+      {mode === "arch" && settled && (
+        <>
+          {/* 地面基准线在脚模下层：伸入脚的部分被脚盖住，端点"刚好接触" */}
+          <div className="anno-appear-under">
+            {archBase(47, 64, true, "archBaseL")}
+            {archBase(53, 64, false, "archBaseR")}
+          </div>
+          <div className="anno-appear">
+            {archMark(42.5, 46, 47, 64, true, "archL")}
+            {archMark(57.5, 46, 53, 64, false, "archR")}
+            {/* 左脚标签右对齐到中线左侧、右脚标签左对齐到中线右侧：
+                type 是"高足弓(high arch)"这类中英双语长文本时，也绝不会在中间重叠 */}
+            <DimensionLabel text={`左脚·${arch.left.type}`} style={{ top: "40%", left: "48%", transform: "translate(-100%, -100%)" }} />
+            <DimensionLabel text={`右脚·${arch.right.type}`} style={{ top: "40%", left: "52%", transform: "translate(0, -100%)" }} />
+          </div>
+        </>
+      )}
+
+      {/* 压力/面积：分区标签 + 区界虚线（同视角，纯数据可视化展开，不旋转） */}
+      {mode === "pressure" && settled && rects && geo && (
+        <div className="anno-appear">
+          {geo.left?.bounds.map((yL, i) => {
+            const yR = geo.right?.bounds[i] ?? yL;
+            const y = (yL + yR) / 2;
+            return (
+              <div
+                key={`gz-${i}`}
+                style={{ position: "absolute", top: `${y}%`, left: `${rects.left.rect.left - 6}%`, width: `${rects.right.rect.left + rects.right.rect.width + 6 - (rects.left.rect.left - 6)}%`, borderTop: "2px dashed #F5A623", zIndex: 9, pointerEvents: "none" }}
+              />
+            );
+          })}
+          {geo.left?.centers.map((y, zi) =>
+            chip(zi, sections.left[zi]?.length ?? 0, rects.left.rect.left - 8, y, true, `cl-${zi}`),
+          )}
+          {geo.right?.centers.map((y, zi) =>
+            chip(zi, sections.right[zi]?.length ?? 0, rects.right.rect.left + rects.right.rect.width + 8, y, false, `cr-${zi}`),
+          )}
+        </div>
+      )}
+
+      {/* COP：底部图例（起点→终点说明），避免只有孤零零的绿/红点看不懂 */}
+      {mode === "cop" && settled && hasCop && (
+        <div className="anno-appear">
+          <div style={{ position: "absolute", left: "50%", bottom: "4%", transform: "translateX(-50%)", display: "flex", alignItems: "center", gap: "7px", fontSize: "11px", fontWeight: 600, color: "#7A5A2A", background: "rgba(255,255,255,0.7)", padding: "3px 12px", borderRadius: "999px", zIndex: 10, pointerEvents: "none" }}>
+            <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#16a34a", display: "inline-block" }} />
+            起点
+            <span style={{ width: 34, height: 3, borderRadius: 2, background: "linear-gradient(90deg,#16a34a,#ef4444)", display: "inline-block" }} />
+            终点
+            <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#ef4444", display: "inline-block" }} />
+            <span style={{ marginLeft: 4, color: "#a08a6a" }}>· COP 压力中心轨迹</span>
+          </div>
+        </div>
+      )}
+
+      {/* COP 占位示意（无真实 COP 数据时的兜底） */}
+      {mode === "cop" && settled && !hasCop && (
+        <div className="anno-appear">
+          <span style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%,-50%)", fontSize: "13px", fontWeight: 700, color: "#8A6A40", background: "rgba(255,255,255,0.85)", padding: "6px 14px", borderRadius: "8px", zIndex: 5 }}>
+            暂无 COP 数据（请完成一次测量 / 导入）
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -408,6 +870,83 @@ function SingleFootZoneCanvas({ side }: { side: "left" | "right" }) {
   );
 }
 
+// ─── 视图3：压力/面积分析（3D 脚模 + Python 足弓分区色块贴敷） ────────────────
+const ZONE_META = [
+  { label: "趾部", color: "#5B8FF9", bg: "#EAF2FF" },
+  { label: "前足", color: "#3FAE5F", bg: "#EAF9EF" },
+  { label: "中足", color: "#D89B14", bg: "#FDF5E2" },
+  { label: "后足", color: "#D6336C", bg: "#FDEAF1" },
+];
+// 格子色（设计稿取色）：趾部蓝紫 / 前足草绿 / 中足金黄 / 后足玫红
+const ZONE_CELL_COLORS = ["#7B96F0", "#5EC878", "#F6BC3F", "#DF567F"];
+
+/** Python section_coords 可能是数组或对象，统一为 [区][点][r,c] */
+function normalizeSectionCoords(sc: unknown): ZoneSections {
+  if (!sc) return [];
+  if (Array.isArray(sc)) return sc as ZoneSections;
+  const obj = sc as Record<string, number[][]>;
+  return Object.keys(obj)
+    .sort()
+    .map((k) => obj[k]);
+}
+
+/**
+ * 演示分区（无 Python 数据时兜底）：参数化脚形，按设计稿密度 30 行 × 12 列生成。
+ * 形状特征：趾尖/脚跟圆弧收尾、前掌最宽、中足内侧凹（足弓）——脚跟不会出现斜切缺口。
+ */
+const DEMO_ROWS = 30;
+const DEMO_COLS = 12;
+function demoFootProfile(t: number): { cx: number; hw: number } {
+  // t = r/(rows-1)，0=趾尖 1=脚跟末端；cx=中心列，hw=半宽（格）
+  let hw: number;
+  if (t < 0.15) {
+    const u = t / 0.15; // 趾尖圆弧
+    hw = 1.6 + 2.9 * Math.sqrt(Math.max(0, 1 - (1 - u) * (1 - u)));
+  } else if (t < 0.38) {
+    hw = 4.5; // 前掌最宽
+  } else if (t < 0.72) {
+    const u = (t - 0.38) / 0.34; // 中足收窄（贴合脚模的细腰轮廓）
+    hw = 4.5 - 1.5 * Math.sin((u * Math.PI) / 2);
+  } else if (t < 0.85) {
+    const u = (t - 0.72) / 0.13; // 跟部略回宽
+    hw = 3.0 + 0.8 * u;
+  } else {
+    const u = (t - 0.85) / 0.15; // 脚跟圆弧收尾
+    hw = 3.8 * Math.sqrt(Math.max(0, 1 - u * u));
+  }
+  // 中足段中心向外侧偏（内侧=足弓凹陷；左脚内侧在右）
+  let cx = DEMO_COLS / 2;
+  if (t >= 0.4 && t < 0.75) {
+    cx -= 0.9 * Math.sin(((t - 0.4) / 0.35) * Math.PI);
+  }
+  return { cx, hw };
+}
+
+function demoSections(mirror: boolean): ZoneSections {
+  const secs: ZoneSections = [[], [], [], []];
+  for (let r = 0; r < DEMO_ROWS; r++) {
+    const { cx, hw } = demoFootProfile(r / (DEMO_ROWS - 1));
+    // 分区 3:4:4:4 → 6/8/8/8 行
+    const zi = r < 6 ? 0 : r < 14 ? 1 : r < 22 ? 2 : 3;
+    for (let c = 0; c < DEMO_COLS; c++) {
+      const cc = mirror ? DEMO_COLS - 1 - c : c;
+      if (Math.abs(c + 0.5 - cx) < hw) secs[zi].push([r, cc]);
+    }
+  }
+  return secs;
+}
+
+/** 单只脚格子覆盖层的绘制几何（px 坐标 + 百分比标注位） */
+interface FootZoneGeo {
+  eqB: ZoneBounds;
+  scale: number; // 单格边长 px（左右脚统一）
+  x0: number; // 格子簇左上角 px
+  y0: number;
+  centers: number[]; // 四区标签中心 y%
+  bounds: number[]; // 三条分界线 y%
+}
+
+
 function View2DZones() {
   return (
     <div style={{
@@ -443,54 +982,7 @@ function View2DZones() {
   );
 }
 
-// ─── 视图2：足弓分析（固定斜视 3D + 足弓高度标注，按设计稿） ──────────────────
-function ViewArch3D() {
-  return (
-    <div style={{ width: "100%", height: "100%", minHeight: "400px", position: "relative" }}>
-      <FeetModel3D width="100%" height="100%" modelScale={2.0} fixedCamera style={{ minHeight: "400px" }} />
-      {/* 足弓高度标注：每只脚下方粗橙横线（地面基准）+ 中点圆点 + 向上垂直虚线 + 标签 */}
-      {([{ left: "18%", width: "26%" }, { left: "56%", width: "26%" }] as const).map((g, i) => (
-        <div key={i} style={{ position: "absolute", left: g.left, width: g.width, bottom: "18%", pointerEvents: "none" }}>
-          <div style={{ height: "5px", background: "#FF8400", borderRadius: "3px" }} />
-          <div style={{ position: "absolute", left: "50%", bottom: "2px", transform: "translateX(-50%)" }}>
-            <div style={{ position: "absolute", left: "-4.5px", bottom: 0, width: "9px", height: "9px", borderRadius: "50%", background: "#FF8400" }} />
-            <div style={{ position: "absolute", left: "-1px", bottom: "8px", height: "110px", borderLeft: "2px dashed #F08614" }} />
-            <div style={{ position: "absolute", left: "-5px", bottom: "116px", width: "10px", height: "10px", borderRadius: "50%", background: "#F08614" }} />
-          </div>
-          <span style={{ position: "absolute", left: "50%", transform: "translateX(-50%)", bottom: "136px", fontSize: "12px", fontWeight: 700, color: "#5A3A1A", whiteSpace: "nowrap", background: "rgba(255,255,255,0.85)", padding: "2px 8px", borderRadius: "6px" }}>
-            {i === 0 ? "左足弓高度" : "右足弓高度"}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-}
 
-// ─── 视图4：COP 压力中心轨迹（俯视 + 轨迹示意） ──────────────────────────────
-function ViewCop() {
-  return (
-    <div style={{ width: "100%", height: "100%", minHeight: "400px", position: "relative" }}>
-      <FeetModel3D width="100%" height="100%" modelScale={1.6} lockedView style={{ minHeight: "400px" }} />
-      {/* COP 轨迹示意（后续接 Python cop 序列真实绘制） */}
-      <svg style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%,-50%)", pointerEvents: "none" }} width="160" height="200" viewBox="0 0 160 200">
-        <polyline
-          points="80,150 76,132 84,118 78,100 86,86 80,70 84,54 79,42"
-          fill="none"
-          stroke="#FF8400"
-          strokeWidth="2.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeDasharray="1 5"
-        />
-        <circle cx="80" cy="150" r="5" fill="#FF8400" />
-        <circle cx="79" cy="42" r="5" fill="#e0592c" />
-      </svg>
-      <span style={{ position: "absolute", left: "50%", bottom: "12%", transform: "translateX(-50%)", fontSize: "12px", fontWeight: 700, color: "#5A3A1A", background: "rgba(255,255,255,0.85)", padding: "2px 10px", borderRadius: "6px" }}>
-        COP 压力中心轨迹
-      </span>
-    </div>
-  );
-}
 
 // ─── 右侧报告面板（按设计稿：白卡 + 橙竖条标题 + 双模式压力/面积） ────────────
 /** 演示数据（后续接 Python /analyze 的真实结果） */
@@ -648,34 +1140,65 @@ const subCard: React.CSSProperties = {
 };
 
 function BarTitle({ zh, en }: { zh: string; en: string }) {
+  // 设计稿 section 标题：中文 20px/600、英文 14px/500、橙色竖条 #F08614
   return (
-    <div style={{ display: "flex", alignItems: "baseline", gap: "8px", marginBottom: "10px" }}>
-      <span style={{ width: "4px", height: "16px", background: "#F08614", borderRadius: "2px", alignSelf: "center" }} />
-      <span style={{ fontSize: "15px", fontWeight: "800", color: "#17191c" }}>{zh}</span>
-      <span style={{ fontSize: "11px", fontWeight: "600", color: "#8a8275" }}>{en}</span>
+    <div style={{ display: "flex", alignItems: "baseline", gap: "8px", marginBottom: "12px" }}>
+      <span style={{ width: "4px", height: "20px", background: "#F08614", borderRadius: "2px", alignSelf: "center", flexShrink: 0 }} />
+      <span style={{ fontSize: "20px", fontWeight: 600, color: "#17191c", whiteSpace: "nowrap" }}>{zh}</span>
+      <span style={{ fontSize: "14px", fontWeight: 500, color: "#8a8275", whiteSpace: "nowrap" }}>{en}</span>
     </div>
   );
 }
 
 function ArchSubCard({ side, data }: { side: "左" | "右"; data: typeof REPORT_DATA.arch.left }) {
+  // 大号足弓类型只显示中文短语（去掉"(flat foot)"这类英文括注），与设计稿一致
+  const shortType = data.type.replace(/\s*[（(].*$/, "");
   return (
-    <div style={{ ...subCard, display: "grid", gap: "6px" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-        <div>
-          <div style={{ fontSize: "11px", color: "#8a8275" }}>{side}脚足弓指数 {data.index.toFixed(3)}</div>
-          <div style={{ fontSize: "19px", fontWeight: "800", color: "#17191c", marginTop: "2px" }}>{data.type}</div>
+    <div
+      style={{
+        flex: 1,
+        minWidth: 0,
+        background: "#FFF2E4",
+        borderRadius: "10px",
+        padding: "11px 14px 12px",
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
+      {/* 上半区：两列各自顶/底对齐——左列 指数(上)/类型(下)，右列 图标(上)/风险(下)，
+          高度固定 52px，让"扁平足"与"风险"、"指数"与"图标"分别齐平（同设计稿） */}
+      <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", height: "52px" }}>
+        <div style={{ minWidth: 0, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+          <div style={{ fontSize: "12px", color: "#8a8275", whiteSpace: "nowrap" }}>
+            {side}脚足弓指数 <span style={{ color: "#17191c", fontWeight: 600 }}>{data.index.toFixed(3)}</span>
+          </div>
+          {/* 设计稿字号 20px/#17191C；雅黑无 500 中黑，用 600 出分量（避免回退 400 发飘） */}
+          <div style={{ fontSize: "20px", fontWeight: 600, color: "#17191c", lineHeight: 1 }}>
+            {shortType}
+          </div>
         </div>
-        <img
-          src={RICON(data.risk.includes("内翻") ? "arch-varus" : data.risk.includes("外翻") ? "arch-valgus" : "arch-normal")}
-          alt=""
-          style={{ width: "32px", height: "auto" }}
-        />
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
+          <img
+            src={RICON(data.risk.includes("内翻") ? "arch-varus" : data.risk.includes("外翻") ? "arch-valgus" : "arch-normal")}
+            alt=""
+            style={{ width: "36px", height: "36px" }}
+          />
+          <span style={{ fontSize: "12px", fontWeight: "700", color: data.riskColor, whiteSpace: "nowrap" }}>
+            {data.risk}
+          </span>
+        </div>
       </div>
+
+      {/* 分隔线（设计稿：rgba(240,200,158,0.8)） */}
+      <div style={{ borderTop: "1px solid rgba(240,200,158,0.8)", margin: "8px 0" }} />
+
+      {/* 下半区：足弓内外翻 …… MLI x.xx */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span style={{ fontSize: "11px", color: "#8a8275" }}>足弓内外翻</span>
-        <span style={{ fontSize: "11px", fontWeight: "700", color: data.riskColor }}>{data.risk}</span>
+        <span style={{ fontSize: "12px", color: "#8a8275" }}>足弓内外翻</span>
+        <span style={{ fontSize: "12px", color: "#6b6256" }}>
+          MLI <span style={{ color: "#17191c", fontWeight: 700 }}>{data.mli.toFixed(2)}</span>
+        </span>
       </div>
-      <div style={{ fontSize: "11px", color: "#6b6256", textAlign: "right" }}>MLI {data.mli.toFixed(2)}</div>
     </div>
   );
 }
@@ -700,8 +1223,9 @@ function ReportPanel({
   const clickable = (v: ReportView): React.CSSProperties => ({
     ...panelCard,
     cursor: "pointer",
-    border: active === v ? "2px solid #4A90E2" : panelCard.border,
-    boxShadow: active === v ? "0 4px 14px rgba(74,144,226,0.25)" : panelCard.boxShadow,
+    // 选中态：橙色描边 + 橙色投影（设计稿 border 2px #FF8400 / shadow rgba(255,132,0,0.4)）
+    border: active === v ? "2px solid #FF8400" : panelCard.border,
+    boxShadow: active === v ? "0 4px 6px rgba(255,132,0,0.4)" : panelCard.boxShadow,
   });
 
   return (
@@ -846,19 +1370,24 @@ function ReportPanel({
 }
 
 // ─── 主页面 ───────────────────────────────────────────────────────────────────
-export default function ReportPage({ onNext, onHistory, onBack }: { onNext: () => void; onHistory: () => void; onBack: () => void }) {
+export default function ReportPage({ onNext, onHistory, onBack, onStepBack }: { onNext: () => void; onHistory: () => void; onBack: () => void; onStepBack?: (step: number) => void }) {
   const { currentUser, analysis } = useApp();
   // 真实测量分析结果 → 报告数据（Python 缺席时逐字段回退演示值）
   const reportData = useMemo(() => buildReportData(analysis), [analysis]);
   const [showSummary, setShowSummary] = useState(true);
   // 三视图轮换：尺寸标注 → 足弓分析(斜视) → 2D 分区
   // 四个固定视角，由右侧报告卡片点击驱动（足底尺寸/足弓分析/压力面积/COP）
-  const [viewMode, setViewMode] = useState<ReportView>("dims");
+  // 开发调试：URL 加 ?panel=pressure|arch|cop|dims 可直达对应视图
+  const [viewMode, setViewMode] = useState<ReportView>(() => {
+    const p = new URLSearchParams(window.location.search).get("panel");
+    return ["dims", "arch", "pressure", "cop"].includes(p ?? "") ? (p as ReportView) : "dims";
+  });
 
   return (
     <div className="report-shell">
       <div className="report-grid-bg" />
-      <TopNavBar currentStep={3} onHistoryClick={onHistory} transparent />
+      {/* 报告页不显示"历史用户"，步骤条支持点击回退 */}
+      <TopNavBar currentStep={3} transparent showHistory={false} onStepClick={onStepBack} />
 
       <main className="report-main">
         {/* 左区：标题 + 视图 + 底部信息 */}
@@ -899,13 +1428,14 @@ export default function ReportPage({ onNext, onHistory, onBack }: { onNext: () =
           </div>
         )}
 
-        {/* 视图区域 */}
+        {/* 视图区域：四模式共用同一常驻脚模。尺寸/压力面积/COP 为俯视（互切不旋转，
+            仅换叠加层）；足弓分析为站姿（进/出时旋转过渡）。 */}
         <div style={{ flex: 1, position: "relative", minHeight: 0 }}>
-          {viewMode === "dims" ? <View3DAnnotated dims={reportData.dims} /> : viewMode === "arch" ? <ViewArch3D /> : viewMode === "pressure" ? <View2DZones /> : <ViewCop />}
+          <FootStage dims={reportData.dims} arch={reportData.arch} mode={viewMode} />
         </div>
 
         {/* 左区底部信息栏（融入背景，无填充） */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "28px", padding: "10px 0 2px" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "28px", padding: "10px 3% 2px 0" }}>
           <span style={{ fontSize: "14px", fontWeight: 700, color: "#3d3d3d" }}>
             当前用户：{currentUser?.name ?? "—"}（ID:{currentUser?.id ?? "—"}）
           </span>
@@ -968,6 +1498,56 @@ export default function ReportPage({ onNext, onHistory, onBack }: { onNext: () =
           flex-direction: column;
           min-width: 0;
           padding: clamp(92px, 10vh, 112px) clamp(16px, 1.6vw, 28px) 10px clamp(28px, 2.8vw, 48px);
+        }
+        /* 标注在 pose 过渡完成后慢慢展开。
+           必须撑满舞台（absolute inset:0）：动画的 transform 会让本层成为
+           absolute 子元素的定位基准，若不撑满标注会全部挤到底部 */
+        .anno-appear {
+          position: absolute;
+          inset: 0;
+          pointer-events: none;
+          /* 动画 transform 会创建 stacking context，必须显式高于 Canvas(z=1)，
+             否则橙点/尺寸线会被脚模盖住 */
+          z-index: 5;
+          animation: anno-fade-in 350ms cubic-bezier(0.23, 1, 0.32, 1) both;
+        }
+        /* 底衬专用：同样的展开动画，但保持在脚模（z=1）之下 */
+        .anno-appear-under {
+          position: absolute;
+          inset: 0;
+          pointer-events: none;
+          z-index: 0;
+          animation: anno-fade-in 350ms cubic-bezier(0.23, 1, 0.32, 1) both;
+        }
+        @keyframes anno-fade-in {
+          from { opacity: 0; transform: translateY(8px) scale(0.985); }
+          to { opacity: 1; transform: none; }
+        }
+        /* 分区色块：随交互从中心向外展开（与标注同步淡入），不再"一打开就有" */
+        .zone-grow {
+          transform-origin: center center;
+          animation: zone-grow-in 380ms cubic-bezier(0.23, 1, 0.32, 1) both;
+        }
+        @keyframes zone-grow-in {
+          from { opacity: 0; transform: scale(0.7); }
+          to { opacity: 1; transform: scale(1); }
+        }
+        /* 横向尺寸线：从左往右展开；纵向尺寸线：从上往下展开 */
+        .anno-grow-h {
+          transform-origin: left center;
+          animation: anno-grow-x 450ms cubic-bezier(0.23, 1, 0.32, 1) both;
+        }
+        .anno-grow-v {
+          transform-origin: center top;
+          animation: anno-grow-y 450ms cubic-bezier(0.23, 1, 0.32, 1) both;
+        }
+        @keyframes anno-grow-x {
+          from { transform: scaleX(0); }
+          to { transform: scaleX(1); }
+        }
+        @keyframes anno-grow-y {
+          from { transform: scaleY(0); }
+          to { transform: scaleY(1); }
         }
         .report-dash {
           background:

@@ -2,15 +2,27 @@
  * UserRecordsPage — 用户采集信息子页面
  * 设计风格：橙色渐变背景，顶部用户信息卡，下方采集记录列表，右下角返回上一页
  */
-import { useApp } from "@/contexts/AppContext";
+import { useEffect, useState } from "react";
+import { useApp, type MeasureAnalysis } from "@/contexts/AppContext";
+import { apiGetRecordData } from "@/lib/backendApi";
 
 interface UserRecordsPageProps {
   onBack: () => void;
   onStartMeasure: () => void;
+  /** 点击某条记录：读回该次分析 → 报告页重新渲染那次的完整交互报告 */
+  onOpenReport: () => void;
 }
 
-export default function UserRecordsPage({ onBack, onStartMeasure }: UserRecordsPageProps) {
-  const { currentUser, collectionRecords, removeCollectionRecord, setSelectedRecord } = useApp();
+export default function UserRecordsPage({ onBack, onStartMeasure, onOpenReport }: UserRecordsPageProps) {
+  const { currentUser, collectionRecords, loadRecordsForUser, removeCollectionRecord, setSelectedRecord, setAnalysis } =
+    useApp();
+  const [loadingId, setLoadingId] = useState<number | null>(null);
+
+  // 进入页面：从后端拉取该用户的全部采集记录（今天/昨天/更早的都在，按时间倒序）
+  useEffect(() => {
+    if (currentUser) void loadRecordsForUser(currentUser.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id]);
 
   const userRecords = collectionRecords.filter((r) => r.userId === currentUser?.id);
 
@@ -19,9 +31,20 @@ export default function UserRecordsPage({ onBack, onStartMeasure }: UserRecordsP
     return d.replace(/-/g, ".").replace(/^(\d{4})\.(\d{1,2})\.(\d{1,2})$/, "$1.$2.$3");
   };
 
-  const handleRecordClick = (record: (typeof collectionRecords)[0]) => {
-    setSelectedRecord(record);
-    onStartMeasure();
+  const handleRecordClick = async (record: (typeof collectionRecords)[0]) => {
+    if (loadingId != null) return; // 防重入
+    setLoadingId(record.id);
+    try {
+      const data = await apiGetRecordData<MeasureAnalysis>(record.id);
+      setSelectedRecord(record);
+      setAnalysis(data); // 报告页由这份历史分析重新渲染（3D/热力图/COP 全部可交互）
+      onOpenReport();
+    } catch (err) {
+      console.warn("[record] 读取采集记录失败:", err);
+      window.alert("读取该条记录失败，请确认后端服务在运行");
+    } finally {
+      setLoadingId(null);
+    }
   };
 
   const handleDelete = (e: React.MouseEvent, id: number) => {

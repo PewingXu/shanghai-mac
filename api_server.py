@@ -22,7 +22,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Any, List, Optional
 
 # 设置 matplotlib 为无头模式（必须在 OneStep_report 导入前）
 import matplotlib
@@ -49,7 +49,10 @@ from OneStep_report import (
     calculate_cop_time_series,
 )
 
+import db_store  # SQLite 持久化（用户 / 采集记录）
+
 app = FastAPI(title="HuiSheng Foot Analysis API", version="1.0.0")
+db_store.init_db()  # 启动即建库建表（幂等）
 
 # 允许前端跨域访问
 app.add_middleware(
@@ -73,6 +76,36 @@ class AnalyzeCSVRequest(BaseModel):
     csv_content: str
     fps: float = 42
     threshold_ratio: float = 0.8
+
+
+class UserCreateRequest(BaseModel):
+    """新建用户：id 可选（不传由服务端生成唯一 5 位号）；名字可重复"""
+    id: Optional[int] = None
+    name: str
+    gender: Optional[str] = None
+    birthDate: Optional[str] = None
+    height: Optional[float] = None
+    weight: Optional[float] = None
+    shoeSize: Optional[str] = None
+
+
+class UserDeleteRequest(BaseModel):
+    ids: List[int]
+
+
+class RecordCreateRequest(BaseModel):
+    """保存一次采集记录：user_id + 日期/时间 + 分析结果 data（落盘 JSON）
+    + 可选原始帧 raw_frames（落盘为仿 sit 格式 CSV，界面不暴露）"""
+    user_id: int
+    date: str
+    time: str
+    data: Any
+    raw_frames: Optional[List[List[float]]] = None
+    fps: float = 42
+
+
+class RecordDeleteRequest(BaseModel):
+    id: int
 
 
 def numpy_to_python(obj):
@@ -268,6 +301,73 @@ def analyze_csv(request: AnalyzeCSVRequest):
 
     except HTTPException:
         raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── 用户持久化（SQLite）─────────────────────────────────────────────────────
+@app.get("/users")
+def get_users():
+    """列出所有用户（按创建时间倒序）"""
+    return {"success": True, "users": db_store.list_users()}
+
+
+@app.post("/users")
+def create_user(req: UserCreateRequest):
+    """新建用户；服务端保证 id 唯一，返回完整用户对象"""
+    try:
+        user = db_store.create_user(req.model_dump())
+        return {"success": True, "user": user}
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/users/delete")
+def delete_users(req: UserDeleteRequest):
+    """按 id 批量删除用户（级联删除其采集记录）"""
+    try:
+        n = db_store.delete_users(req.ids)
+        return {"success": True, "deleted": n}
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── 采集记录持久化（SQLite 元数据 + 磁盘文件存大数据）───────────────────────
+@app.get("/users/{user_id}/records")
+def get_user_records(user_id: int):
+    """列出某用户的采集记录（仅元数据：id/date/time，不含大数据）"""
+    return {"success": True, "records": db_store.list_records(user_id)}
+
+
+@app.post("/records")
+def create_record(req: RecordCreateRequest):
+    """保存一次采集：写 DB 行 + analysis 落盘 <id>.json + 原始帧落盘 <id>.csv（可选）"""
+    try:
+        rec = db_store.create_record(req.user_id, req.date, req.time, req.data, req.raw_frames, req.fps)
+        return {"success": True, "record": rec}
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/records/{rid}")
+def get_record(rid: int):
+    """读回单条采集的完整测量数据（analysis）"""
+    data = db_store.get_record_data(rid)
+    if data is None:
+        raise HTTPException(status_code=404, detail="record not found")
+    return {"success": True, "data": data}
+
+
+@app.post("/records/delete")
+def delete_record(req: RecordDeleteRequest):
+    """删除单条采集记录（连同落盘文件）"""
+    try:
+        n = db_store.delete_record(req.id)
+        return {"success": True, "deleted": n}
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))

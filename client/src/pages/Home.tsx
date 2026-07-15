@@ -255,7 +255,7 @@ function CreateUserPage({
 }
 
 export default function Home() {
-  const { setCurrentUser, setCurrentStep, addHistoryUser, setAnalysis } = useApp();
+  const { setCurrentUser, setCurrentStep, createUser, setAnalysis } = useApp();
 
   // 后台分析完成兜底入库：即使测量页已被切走，报告数据也不丢
   useEffect(() => {
@@ -267,21 +267,25 @@ export default function Home() {
     return () => window.removeEventListener("aciki-analysis-done", h);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const [view, setView] = useState<AppView>("landing");
+  // 开发调试：URL 加 ?view=report 可直达对应页面（不影响正常流程）
+  const [view, setView] = useState<AppView>(() => {
+    const v = new URLSearchParams(window.location.search).get("view");
+    return ["landing", "create", "measure", "report", "solution", "history", "userRecords"].includes(v ?? "")
+      ? (v as AppView)
+      : "landing";
+  });
   const [prevView, setPrevView] = useState<AppView>("landing");
 
-  const handleCreateUser = (data: UserFormData) => {
-    const newUser: User = {
-      id: Math.floor(1000 + Math.random() * 9000),
+  const handleCreateUser = async (data: UserFormData) => {
+    // 走后端持久化创建（服务端保证 id 唯一；后端不可用时 createUser 内部本地兜底）
+    const newUser = await createUser({
       name: data.name,
       birthDate: data.birthDate,
       gender: data.gender,
       height: data.height,
       weight: data.weight,
-    };
-
+    });
     setCurrentUser(newUser);
-    addHistoryUser(newUser);
     setCurrentStep(2);
     setView("measure");
   };
@@ -299,6 +303,20 @@ export default function Home() {
     setCurrentUser(user);
     setPrevView("history");
     setView("userRecords");
+  };
+
+  // 顶部步骤条点击已完成步骤 → 回退到对应页面
+  const goToStep = (step: number) => {
+    if (step === 1) {
+      setCurrentStep(1);
+      setView("create");
+    } else if (step === 2) {
+      setCurrentStep(2);
+      setView("measure");
+    } else if (step === 3) {
+      setCurrentStep(3);
+      setView("report");
+    }
   };
 
   // 全局异常弹窗（除首页外，任意页面运行时检测到异常即弹出，优先级最高）
@@ -329,6 +347,10 @@ export default function Home() {
             setCurrentStep(2);
             setView("measure");
           }}
+          onOpenReport={() => {
+            setCurrentStep(3);
+            setView("report");
+          }}
         />
       );
     }
@@ -340,6 +362,7 @@ export default function Home() {
             setView("report");
           }}
           onHistory={handleShowHistory}
+          onStepBack={goToStep}
         />
       );
     }
@@ -352,6 +375,7 @@ export default function Home() {
             setView("solution");
           }}
           onHistory={handleShowHistory}
+          onStepBack={goToStep}
         />
       );
     }
@@ -364,6 +388,7 @@ export default function Home() {
             setCurrentStep(1);
             setView("landing");
           }}
+          onStepBack={goToStep}
         />
       );
     }

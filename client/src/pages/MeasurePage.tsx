@@ -144,6 +144,7 @@ async function runBgAnalysis(frames: number[][]) {
     python,
     mli: extra?.mli ?? { left: null, right: null },
     frontend: extra?.frontend ?? null,
+    rawFrames: frames, // 原始帧随事件传递：AppContext 持久化为该用户一条记录（仿 sit 格式 CSV 存档）
   };
   window.dispatchEvent(new CustomEvent("aciki-analysis-done", { detail }));
 }
@@ -513,9 +514,11 @@ function CountdownButton({
 export default function MeasurePage({
   onNext,
   onHistory,
+  onStepBack,
 }: {
   onNext: () => void;
   onHistory: () => void;
+  onStepBack?: (step: number) => void;
 }) {
   const { currentUser, setAnalysis } = useApp();
   const [collectState, setCollectState] = useState<CollectState>("idle");
@@ -915,7 +918,7 @@ export default function MeasurePage({
   return (
     <div className="measure-shell">
       <div className="measure-grid-bg" />
-      <TopNavBar currentStep={2} onHistoryClick={onHistory} transparent />
+      <TopNavBar currentStep={2} onHistoryClick={onHistory} transparent onStepClick={onStepBack} />
 
       <main className="measure-main">
         <section className="measure-stage">
