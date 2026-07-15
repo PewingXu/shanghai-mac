@@ -121,3 +121,6 @@ client/public/__manus__/version.json
 # Runtime data (SQLite 用户库 + 采集记录落盘文件，勿入库)
 data/
 __pycache__/
+
+# 设计稿源文件，不纳入仓库
+UI/

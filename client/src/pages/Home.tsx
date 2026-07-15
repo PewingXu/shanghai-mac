@@ -388,7 +388,14 @@ export default function Home() {
             setCurrentStep(1);
             setView("landing");
           }}
-          onStepBack={goToStep}
+          onBack={() => {
+            setCurrentStep(2);
+            setView("measure");
+          }}
+          onViewReport={() => {
+            setCurrentStep(3);
+            setView("report");
+          }}
         />
       );
     }
