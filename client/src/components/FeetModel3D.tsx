@@ -567,6 +567,12 @@ function FeetMesh({
   const heatFadeRef = useRef(0);
   const hadHeatRef = useRef(false);
   const heatMatsRef = useRef<Array<THREE.Material & { opacity: number }>>([]);
+  const heatMeshesRef = useRef<Array<THREE.Mesh | null>>([]);
+  // 展开缩放：与报告页分区色块 zone-grow 一致（0.7 → 1，缓出）
+  const heatScaleOf = (fade: number) => {
+    const e = 1 - Math.pow(1 - fade, 3); // easeOutCubic
+    return 0.7 + 0.3 * e;
+  };
   const center3 = useMemo(() => bbox.getCenter(new THREE.Vector3()), [bbox]);
   const targetRotX = pose === "standing" ? STANDING_ROT_X : LOCKED_VIEW_ROTATION[0];
 
@@ -583,11 +589,15 @@ function FeetMesh({
   useEffect(() => {
     settledRef.current = false;
   }, [pose, scale]);
-  useEffect(() => {
+  // 纹理"首次出现"（null→有）时重置展开进度，从 0 播淡入+缩放；采集页连续换纹理不重置。
+  // 必须在 render 阶段同步做（不能放 useEffect）：heatPlane 的 mesh/material 初值在本次
+  // render 里就按 heatFadeRef 求值，若等 effect 再重置，重进 COP 视图时会先按上次结束态
+  // （fade=1）满尺寸满透明度闪一帧，再缩回 0.7 重播。
+  {
     const has = !!(leftTex || rightTex);
-    if (has && !hadHeatRef.current) heatFadeRef.current = 0; // 仅"首次出现"触发淡入（采集页连续更新不重置）
+    if (has && !hadHeatRef.current) heatFadeRef.current = 0;
     hadHeatRef.current = has;
-  }, [leftTex, rightTex]);
+  }
   useEffect(() => {
     // 首次挂载直接就位（避免进页面时也播动画）
     const g = groupRef.current;
@@ -614,11 +624,14 @@ function FeetMesh({
       applyPivotPosition(g, targetRotX, scale);
       onPoseSettled?.();
     }
-    // 热力图淡入（0→1，约 0.3s）
+    // 热力图淡入 + 从中心缩放展开（0.7→1，约 0.4s；与分区色块 zone-grow 观感一致）
     if ((leftTex || rightTex) && heatFadeRef.current < 1) {
-      heatFadeRef.current = Math.min(1, heatFadeRef.current + 0.06);
-      const op = heatFadeRef.current * HEATMAP.opacity;
+      heatFadeRef.current = Math.min(1, heatFadeRef.current + 0.05);
+      const fade = heatFadeRef.current;
+      const op = fade * HEATMAP.opacity;
+      const sc = heatScaleOf(fade);
       for (const m of heatMatsRef.current) if (m) m.opacity = op;
+      for (const mesh of heatMeshesRef.current) if (mesh) mesh.scale.set(sc, sc, 1);
     }
   });
 
@@ -630,7 +643,20 @@ function FeetMesh({
   ) =>
     ce(
       "mesh",
-      { key, position: o.position, rotation: o.rotation, renderOrder: 3 },
+      {
+        key,
+        position: o.position,
+        rotation: o.rotation,
+        renderOrder: 3,
+        // 初始缩放随当前展开进度：采集页 fade 已=1 → 直接满尺寸；COP 首次进入 → 从 0.7 展开
+        ref: (mesh: THREE.Mesh | null) => {
+          heatMeshesRef.current[idx] = mesh;
+          if (mesh) {
+            const sc = heatScaleOf(heatFadeRef.current);
+            mesh.scale.set(sc, sc, 1);
+          }
+        },
+      },
       ce("planeGeometry", { args: o.args }),
       ce("meshBasicMaterial", {
         ref: (m: (THREE.Material & { opacity: number }) | null) => {

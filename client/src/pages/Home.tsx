@@ -1,19 +1,18 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useApp, User } from "@/contexts/AppContext";
+import { deviceManager } from "@/lib/deviceManager";
 import MeasurePage from "./MeasurePage";
 import ReportPage from "./ReportPage";
 import SolutionPage from "./SolutionPage";
 import HistoryPage from "./HistoryPage";
 import UserRecordsPage from "./UserRecordsPage";
-import ExceptionModal, { type ExceptionType } from "@/components/ExceptionModal";
+import ExceptionModal, { broadcastException, classifySerialError, type ExceptionType } from "@/components/ExceptionModal";
 import type { MeasureAnalysis } from "@/contexts/AppContext";
 
 const HOME_ASSETS = {
   brandLogo: "/assets/icons/home-page/brand-logo.svg",
-  heroTitle: "/assets/icons/home-page/hero-title.svg",
   stepIndicator: "/assets/icons/home-page/step-indicator.svg",
   userManagement: "/assets/icons/home-page/user-management.svg",
-  startButton: "/assets/icons/home-page/start-experience-button.svg",
   deviceConnected: "/assets/icons/home-page/device-connected.svg",
   deviceDisconnected: "/assets/icons/home-page/device-disconnected.svg",
   hourglassLeft: "/assets/icons/home-page/hourglass-left.svg",
@@ -108,9 +107,11 @@ function DeviceStatusBadge({ connected }: { connected: boolean }) {
 function LandingPage({
   onStart,
   onHistory,
+  connecting,
 }: {
   onStart: () => void;
   onHistory: () => void;
+  connecting: boolean;
 }) {
   const deviceConnected = useDeviceConnectionStatus();
 
@@ -122,17 +123,18 @@ function LandingPage({
         <img className="home-brand-logo" src={HOME_ASSETS.brandLogo} alt="ACIKI 动态足底压力解析系统" />
         <div className="home-header-actions">
           <img className="home-step-indicator" src={HOME_ASSETS.stepIndicator} alt="创建 测量 报告 方案" />
-          <button className="home-user-button" onClick={onHistory} aria-label="用户管理">
-            <img src={HOME_ASSETS.userManagement} alt="用户管理" />
+          <button className="home-user-link" onClick={onHistory} aria-label="用户管理">
+            用户管理
           </button>
         </div>
       </header>
 
       <main className="home-hero">
-        <img className="home-hero-title" src={HOME_ASSETS.heroTitle} alt="嘿！发现你的动态平衡足迹" />
-        <button className="home-start-button" onClick={onStart} aria-label="开始体验">
-          <img src={HOME_ASSETS.startButton} alt="开始体验" />
+        <h1 className="home-hero-slogan">Switch Your Sole, Reset Your Life.</h1>
+        <button className="home-start-button" onClick={onStart} disabled={connecting} aria-label="开始体验">
+          开始体验
         </button>
+        {connecting && <p className="home-connect-hint">正在连接足垫设备…</p>}
       </main>
 
       <footer className="home-footer">
@@ -276,6 +278,49 @@ export default function Home() {
   });
   const [prevView, setPrevView] = useState<AppView>("landing");
 
+  // ===== 进入系统即自动按设备码连接足垫（无需手势，走已授权端口） =====
+  // 连接成功且用户还停在首页 → 直达采集界面开始体验；采集出报告前再登记信息。
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const [deviceConnecting, setDeviceConnecting] = useState(false);
+
+  useEffect(() => {
+    let disposed = false;
+    setDeviceConnecting(true);
+    void deviceManager
+      .autoConnect()
+      .then((ok) => {
+        if (disposed || !ok) return;
+        if (viewRef.current === "landing") {
+          setCurrentStep(2);
+          setView("measure");
+        }
+      })
+      .finally(() => {
+        if (!disposed) setDeviceConnecting(false);
+      });
+    return () => {
+      disposed = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // "开始体验"：尝试连接足垫后进入采集界面。连接失败不挡路——照样进入
+  // （可导入数据回放 / 页内重试连接），异常经全局弹窗在采集页提示。
+  const handleStartExperience = async () => {
+    if (deviceConnecting) return;
+    setDeviceConnecting(true);
+    try {
+      await deviceManager.connectWithPrompt();
+    } catch (err) {
+      broadcastException(classifySerialError(err));
+    } finally {
+      setDeviceConnecting(false);
+    }
+    setCurrentStep(2);
+    setView("measure");
+  };
+
   const handleCreateUser = async (data: UserFormData) => {
     // 走后端持久化创建（服务端保证 id 唯一；后端不可用时 createUser 内部本地兜底）
     const newUser = await createUser({
@@ -410,12 +455,11 @@ export default function Home() {
           />
         ) : (
           <LandingPage
-            onStart={() => {
-              setCurrentStep(1);
-              setView("create");
-            }}
+            onStart={() => void handleStartExperience()}
             onHistory={handleShowHistory}
+            connecting={deviceConnecting}
           />
+
         )}
       </>
     );
@@ -494,11 +538,26 @@ const homeStyles = `
   }
 
   .home-logo-button,
-  .home-user-button,
-  .home-start-button {
+  .home-user-button {
     padding: 0;
     border: 0;
     background: transparent;
+  }
+
+  .home-start-button:disabled {
+    opacity: 0.6;
+    pointer-events: none;
+  }
+
+  .home-connect-hint {
+    margin: 14px 0 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: #8a6a40;
+  }
+
+  .home-connect-hint.is-error {
+    color: #d64545;
   }
 
   .home-logo-button {
@@ -524,6 +583,24 @@ const homeStyles = `
     transition: transform 160ms ease, opacity 160ms ease;
   }
 
+  /* 设计稿：landing 页"用户管理"为橙色下划线文字链接 */
+  .home-user-link {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    font-size: clamp(15px, 0.94vw, 18px);
+    font-weight: 700;
+    color: #f08614;
+    text-decoration: underline;
+    text-underline-offset: 5px;
+    cursor: pointer;
+    transition: transform 160ms ease, opacity 160ms ease;
+  }
+
+  .home-user-link:hover {
+    opacity: 0.85;
+  }
+
   .home-user-button:hover,
   .home-start-button:hover {
     transform: translateY(-1px);
@@ -534,35 +611,52 @@ const homeStyles = `
     transform: translateY(1px) scale(0.99);
   }
 
-  .home-user-button img,
-  .home-start-button img {
+  .home-user-button img {
     display: block;
     width: 100%;
     height: auto;
   }
 
+  /* 设计稿：标语与按钮整体水平居中（标语 720 宽居中，按钮 top 540 居中） */
   .home-hero {
     position: relative;
     z-index: 1;
-    width: min(42vw, 720px);
-    margin-left: clamp(58px, 5.78vw, 111px);
-    margin-top: clamp(200px, 21.2vh, 229px);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    margin-top: clamp(160px, 24vh, 280px);
   }
 
-  .home-hero-title {
-    display: block;
-    width: min(32.29vw, 620px);
-    min-width: 440px;
-    height: auto;
+  .home-hero-slogan {
+    margin: 0;
+    font-size: clamp(30px, 2.24vw, 43px);
+    font-style: italic;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+    color: #17191c;
   }
 
+  /* 设计稿按钮：287×89、圆角 30、#F08614 底、4px 金橙渐变描边（border-image 不支持
+     圆角，用 padding-box/border-box 双层背景实现）、白字 */
   .home-start-button {
     display: block;
-    width: min(14.95vw, 287px);
-    min-width: 220px;
-    margin-top: clamp(36px, 3.7vh, 40px);
+    width: clamp(230px, 14.95vw, 287px);
+    height: clamp(70px, 8.24vh, 89px);
+    margin-top: clamp(48px, 8.3vh, 90px);
+    border: 4px solid transparent;
+    border-radius: 30px;
+    background:
+      linear-gradient(#f08614, #f08614) padding-box,
+      linear-gradient(122deg, #ffc587 9%, #ffd86b 81%) border-box;
+    color: #ffffff;
+    font-size: clamp(20px, 1.25vw, 24px);
+    font-weight: 700;
+    letter-spacing: 4px;
+    cursor: pointer;
     transition: transform 160ms ease, filter 160ms ease;
-    filter: drop-shadow(0 8px 18px rgba(255, 132, 0, 0.12));
+    filter: drop-shadow(0 10px 22px rgba(240, 134, 20, 0.3));
   }
 
   .home-footer {

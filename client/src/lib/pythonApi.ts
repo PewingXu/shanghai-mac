@@ -109,6 +109,21 @@ export async function checkPythonBackend(): Promise<boolean> {
 }
 
 /**
+ * 等待 Python 后端就绪（轮询 /health）。
+ * 系统冷启动时后端要加载 cv2/scipy 等大库，可能比前端晚就绪几十秒——
+ * 采集完立刻分析会落空导致报告兜底。这里最多等 90s，超时仍继续发请求
+ * （失败由调用方兜底），保证"开机第一次测量"也能拿到真实分析。
+ */
+async function waitBackendReady(timeoutMs = 90000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await checkPythonBackend()) return true;
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  return false;
+}
+
+/**
  * 调用 Python 后端分析帧数据
  * @param frames 原始帧数据（每帧4096个值的二维数组）
  */
@@ -117,6 +132,7 @@ export async function analyzePython(
   fps = 42,
   thresholdRatio = 0.8,
 ): Promise<PythonAnalysisResult> {
+  await waitBackendReady();
   const res = await fetch(`${PYTHON_API_BASE}/analyze`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

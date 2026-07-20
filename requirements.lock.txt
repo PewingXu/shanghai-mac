@@ -1,0 +1,28 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Python 后端依赖【精确版本锁定】—— 打包 / 换机部署以本文件为准
+#
+# 来源：开发机锁定环境 C:\Users\xpr12\anaconda3\python.exe（Python 3.13.5），
+#       2026-07-17 已用真实测量 CSV 通过 /analyze-csv 全链路验证
+#       （足弓分区 section_coords / COP 轨迹 / 尺寸指标全部真实计算）。
+#
+# 部署到新机器：
+#   python -m pip install -r requirements.lock.txt
+#   然后设环境变量 ACIKI_PYTHON=<该解释器路径>，或直接跑一次 pnpm dev 自动锁定。
+#
+# 注意：
+#   - opencv 用 headless 版（服务端无 GUI，包更小且与开发机一致）
+#   - 不要安装 playwright 到该环境：api_server 已无条件跳过 PNG 渲染，
+#     但保持环境干净可避免任何意外（PDF 模板报告如需 playwright 用独立环境）
+# ─────────────────────────────────────────────────────────────────────────────
+
+fastapi==0.115.0
+uvicorn==0.30.6
+websockets==16.1
+pydantic==2.9.2
+numpy==1.26.4
+pandas==2.2.3
+scipy==1.14.1
+matplotlib==3.9.2
+seaborn==0.13.2
+opencv-python-headless==4.10.0.84
+pyserial==3.5

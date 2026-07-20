@@ -1,4 +1,6 @@
 import React, { useState, useMemo } from "react";
+import { formatUserId } from "@/lib/utils";
+import ConfirmModal from "@/components/ConfirmModal";
 import { useApp, User } from "@/contexts/AppContext";
 import PageBackground from "@/components/PageBackground";
 import TopNavBar from "@/components/TopNavBar";
@@ -22,7 +24,7 @@ function UserAvatar() {
   return (
     <div
       style={{
-        width: "82px",
+        width: "95px", // 设计稿：95×132 头像块
         flexShrink: 0,
         alignSelf: "stretch",
         // 设计稿：194deg 暖橙渐变
@@ -32,16 +34,7 @@ function UserAvatar() {
         justifyContent: "center",
       }}
     >
-      <svg width="40" height="40" viewBox="0 0 36 36" fill="none">
-        <circle cx="18" cy="13" r="7" fill="rgba(255,255,255,0.95)" />
-        <path
-          d="M4 32c0-7.732 6.268-14 14-14s14 6.268 14 14"
-          stroke="rgba(255,255,255,0.95)"
-          strokeWidth="2.5"
-          strokeLinecap="round"
-          fill="none"
-        />
-      </svg>
+      <img src="/assets/icons/history-user-page/user-avatar.svg" alt="" style={{ width: "38px", height: "auto" }} />
     </div>
   );
 }
@@ -79,7 +72,7 @@ function UserCard({
       style={{
         display: "flex",
         alignItems: "stretch",
-        height: "108px",
+        height: "132px", // 设计稿：550×132 卡片
         borderRadius: "12px",
         overflow: "hidden",
         cursor: "pointer",
@@ -96,28 +89,28 @@ function UserCard({
     >
       <UserAvatar />
 
-      <div style={{ flex: 1, minWidth: 0, padding: "0 20px", display: "flex", flexDirection: "column", justifyContent: "center", gap: "12px" }}>
-        {/* 姓名 + 唯一 ID */}
+      <div style={{ flex: 1, minWidth: 0, padding: "0 20px", display: "flex", flexDirection: "column", justifyContent: "center", gap: "14px" }}>
+        {/* 姓名 + 唯一 ID（设计稿：同为深黑，ID 略小） */}
         <div style={{ display: "flex", alignItems: "baseline", gap: "8px", minWidth: 0 }}>
           <span style={{ fontSize: "20px", fontWeight: 600, color: "#17191C", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
             {user.name}
           </span>
-          <span style={{ fontSize: "14px", fontWeight: 400, color: "#b09a7a", whiteSpace: "nowrap", flexShrink: 0 }}>
-            （ID:{user.id}）
+          <span style={{ fontSize: "15px", fontWeight: 500, color: "#17191C", whiteSpace: "nowrap", flexShrink: 0 }}>
+            （ID:{formatUserId(user.id)}）
           </span>
         </div>
-        {/* 性别 / 鞋码 / 年龄（鞋码暂占位） */}
-        <div style={{ display: "flex", gap: "22px", alignItems: "baseline", flexWrap: "wrap" }}>
+        {/* 性别 / 鞋码 / 年龄（设计稿：整行浅橙底衬条） */}
+        <div style={{ display: "flex", gap: "24px", alignItems: "baseline", flexWrap: "wrap", background: "#FFF6E9", borderRadius: "6px", padding: "5px 12px", width: "fit-content" }}>
           <Field label="性别：" value={user.gender || "—"} />
-          <Field label="鞋码：" value="—" />
+          <Field label="鞋码：" value={user.shoeSize?.trim() ? (user.shoeSize.trim().endsWith("码") ? user.shoeSize.trim() : `${user.shoeSize.trim()}码`) : "—"} />
           <Field label="年龄：" value={age != null ? `${age}岁` : "—"} />
         </div>
       </div>
 
-      {/* 右箭头 */}
+      {/* 右箭头（设计稿：12×24 橙色 #FF8400） */}
       <div style={{ display: "flex", alignItems: "center", paddingRight: "18px", flexShrink: 0 }}>
-        <svg width="10" height="16" viewBox="0 0 10 16" fill="none" style={{ opacity: hovered ? 1 : 0.55, transform: hovered ? "translateX(2px)" : "none", transition: "all 0.15s" }}>
-          <path d="M1 1L9 8L1 15" stroke="#FF8400" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        <svg width="12" height="24" viewBox="0 0 12 24" fill="none" style={{ opacity: hovered ? 1 : 0.8, transform: hovered ? "translateX(2px)" : "none", transition: "all 0.15s" }}>
+          <path d="M2 3L10 12L2 21" stroke="#FF8400" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </div>
 
@@ -215,10 +208,10 @@ export default function HistoryPage({
 
   const handleDelete = () => {
     if (selectedIds.size === 0) return;
-    if (!deleteConfirm) {
-      setDeleteConfirm(true);
-      return;
-    }
+    setDeleteConfirm(true); // 弹出设计稿确认弹窗
+  };
+
+  const confirmDelete = () => {
     removeHistoryUsers(Array.from(selectedIds));
     setSelectedIds(new Set());
     setDeleteConfirm(false);
@@ -241,7 +234,8 @@ export default function HistoryPage({
       }}
     >
       <PageBackground />
-      <TopNavBar currentStep={0} showHistory={false} />
+      {/* 透明页眉：与首页/设计稿一致，Logo 与步骤条直接浮在暖白背景上 */}
+      <TopNavBar currentStep={0} showHistory={false} transparent />
 
       <main
         style={{
@@ -258,24 +252,24 @@ export default function HistoryPage({
           <h1 style={{ margin: 0, fontSize: "26px", fontWeight: 700, color: "#3D2000", letterSpacing: "0.04em" }}>用户管理</h1>
 
           <div style={{ display: "flex", gap: "14px", alignItems: "center" }}>
-            {/* 搜索框（内含 查询） */}
+            {/* 搜索框（设计稿：白底橙细边胶囊，右侧"查询"为橙色文字） */}
             <div
               style={{
                 display: "flex",
                 alignItems: "center",
-                backgroundColor: "rgba(255,255,255,0.9)",
-                borderRadius: "28px",
-                border: "1.5px solid rgba(203,161,115,0.45)",
-                padding: "0 8px 0 20px",
-                height: "48px",
+                backgroundColor: "#ffffff",
+                borderRadius: "22px",
+                border: "1.5px solid #FFB25F",
+                padding: "0 18px",
+                height: "42px",
                 gap: "10px",
-                width: "340px",
+                width: "300px",
                 boxSizing: "border-box",
               }}
             >
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, opacity: 0.5 }}>
-                <circle cx="6.5" cy="6.5" r="5" stroke="#7A5030" strokeWidth="1.5" />
-                <path d="M10.5 10.5L14 14" stroke="#7A5030" strokeWidth="1.5" strokeLinecap="round" />
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+                <circle cx="6.5" cy="6.5" r="5" stroke="#F08614" strokeWidth="1.6" />
+                <path d="M10.5 10.5L14 14" stroke="#F08614" strokeWidth="1.6" strokeLinecap="round" />
               </svg>
               <input
                 type="text"
@@ -286,47 +280,52 @@ export default function HistoryPage({
               />
               <button
                 onClick={() => setCurrentPage(0)}
-                style={{ flexShrink: 0, height: "36px", padding: "0 16px", borderRadius: "20px", border: "none", cursor: "pointer", fontSize: "14px", fontWeight: 600, color: "#fff", background: "linear-gradient(90deg,#ff9a2e,#ff8400)" }}
+                style={{ flexShrink: 0, border: "none", background: "none", cursor: "pointer", fontSize: "15px", fontWeight: 600, color: "#FF8400", padding: 0 }}
               >
                 查询
               </button>
             </div>
 
-            {/* 删除用户 */}
+            {/* 删除用户（设计稿：白底橙字橙细边胶囊；点击弹确认弹窗） */}
             <button
               onClick={handleDelete}
               style={{
                 display: "flex",
                 alignItems: "center",
                 gap: "8px",
-                height: "48px",
-                padding: "0 22px",
-                borderRadius: "28px",
-                border: deleteConfirm ? "1.5px solid #E05030" : "1.5px solid rgba(203,161,115,0.5)",
-                backgroundColor: deleteConfirm ? "rgba(224,80,48,0.1)" : "rgba(255,255,255,0.9)",
+                height: "42px",
+                padding: "0 20px",
+                borderRadius: "22px",
+                border: "1.5px solid #FFB25F",
+                backgroundColor: "#ffffff",
                 cursor: selectedIds.size > 0 ? "pointer" : "not-allowed",
-                opacity: selectedIds.size > 0 ? 1 : 0.55,
-                fontSize: "14px",
+                opacity: selectedIds.size > 0 ? 1 : 0.6,
+                fontSize: "15px",
                 fontWeight: 600,
-                color: deleteConfirm ? "#E05030" : "#7A5030",
+                color: "#FF8400",
                 transition: "all 0.18s",
                 whiteSpace: "nowrap",
               }}
             >
-              <svg width="14" height="16" viewBox="0 0 14 16" fill="none">
-                <path d="M1 4h12M5 4V2h4v2M2 4l1 10h8l1-10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-              {deleteConfirm ? `确认删除 ${selectedIds.size} 项` : `删除用户${selectedIds.size > 0 ? `（${selectedIds.size}）` : ""}`}
+              {/* 删除图标（mask 方式跟随文字颜色：常态棕、确认删除态红） */}
+              <span
+                style={{
+                  width: "16px",
+                  height: "16px",
+                  display: "inline-block",
+                  backgroundColor: "currentcolor",
+                  WebkitMaskImage: "url(/assets/icons/history-user-page/delete.svg)",
+                  maskImage: "url(/assets/icons/history-user-page/delete.svg)",
+                  WebkitMaskSize: "contain",
+                  maskSize: "contain",
+                  WebkitMaskRepeat: "no-repeat",
+                  maskRepeat: "no-repeat",
+                  WebkitMaskPosition: "center",
+                  maskPosition: "center",
+                }}
+              />
+              删除用户{selectedIds.size > 0 ? `（${selectedIds.size}）` : ""}
             </button>
-
-            {deleteConfirm && (
-              <button
-                onClick={() => setDeleteConfirm(false)}
-                style={{ height: "48px", padding: "0 16px", borderRadius: "28px", border: "1.5px solid rgba(203,161,115,0.5)", backgroundColor: "rgba(255,255,255,0.9)", cursor: "pointer", fontSize: "14px", color: "#7A5030" }}
-              >
-                取消
-              </button>
-            )}
           </div>
         </div>
 
@@ -386,13 +385,24 @@ export default function HistoryPage({
         {deviceConnected ? "设备连接正常" : "设备未连接"}
       </div>
 
-      {/* 右下角：返回首页 */}
+      {/* 删除用户确认弹窗（设计稿样式） */}
+      {deleteConfirm && (
+        <ConfirmModal
+          title="删除用户"
+          message={`删除${selectedIds.size > 1 ? `这 ${selectedIds.size} 位` : "该"}用户后，其所有数据将被一并清除。\n确认删除吗？`}
+          confirmText="删除用户"
+          onConfirm={confirmDelete}
+          onCancel={() => setDeleteConfirm(false)}
+        />
+      )}
+
+      {/* 右下角：返回上一页（回到进入本页前的页面：首页/采集页等） */}
       <div style={{ position: "fixed", bottom: "30px", right: "64px", zIndex: 50 }}>
         <button
           onClick={onBack}
           style={{ background: "none", border: "none", cursor: "pointer", fontSize: "16px", fontWeight: 600, color: "#FF8400", padding: "8px 0", letterSpacing: "0.02em", textDecoration: "underline", textUnderlineOffset: "4px" }}
         >
-          返回首页
+          返回上一页
         </button>
       </div>
     </div>

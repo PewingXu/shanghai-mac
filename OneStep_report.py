@@ -1402,13 +1402,15 @@ def calculate_cop_time_series(left_cop, right_cop, additional_data, dt=0.024):
         cov_matrix = np.cov(centered_data.T)
         eigenvalues = np.linalg.eigvals(cov_matrix)
         eigenvalues = np.sort(eigenvalues)[::-1]
-        major_axis = np.round(2 * np.sqrt(eigenvalues[0]) * 0.7, 2)
-        minor_axis = np.round(2 * np.sqrt(eigenvalues[1]) * 0.7, 2)
+        # 传感点间距 7mm：与 path_length/std/delta 同一单位（mm）。
+        # 旧版此处误用 0.7（cm），导致摆幅/离心比其它指标小 10 倍，前端单位对不上。
+        major_axis = np.round(2 * np.sqrt(eigenvalues[0]) * 7, 2)
+        minor_axis = np.round(2 * np.sqrt(eigenvalues[1]) * 7, 2)
         print(major_axis ,minor_axis )
     except:
         major_axis = delta_x
         minor_axis = delta_y
-    displacement = np.sqrt((x - center[0]) ** 2 + (y - center[1]) ** 2) * 0.7
+    displacement = np.sqrt((x - center[0]) ** 2 + (y - center[1]) ** 2) * 7
     max_displacement = np.max(displacement)
     min_displacement = np.min(displacement)
     avg_velocity = np.mean(velocity_series)
@@ -2453,7 +2455,13 @@ def cal_cop_fromData(data_array, threshold_ratio=0.8, fps=42, r_radius=0.1, time
     png_path = None
     if save_pdf_path:          # 只要准备出报告就顺手渲染
         png_path = Path(str(Path(save_pdf_path).with_suffix('')) + '_web_heatmap.png')
-        asyncio.run(generate_heatmap_png(arch_results['peak_frame_data'], png_path))
+        # PNG 渲染依赖 playwright 浏览器，仅 PDF 报告的附属图片——渲染失败绝不能
+        # 拖垮整个分析（曾因 playwright 装了库但缺浏览器，导致 /analyze 全部 500）
+        try:
+            asyncio.run(generate_heatmap_png(arch_results['peak_frame_data'], png_path))
+        except Exception as _png_err:
+            print(f"[warn] web 热力图 PNG 渲染失败（不影响分析指标）: {_png_err}")
+            png_path = None
     # 生成PDF报告
     if save_pdf_path:
         # ✅ 修改点：直接使用 save_pdf_path 的父目录

@@ -3,6 +3,7 @@ import type { PythonAnalysisResult } from "@/lib/pythonApi";
 import {
   apiListUsers,
   apiCreateUser,
+  apiUpdateUser,
   apiDeleteUsers,
   apiListRecords,
   apiCreateRecord,
@@ -34,6 +35,8 @@ export interface User {
   gender?: string;
   height?: number;
   weight?: number;
+  /** 鞋码（如 "41码"；用户卡展示 + 编辑弹窗录入，后端 shoe_size 字段） */
+  shoeSize?: string;
 }
 
 export interface CollectionRecord {
@@ -56,6 +59,8 @@ interface AppContextType {
   historyUsers: User[];
   /** 新建用户（走后端持久化，服务端保证 id 唯一；后端不可用时本地兜底），返回创建的用户 */
   createUser: (data: Omit<User, "id"> & { id?: number }) => Promise<User>;
+  /** 编辑用户基础信息（走后端持久化；后端不可用时本地兜底），返回更新后的用户 */
+  updateUser: (data: User) => Promise<User>;
   removeHistoryUsers: (ids: number[]) => void;
   collectionRecords: CollectionRecord[];
   /** 从后端拉取某用户的全部采集记录（进入采集信息页时调用） */
@@ -76,6 +81,7 @@ const AppContext = createContext<AppContextType>({
   setCurrentView: () => {},
   historyUsers: [],
   createUser: async () => ({ id: 0, name: "" }),
+  updateUser: async (u) => u,
   removeHistoryUsers: () => {},
   collectionRecords: [],
   loadRecordsForUser: async () => {},
@@ -93,8 +99,30 @@ const DEMO_USERS: User[] = [];
 // 采集记录种子：清空（原演示记录挂在已删除的果果 userId 上）
 const DEMO_RECORDS: CollectionRecord[] = [];
 
+// 当前用户随会话持久化：刷新页面 / URL 直达（?view=userRecords 等）不丢选中用户
+const CURRENT_USER_KEY = "aciki-current-user";
+
 export function AppProvider({ children }: { children: React.ReactNode }) {
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [currentUser, setCurrentUserState] = useState<User | null>(() => {
+    try {
+      const raw = window.sessionStorage.getItem(CURRENT_USER_KEY);
+      return raw ? (JSON.parse(raw) as User) : null;
+    } catch {
+      return null;
+    }
+  });
+  const setCurrentUser: React.Dispatch<React.SetStateAction<User | null>> = (action) => {
+    setCurrentUserState((prev) => {
+      const next = typeof action === "function" ? (action as (p: User | null) => User | null)(prev) : action;
+      try {
+        if (next) window.sessionStorage.setItem(CURRENT_USER_KEY, JSON.stringify(next));
+        else window.sessionStorage.removeItem(CURRENT_USER_KEY);
+      } catch {
+        /* sessionStorage 不可用则仅内存态 */
+      }
+      return next;
+    });
+  };
   const [currentStep, setCurrentStep] = useState(1);
   const [currentView, setCurrentView] = useState<AppView>("home");
   const [historyUsers, setHistoryUsers] = useState<User[]>(DEMO_USERS);
@@ -102,12 +130,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [selectedRecord, setSelectedRecord] = useState<CollectionRecord | null>(null);
   const [analysis, setAnalysis] = useState<MeasureAnalysis | null>(null);
 
-  // 开机从后端拉取用户列表（后端不可用则保持空，不报错）
+  // 开机从后端拉取用户列表（后端不可用则保持空，不报错）。
+  // 同时校验会话恢复的 currentUser：已被删除（清库/删用户）的幽灵用户直接清掉。
   useEffect(() => {
     let alive = true;
     apiListUsers()
       .then((us) => {
-        if (alive) setHistoryUsers(us as User[]);
+        if (!alive) return;
+        setHistoryUsers(us as User[]);
+        setCurrentUser((prev) => (prev && !us.some((u) => u.id === prev.id) ? null : prev));
       })
       .catch(() => {
         /* 后端未就绪：保持本地内存 */
@@ -115,6 +146,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return () => {
       alive = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const createUser = async (data: Omit<User, "id"> & { id?: number }): Promise<User> => {
@@ -123,19 +155,31 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setHistoryUsers((prev) => [u, ...prev.filter((p) => p.id !== u.id)]);
       return u;
     } catch {
-      // 后端不可用：本地生成唯一 id 兜底（刷新会丢，仅保证流程可用）
-      const used = new Set(historyUsers.map((u) => u.id));
-      let id = Math.floor(10000 + Math.random() * 90000);
-      while (used.has(id)) id = Math.floor(10000 + Math.random() * 90000);
+      // 后端不可用：本地自增 id 兜底（与服务端同规则 max+1；刷新会丢，仅保证流程可用）
+      const id = data.id ?? historyUsers.reduce((m, u) => Math.max(m, u.id), 0) + 1;
       const u: User = { ...data, id };
       setHistoryUsers((prev) => [u, ...prev]);
       return u;
     }
   };
 
+  const updateUser = async (data: User): Promise<User> => {
+    let updated = data;
+    try {
+      updated = (await apiUpdateUser(data as never)) as User;
+    } catch {
+      /* 后端不可用：本地更新兜底（刷新会丢） */
+    }
+    setHistoryUsers((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+    setCurrentUser((prev) => (prev?.id === updated.id ? updated : prev));
+    return updated;
+  };
+
   const removeHistoryUsers = (ids: number[]) => {
     const idSet = new Set(ids);
     setHistoryUsers((prev) => prev.filter((u) => !idSet.has(u.id)));
+    // 删除的用户若是当前选中用户：一并清除（避免测量页/采集信息页残留幽灵用户）
+    setCurrentUser((prev) => (prev && idSet.has(prev.id) ? null : prev));
     apiDeleteUsers(ids).catch(() => {
       /* 后端不可用：本地已移除，忽略同步失败 */
     });
@@ -191,6 +235,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setCurrentView,
         historyUsers,
         createUser,
+        updateUser,
         removeHistoryUsers,
         collectionRecords,
         loadRecordsForUser,

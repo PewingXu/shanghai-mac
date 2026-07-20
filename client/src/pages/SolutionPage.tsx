@@ -15,6 +15,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { toast } from "sonner";
 import { useApp } from "@/contexts/AppContext";
+import { formatUserId } from "@/lib/utils";
 // 解决方案页采用左白右橙的分屏背景（见下方 SplitBackground），不复用全屏橙色 PageBackground
 import { StlInsoleViewer, type StlInsoleParams } from "@/components/StlInsoleViewer";
 import {
@@ -925,7 +926,7 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
 
       <BottomBar
         userName={currentUser?.name ?? "—"}
-        userId={String(currentUser?.id ?? "—")}
+        userId={currentUser ? formatUserId(currentUser.id) : "—"}
         onBack={handleRemeasure}
         onRestart={handleFinish}
         onDownload={() => setOverlay("download")}

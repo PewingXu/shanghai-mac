@@ -8,6 +8,7 @@
  */
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useApp, type MeasureAnalysis } from "@/contexts/AppContext";
+import { formatUserId } from "@/lib/utils";
 import FeetModel3D, {
   equalizeZoneBounds,
   type FootAnno,
@@ -196,14 +197,18 @@ function FootStage({ dims, arch, mode }: { dims: ReportData["dims"]; arch: Repor
     return () => ro.disconnect();
   }, []);
 
-  // ===== 压力/面积：足弓分区（Python section_coords；缺失回退 demo）=====
+  // ===== 压力/面积：足弓分区（Python section_coords；缺失回退 demo 并显示水印）=====
   const sections = useMemo(() => {
     const af = analysis?.python?.success ? analysis.python.data.arch_features : null;
     const L = af ? normalizeSectionCoords(af.left_foot?.section_coords) : [];
     const R = af ? normalizeSectionCoords(af.right_foot?.section_coords) : [];
+    const realL = L.length >= 4 && L.some((s) => s?.length);
+    const realR = R.length >= 4 && R.some((s) => s?.length);
     return {
-      left: L.length >= 4 && L.some((s) => s?.length) ? L : demoSections(false),
-      right: R.length >= 4 && R.some((s) => s?.length) ? R : demoSections(true),
+      left: realL ? L : demoSections(false),
+      right: realR ? R : demoSections(true),
+      // 任一侧回退演示分区 → 界面显式提示（曾因 Python 环境缺依赖静默兜底，被误当真实数据）
+      isDemo: !realL || !realR,
     };
   }, [analysis]);
 
@@ -619,6 +624,15 @@ function FootStage({ dims, arch, mode }: { dims: ReportData["dims"]; arch: Repor
         </>
       )}
 
+      {/* 压力/面积：分区回退演示数据时的显式提示（防止误当真实分析结果） */}
+      {mode === "pressure" && settled && sections.isDemo && (
+        <div className="anno-appear">
+          <span style={{ position: "absolute", left: "50%", bottom: "4%", transform: "translateX(-50%)", fontSize: "12px", fontWeight: 700, color: "#c2410c", background: "rgba(255,255,255,0.85)", padding: "4px 14px", borderRadius: "999px", zIndex: 10, pointerEvents: "none", whiteSpace: "nowrap" }}>
+            ⚠ 演示分区：未获取到本次测量的真实分区数据（请检查 Python 后端是否正常）
+          </span>
+        </div>
+      )}
+
       {/* 压力/面积：分区标签 + 区界虚线（同视角，纯数据可视化展开，不旋转） */}
       {mode === "pressure" && settled && rects && geo && (
         <div className="anno-appear">
@@ -638,6 +652,15 @@ function FootStage({ dims, arch, mode }: { dims: ReportData["dims"]; arch: Repor
           {geo.right?.centers.map((y, zi) =>
             chip(zi, sections.right[zi]?.length ?? 0, rects.right.rect.left + rects.right.rect.width + 8, y, false, `cr-${zi}`),
           )}
+        </div>
+      )}
+
+      {/* 压力/面积：分区数据缺失回退演示时的显式提示（防止把假数据当真） */}
+      {mode === "pressure" && settled && sections.isDemo && (
+        <div className="anno-appear">
+          <span style={{ position: "absolute", left: "50%", bottom: "4%", transform: "translateX(-50%)", fontSize: "12px", fontWeight: 700, color: "#b45309", background: "rgba(255,244,229,0.92)", border: "1px solid #f6ad55", padding: "4px 14px", borderRadius: "999px", zIndex: 10, pointerEvents: "none", whiteSpace: "nowrap" }}>
+            演示分区示意 —— 本次测量未获取到真实分区数据，请确认 Python 分析服务在运行后重新测量
+          </span>
         </div>
       )}
 
@@ -992,6 +1015,15 @@ const REPORT_DATA = {
     left: { index: 0.272, type: "扁平足", mli: 0.89, risk: "足内翻风险", riskColor: "#ff5a2c" },
     right: { index: 0.285, type: "扁平足", mli: 1.02, risk: "正常足弓", riskColor: "#2fb56b" },
   },
+  // 顶部"报告分析总结"卡的演示兜底（真实测量时由 buildReportData 以同源数据覆盖）
+  summary: {
+    archLType: "扁平足",
+    archLIndex: 0.272,
+    archRType: "扁平足",
+    archRIndex: 0.272,
+    copLen: "126.3mm",
+    copNote: "平衡控制良好",
+  },
   pressure: {
     leftTotal: 15773,
     rightTotal: 15773,
@@ -1071,10 +1103,12 @@ function buildReportData(a: MeasureAnalysis | null): ReportData {
 
   return {
     dims: {
-      leftLen: ad ? Math.round(ad.left_length) : base.dims.leftLen,
-      rightLen: ad ? Math.round(ad.right_length) : base.dims.rightLen,
-      leftWid: ad ? Math.round(ad.left_width) : base.dims.leftWid,
-      rightWid: ad ? Math.round(ad.right_width) : base.dims.rightWid,
+      // Python 的 left_length/width 单位是 cm（(格数)×0.7cm + 1.5，垫子点间距 7mm），
+      // 前端展示单位 mm → ×10 换算（曾直接当 mm 显示导致"足长 26mm"）
+      leftLen: ad ? Math.round(ad.left_length * 10) : base.dims.leftLen,
+      rightLen: ad ? Math.round(ad.right_length * 10) : base.dims.rightLen,
+      leftWid: ad ? Math.round(ad.left_width * 10) : base.dims.leftWid,
+      rightWid: ad ? Math.round(ad.right_width * 10) : base.dims.rightWid,
     },
     arch: { left: mkArch("left"), right: mkArch("right") },
     pressure: {
@@ -1107,6 +1141,16 @@ function buildReportData(a: MeasureAnalysis | null): ReportData {
       },
       bothTotal: la + ra,
       diff: Math.round(Math.abs(la - ra) * 10) / 10,
+    },
+    // 顶部"报告分析总结"卡：与右侧报告数据同源（曾硬编码演示值导致两边对不上）
+    summary: {
+      archLType: (arch?.left_foot?.area_type ?? base.arch.left.type).replace(/\s*[（(].*$/, ""),
+      archLIndex: arch?.left_foot?.area_index ?? base.arch.left.index,
+      archRType: (arch?.right_foot?.area_type ?? base.arch.right.type).replace(/\s*[（(].*$/, ""),
+      archRIndex: arch?.right_foot?.area_index ?? base.arch.right.index,
+      copLen: cop ? `${cop.path_length.toFixed(1)}mm` : "—",
+      // 平衡评价（展示文案，阈值可按需调整）：静态站立 COP 轨迹越短平衡控制越稳
+      copNote: cop ? (cop.path_length <= 500 ? "平衡控制良好" : "平衡波动较大") : "",
     },
     cop: cop
       ? [
@@ -1400,30 +1444,36 @@ export default function ReportPage({ onNext, onHistory, onBack, onStepBack }: { 
           </button>
         </div>
 
-        {/* 总结卡片 */}
+        {/* 总结卡片：与右侧报告数据同源（buildReportData.summary），不再硬编码演示值 */}
         {showSummary && (
           <div style={{ width: "fit-content", background: "rgba(255,255,255,0.75)", borderRadius: "12px", padding: "14px 20px", marginBottom: "16px", display: "flex", gap: "32px", boxShadow: "0 1px 8px rgba(200,120,0,0.08)", flexWrap: "wrap" }}>
             <div style={{ display: "flex", gap: "24px" }}>
               <div>
                 <div style={{ fontSize: "11px", color: "#8A6A40", marginBottom: "4px" }}>左脚足弓分析</div>
-                <div style={{ fontSize: "16px", fontWeight: "700", color: "#3A2A10" }}>扁平足</div>
-                <div style={{ fontSize: "11px", color: "#8A6A40" }}>AI=0.272</div>
+                <div style={{ fontSize: "16px", fontWeight: "700", color: "#3A2A10" }}>{reportData.summary.archLType}</div>
+                <div style={{ fontSize: "11px", color: "#8A6A40" }}>AI={reportData.summary.archLIndex.toFixed(3)}</div>
               </div>
               <div>
                 <div style={{ fontSize: "11px", color: "#8A6A40", marginBottom: "4px" }}>右脚足弓分析</div>
-                <div style={{ fontSize: "16px", fontWeight: "700", color: "#3A2A10" }}>扁平足</div>
-                <div style={{ fontSize: "11px", color: "#8A6A40" }}>AI=0.272</div>
+                <div style={{ fontSize: "16px", fontWeight: "700", color: "#3A2A10" }}>{reportData.summary.archRType}</div>
+                <div style={{ fontSize: "11px", color: "#8A6A40" }}>AI={reportData.summary.archRIndex.toFixed(3)}</div>
               </div>
             </div>
             <div style={{ borderLeft: "1px solid rgba(245,166,35,0.2)", paddingLeft: "24px" }}>
               <div style={{ fontSize: "11px", color: "#8A6A40", marginBottom: "4px" }}>左右脚压力占比</div>
-              <div style={{ fontSize: "18px", fontWeight: "700", color: "#F5A623" }}>48%：52%</div>
-              <div style={{ fontSize: "11px", color: "#4A90E2" }}>压力分布较为均衡</div>
+              <div style={{ fontSize: "18px", fontWeight: "700", color: "#F5A623" }}>
+                {reportData.pressure.leftRatio}%：{100 - reportData.pressure.leftRatio}%
+              </div>
+              <div style={{ fontSize: "11px", color: Math.abs(reportData.pressure.leftRatio - 50) <= 5 ? "#4A90E2" : "#ff5a2c" }}>
+                {Math.abs(reportData.pressure.leftRatio - 50) <= 5
+                  ? "压力分布较为均衡"
+                  : `压力偏向${reportData.pressure.leftRatio > 50 ? "左" : "右"}脚`}
+              </div>
             </div>
             <div style={{ borderLeft: "1px solid rgba(245,166,35,0.2)", paddingLeft: "24px" }}>
               <div style={{ fontSize: "11px", color: "#8A6A40", marginBottom: "4px" }}>COP轨迹长度</div>
-              <div style={{ fontSize: "18px", fontWeight: "700", color: "#3A2A10" }}>126.3mm</div>
-              <div style={{ fontSize: "11px", color: "#4A90E2" }}>平衡控制良好</div>
+              <div style={{ fontSize: "18px", fontWeight: "700", color: "#3A2A10" }}>{reportData.summary.copLen}</div>
+              <div style={{ fontSize: "11px", color: "#4A90E2" }}>{reportData.summary.copNote}</div>
             </div>
           </div>
         )}
@@ -1437,7 +1487,7 @@ export default function ReportPage({ onNext, onHistory, onBack, onStepBack }: { 
         {/* 左区底部信息栏（融入背景，无填充） */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "28px", padding: "10px 3% 2px 0" }}>
           <span style={{ fontSize: "14px", fontWeight: 700, color: "#3d3d3d" }}>
-            当前用户：{currentUser?.name ?? "—"}（ID:{currentUser?.id ?? "—"}）
+            当前用户：{currentUser?.name ?? "—"}（ID:{currentUser ? formatUserId(currentUser.id) : "—"}）
           </span>
           <button onClick={onBack} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "14px", color: "#3d3d3d", fontWeight: "700", textDecoration: "underline", textUnderlineOffset: "4px" }}>
             重新测量

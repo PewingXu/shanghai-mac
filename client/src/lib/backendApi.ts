@@ -23,6 +23,14 @@ export async function apiListUsers(): Promise<ApiUser[]> {
   return (data.users ?? []) as ApiUser[];
 }
 
+/** 下一个将分配的自增用户 id（创建弹窗标题展示；真正分配以创建返回为准） */
+export async function apiNextUserId(): Promise<number> {
+  const res = await fetch(`${BASE}/users/next-id`, { signal: AbortSignal.timeout(3000) });
+  if (!res.ok) throw new Error(`next-id failed: ${res.status}`);
+  const data = await res.json();
+  return data.id as number;
+}
+
 /** 新建用户（服务端保证 id 唯一），返回完整用户 */
 export async function apiCreateUser(u: Partial<ApiUser> & { name: string }): Promise<ApiUser> {
   const res = await fetch(`${BASE}/users`, {
@@ -31,6 +39,18 @@ export async function apiCreateUser(u: Partial<ApiUser> & { name: string }): Pro
     body: JSON.stringify(u),
   });
   if (!res.ok) throw new Error(`create user failed: ${res.status}`);
+  const data = await res.json();
+  return data.user as ApiUser;
+}
+
+/** 编辑用户基础信息（按 id），返回更新后的完整用户 */
+export async function apiUpdateUser(u: Partial<ApiUser> & { id: number; name: string }): Promise<ApiUser> {
+  const res = await fetch(`${BASE}/users/update`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(u),
+  });
+  if (!res.ok) throw new Error(`update user failed: ${res.status}`);
   const data = await res.json();
   return data.user as ApiUser;
 }

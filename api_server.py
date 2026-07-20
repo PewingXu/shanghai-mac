@@ -12,6 +12,7 @@ if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
+import asyncio
 import json
 import tempfile
 import traceback
@@ -19,7 +20,7 @@ import base64
 import shutil
 import numpy as np
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Any, List, Optional
@@ -31,16 +32,15 @@ matplotlib.use('Agg')
 # 确保能导入同目录下的模块
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# heatmap_renderer 依赖 playwright（仅 PDF 报告需要），API 服务不需要
-# 如果 playwright 未安装，提供一个空的 mock 避免导入失败
-try:
-    import playwright  # noqa: F401
-except ImportError:
-    import types
-    mock_module = types.ModuleType("heatmap_renderer")
-    async def _noop(*args, **kwargs): return None
-    mock_module.generate_heatmap_png = _noop  # type: ignore
-    sys.modules["heatmap_renderer"] = mock_module
+# heatmap_renderer 依赖 playwright 浏览器（仅 PDF 报告需要），API 服务一律不用——
+# 无条件 mock 成空实现。不要改回"playwright 装了才走真实渲染"：机器上装了
+# playwright 库但缺配套浏览器时，会导致 /analyze 在最后渲染步骤 500，前端全兜底。
+import types
+_mock_hm = types.ModuleType("heatmap_renderer")
+async def _noop(*args, **kwargs):
+    return None
+_mock_hm.generate_heatmap_png = _noop  # type: ignore
+sys.modules["heatmap_renderer"] = _mock_hm
 
 from OneStep_report import (
     load_csv_data,
@@ -313,12 +313,48 @@ def get_users():
     return {"success": True, "users": db_store.list_users()}
 
 
+@app.get("/users/next-id")
+def get_next_user_id():
+    """下一个将分配的自增用户 id（创建弹窗标题展示）"""
+    try:
+        return {"success": True, "id": db_store.next_user_id()}
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/users")
 def create_user(req: UserCreateRequest):
     """新建用户；服务端保证 id 唯一，返回完整用户对象"""
     try:
         user = db_store.create_user(req.model_dump())
         return {"success": True, "user": user}
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class UserUpdateRequest(BaseModel):
+    """编辑用户：按 id 更新基础信息"""
+    id: int
+    name: str
+    gender: Optional[str] = None
+    birthDate: Optional[str] = None
+    height: Optional[float] = None
+    weight: Optional[float] = None
+    shoeSize: Optional[str] = None
+
+
+@app.post("/users/update")
+def update_user(req: UserUpdateRequest):
+    """编辑用户基础信息，返回更新后的完整用户对象"""
+    try:
+        user = db_store.update_user(req.model_dump())
+        if user is None:
+            raise HTTPException(status_code=404, detail="user not found")
+        return {"success": True, "user": user}
+    except HTTPException:
+        raise
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -371,6 +407,51 @@ def delete_record(req: RecordDeleteRequest):
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── 串口桥：后端扫描全部 COM 口按设备码自动连接足垫，帧经 WebSocket 推前端 ──
+# （pyserial 缺失时不影响其余 API：/device/status 会报 unavailable，前端回退 Web Serial）
+try:
+    from serial_bridge import bridge as _serial_bridge
+
+    _serial_bridge.start()
+except Exception as _bridge_err:  # noqa: N816
+    print(f"[bridge] serial bridge unavailable: {_bridge_err}")
+    _serial_bridge = None
+
+
+@app.get("/device/status")
+def device_status():
+    """足垫连接状态：state = disconnected | scanning | connected"""
+    if _serial_bridge is None:
+        return {"available": False, "state": "unavailable"}
+    return {"available": True, **_serial_bridge.status()}
+
+
+@app.websocket("/device/stream")
+async def device_stream(ws: WebSocket):
+    """帧流：二进制消息 = 4096B 一帧（64×64 行优先）；文本消息 = JSON 状态变化。"""
+    await ws.accept()
+    if _serial_bridge is None:
+        await ws.send_json({"type": "status", "state": "unavailable"})
+        await ws.close()
+        return
+    queue: asyncio.Queue = asyncio.Queue(maxsize=4)
+    _serial_bridge.subscribe(queue, asyncio.get_running_loop())
+    try:
+        await ws.send_json({"type": "status", **_serial_bridge.status()})
+        while True:
+            item = await queue.get()
+            if isinstance(item, bytes):
+                await ws.send_bytes(item)
+            else:
+                await ws.send_json(item)
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        _serial_bridge.unsubscribe(queue)
 
 
 if __name__ == "__main__":

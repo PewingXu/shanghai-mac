@@ -14,7 +14,6 @@ ACIKI 持久化层（SQLite，标准库 sqlite3，零额外依赖）。
 import os
 import json
 import sqlite3
-import random
 from typing import Any, Optional
 
 _DATA_DIR = os.environ.get("ACIKI_DATA_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -99,15 +98,19 @@ def list_users() -> list[dict]:
 
 
 def _gen_unique_id(conn: sqlite3.Connection) -> int:
-    """生成不与现有 id 撞号的 5 位 id。"""
-    existing = {r[0] for r in conn.execute("SELECT id FROM users").fetchall()}
-    for _ in range(10000):
-        cand = random.randint(10000, 99999)
-        if cand not in existing:
-            return cand
-    # 极端兜底：用 max+1
-    row = conn.execute("SELECT COALESCE(MAX(id), 9999) + 1 AS nid FROM users").fetchone()
+    """自增用户 id：从 1 开始连贯递增（展示时补零为 00001 格式），
+    99999 之后自然顺延 100000+，无上限。取当前最大 id + 1，天然唯一。"""
+    row = conn.execute("SELECT COALESCE(MAX(id), 0) + 1 AS nid FROM users").fetchone()
     return int(row["nid"])
+
+
+def next_user_id() -> int:
+    """预览下一个将分配的用户 id（创建弹窗标题展示用；真正分配以 create_user 为准）。"""
+    conn = _connect()
+    try:
+        return _gen_unique_id(conn)
+    finally:
+        conn.close()
 
 
 def create_user(data: dict) -> dict:
@@ -130,6 +133,32 @@ def create_user(data: dict) -> dict:
                 data.get("height"),
                 data.get("weight"),
                 data.get("shoeSize"),
+            ),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+        return _user_to_dict(row)
+    finally:
+        conn.close()
+
+
+def update_user(data: dict) -> dict | None:
+    """按 id 更新用户基础信息（编辑用户弹窗）。返回更新后的完整用户；id 不存在返回 None。"""
+    conn = _connect()
+    try:
+        uid = int(data["id"])
+        if not conn.execute("SELECT 1 FROM users WHERE id=?", (uid,)).fetchone():
+            return None
+        conn.execute(
+            "UPDATE users SET name=?, gender=?, birth_date=?, height=?, weight=?, shoe_size=? WHERE id=?",
+            (
+                (data.get("name") or "").strip() or "未命名",
+                data.get("gender"),
+                data.get("birthDate"),
+                data.get("height"),
+                data.get("weight"),
+                data.get("shoeSize"),
+                uid,
             ),
         )
         conn.commit()

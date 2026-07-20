@@ -14,6 +14,7 @@
 
 fastapi
 uvicorn
+websockets      # /device/stream WebSocket 帧流（serial_bridge）
 pydantic
 numpy
 pandas
@@ -21,6 +22,7 @@ scipy
 matplotlib
 seaborn
 opencv-python
+pyserial        # 串口桥：扫描 COM 口自动连接足垫（serial_bridge.py）
 
 # 可选依赖（缺失不影响 /analyze 主链路，OneStep_report.py 已用 try/except 兜底）：
 # - playwright：仅 OneStep_template“精美模板报告”分支会用到

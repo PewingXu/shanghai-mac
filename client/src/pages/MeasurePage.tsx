@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { formatUserId } from "@/lib/utils";
 import { useApp } from "@/contexts/AppContext";
 import FeetModel3D from "@/components/FeetModel3D";
 import Pressure2DHeatmap from "@/components/Pressure2DHeatmap";
 import TopNavBar from "@/components/TopNavBar";
-import { SerialService } from "@/lib/SerialService";
+import { deviceManager } from "@/lib/deviceManager";
+import UserFormModal, { type UserFormData } from "@/components/UserFormModal";
+import UserPicker from "@/components/UserPicker";
 import { broadcastException, classifySerialError } from "@/components/ExceptionModal";
 import { parseCSVData, parseJSONCollectionData } from "@/lib/collectionData";
 import { analyzePython, type PythonAnalysisResult } from "@/lib/pythonApi";
@@ -171,16 +174,6 @@ function startBgReplay(frames: number[][]) {
       void runBgAnalysis(frames);
     }
   }, FRAME_MS);
-}
-
-/** 广播设备连接状态（localStorage + 事件），供其它页面/弹窗读取，保持全局一致 */
-function broadcastDeviceStatus(connected: boolean) {
-  try {
-    window.localStorage.setItem("aciki-device-connected", connected ? "true" : "false");
-    window.dispatchEvent(new CustomEvent("aciki-device-status", { detail: { connected } }));
-  } catch {
-    /* ignore */
-  }
 }
 
 type CollectState = "idle" | "collecting" | "done";
@@ -520,8 +513,12 @@ export default function MeasurePage({
   onHistory: () => void;
   onStepBack?: (step: number) => void;
 }) {
-  const { currentUser, setAnalysis } = useApp();
+  const { currentUser, setAnalysis, createUser, setCurrentUser, historyUsers } = useApp();
   const [collectState, setCollectState] = useState<CollectState>("idle");
+  // 体验模式点"开始测量"/"导入数据" → 必须先有用户：
+  // 库里有用户 → 弹"选择体验用户"（历史用户搜索选择 / 创建）；没有 → 直接弹创建表单
+  const [showRegister, setShowRegister] = useState(false);
+  const [showPicker, setShowPicker] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [modelScale, setModelScale] = useState(MODEL_SCALE_DEFAULT);
   // 视图模式：3d 脚模 / 2d 压力矩阵网格（由 2D/3D 按钮切换）
@@ -542,8 +539,8 @@ export default function MeasurePage({
   const lastStateSyncRef = useRef(0);
 
   // ===== 设备连接 + 实时指标（受压面积/压力联动） =====
-  const serialRef = useRef<SerialService | null>(null);
-  const [deviceConnected, setDeviceConnected] = useState(false);
+  // 连接归全局 deviceManager（进入系统即自动按设备码连接）；本页只订阅帧与状态
+  const [deviceConnected, setDeviceConnected] = useState(() => deviceManager.isConnected());
   const [connecting, setConnecting] = useState(false);
   const [areaData, setAreaData] = useState(EMPTY_METRICS);
   const [pressureData, setPressureData] = useState(EMPTY_METRICS);
@@ -562,7 +559,7 @@ export default function MeasurePage({
   // 噪声阈值变化时同步到串口服务（也供帧回调读取）
   useEffect(() => {
     noiseFilterRef.current = noiseFilter;
-    if (serialRef.current) serialRef.current.filterThreshold = noiseFilter;
+    deviceManager.setFilterThreshold(noiseFilter);
   }, [noiseFilter]);
 
   // 仅在“采集中”累计并刷新指标；停止/空闲/完成时帧回调不再更新
@@ -642,48 +639,42 @@ export default function MeasurePage({
     setPressureHistory([]);
   };
 
+  // 订阅全局设备帧（串口桥 WebSocket 或 Web Serial，deviceManager 统一分发）+ 连接状态。
+  // 连接由 deviceManager 全局维护（掉线弹窗也在那处理），离开测量页只解除本页订阅，
+  // 不断开设备——回到页面即恢复实时画面。
+  // （handleFrameRef 在下方"订阅后台 job"处声明，两条管线共用）
+  useEffect(() => {
+    deviceManager.setFilterThreshold(noiseFilterRef.current);
+    deviceManager.setOnData((frame) => handleFrameRef.current(frame));
+    setDeviceConnected(deviceManager.isConnected());
+    const onStatus = (e: Event) => {
+      const detail = (e as CustomEvent<{ connected?: boolean }>).detail;
+      if (typeof detail?.connected === "boolean") setDeviceConnected(detail.connected);
+    };
+    window.addEventListener("aciki-device-status", onStatus);
+    return () => {
+      deviceManager.setOnData(null);
+      window.removeEventListener("aciki-device-status", onStatus);
+    };
+  }, []);
+
   const connectDevice = async () => {
     if (connecting) return;
     if (deviceConnected) {
-      await serialRef.current?.disconnect();
-      setDeviceConnected(false);
-      broadcastDeviceStatus(false);
+      await deviceManager.disconnect();
       return;
     }
     setConnecting(true);
     try {
-      if (!serialRef.current) {
-        const service = new SerialService();
-        service.setOnData(handleFrame);
-        // 已连接后中途掉线 → 弹"连接异常"
-        service.setOnError(() => {
-          setDeviceConnected(false);
-          broadcastDeviceStatus(false);
-          broadcastException("port-error");
-        });
-        serialRef.current = service;
-      }
-      serialRef.current.filterThreshold = noiseFilterRef.current;
-      const ok = await serialRef.current.connect();
-      setDeviceConnected(ok);
-      broadcastDeviceStatus(ok);
+      // 先自动匹配已授权的足垫（校验设备码），没有再弹浏览器授权框
+      await deviceManager.connectWithPrompt();
     } catch (err) {
       // 连接失败：按错误类型弹出对应异常弹窗
-      setDeviceConnected(false);
-      broadcastDeviceStatus(false);
       broadcastException(classifySerialError(err));
     } finally {
       setConnecting(false);
     }
   };
-
-  // 卸载时断开串口
-  useEffect(() => {
-    return () => {
-      void serialRef.current?.disconnect();
-      broadcastDeviceStatus(false); // 离开测量页即视为断开，清除全局状态
-    };
-  }, []);
 
   // 采集完成 → 启动后台分析（不随组件卸载而取消），结果经 "aciki-analysis-done" 事件回流
   useEffect(() => {
@@ -789,6 +780,51 @@ export default function MeasurePage({
     return () => stopRaf();
   }, []);
 
+  // 空闲 → 开始一次正式采集
+  const beginCollect = () => {
+    elapsedBeforeStartRef.current = 0;
+    elapsedRef.current = 0;
+    setElapsedMs(0);
+    resetMetrics();
+    startedAtRef.current = null;
+    setCollectState("collecting");
+    startCollectTimer();
+  };
+
+  // 登记/选择用户的来源动作：开始测量 / 导入数据（完成后接着做对应的事）
+  const registerIntentRef = useRef<"collect" | "import">("collect");
+
+  // 用户就位后按来源继续：开始测量 → 直接开始采集；导入数据 → 打开文件选择框
+  const continuePendingAction = () => {
+    if (registerIntentRef.current === "import") {
+      fileInputRef.current?.click();
+    } else {
+      beginCollect();
+    }
+  };
+
+  // 需要用户时的统一入口：库里有用户 → 选择界面；没有 → 直接创建表单
+  const requireUser = (intent: "collect" | "import") => {
+    registerIntentRef.current = intent;
+    if (historyUsers.length > 0) setShowPicker(true);
+    else setShowRegister(true);
+  };
+
+  // 创建完成：入库设为当前用户（ID 服务端自增分配）→ 关弹窗 → 继续来源动作
+  const handleRegister = async (data: UserFormData) => {
+    const user = await createUser(data);
+    setCurrentUser(user);
+    setShowRegister(false);
+    continuePendingAction();
+  };
+
+  // 选择历史用户完成（点"开始体验"）：设为当前用户 → 关选择界面 → 继续来源动作
+  const handlePickUser = (user: (typeof historyUsers)[number]) => {
+    setCurrentUser(user);
+    setShowPicker(false);
+    continuePendingAction();
+  };
+
   const handleCollectClick = () => {
     if (collectState === "done") {
       onNext();
@@ -801,14 +837,12 @@ export default function MeasurePage({
       return;
     }
 
-    // 空闲 → 重新开始一次采集
-    elapsedBeforeStartRef.current = 0;
-    elapsedRef.current = 0;
-    setElapsedMs(0);
-    resetMetrics();
-    startedAtRef.current = null;
-    setCollectState("collecting");
-    startCollectTimer();
+    // 体验模式（未选定用户）→ 正式采集前先选择/创建用户；完成后自动开始采集
+    if (!currentUser) {
+      requireUser("collect");
+      return;
+    }
+    beginCollect();
   };
 
   // ===== 导入数据回放（xlsx/csv/json，后台 job 驱动，切走页面也继续跑） =====
@@ -1035,7 +1069,18 @@ export default function MeasurePage({
           <button
             className="measure-connect-btn"
             type="button"
-            onClick={() => (replaying ? resetCollecting() : fileInputRef.current?.click())}
+            onClick={() => {
+              if (replaying) {
+                resetCollecting();
+                return;
+              }
+              // 导入回放同样出报告/入库 → 与开始采集一致：必须先选择/创建用户
+              if (!currentUser) {
+                requireUser("import");
+                return;
+              }
+              fileInputRef.current?.click();
+            }}
           >
             {replaying ? "停止回放" : "导入数据"}
           </button>
@@ -1053,7 +1098,7 @@ export default function MeasurePage({
         </div>
         <div className="measure-footer-right">
           <span className="measure-current-user">
-            当前用户：{currentUser?.name ?? "果果"}（ID:{currentUser?.id ?? "1234"}）
+            {currentUser ? `当前用户：${currentUser.name}（ID:${formatUserId(currentUser.id)}）` : "体验模式：未登记用户"}
           </span>
           <button onClick={resetCollecting}>重新测量</button>
           <button className="primary-link" onClick={onNext}>
@@ -1061,6 +1106,22 @@ export default function MeasurePage({
           </button>
         </div>
       </footer>
+
+      {/* 选择体验用户（库里有用户时）：历史用户搜索选择 / 转创建 */}
+      {showPicker && (
+        <UserPicker
+          onConfirm={handlePickUser}
+          onCreateNew={() => {
+            setShowPicker(false);
+            setShowRegister(true);
+          }}
+          onClose={() => setShowPicker(false)}
+        />
+      )}
+
+      {showRegister && (
+        <UserFormModal mode="create" onSubmit={(d) => void handleRegister(d)} onCancel={() => setShowRegister(false)} />
+      )}
 
       {generating && (
         <div className="measure-loading-overlay">
