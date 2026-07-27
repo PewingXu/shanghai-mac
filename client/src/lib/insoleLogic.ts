@@ -53,6 +53,15 @@ export function getZoneHardness(level: number): { forefoot: number; arch: number
   return hardnessMap[level] || hardnessMap[4];
 }
 
+/**
+ * 根据足弓等级返回整垫推荐软硬（单个 Shore A 值）。
+ * 取分区硬度(getZoneHardness)前掌/足弓/后跟三区平均并四舍五入，作为「软硬调节」滑块的系统默认值。
+ */
+export function getInsoleHardness(level: number): number {
+  const z = getZoneHardness(level);
+  return Math.round((z.forefoot + z.arch + z.heel) / 3);
+}
+
 /** 根据足弓等级返回矫正设计逻辑描述 */
 export function getArchDesignLogic(level: number): string {
   const logic: Record<number, string> = {
@@ -65,49 +74,6 @@ export function getArchDesignLogic(level: number): string {
     7: '重度缓冲：最大化缓冲与减压，全面分散异常集中的足底压力',
   };
   return logic[level] || logic[4];
-}
-
-/** 分区支撑补偿(mm)：前掌 / 足弓 / 后跟；正=抬高增强支撑，负=下沉减压让位 */
-export interface ZoneSupportCompensation {
-  forefoot: number;
-  arch: number;
-  heel: number;
-}
-
-/**
- * 分区支撑补偿决策逻辑
- * —— 原样移植自 v1.0 项目 foot-pressure-report 的 LatticeInsole3D.getZoneSupportCompensation。
- *
- * 依据：足弓等级(主导方向) + 左右脚压力占比偏差 + 足跟缓冲厚度；补偿量 clamp 到 ±1.5mm。
- *  - 前掌：默认轻度减压；该脚越重减压越多；扁平趋势(level>4)回补一点支撑
- *  - 足弓：以足弓等级为主导(高弓减压/扁平支撑)，该脚偏重时适度回撤
- *  - 后跟：先看足跟缓冲是否已厚，再看该脚是否偏重，最后用足弓等级小幅修正
- *
- * @param level         足弓等级 1-7
- * @param baseThickness 基础厚度(cm)（保留入参以对齐 v1.0 签名，公式内未直接使用）
- * @param heelThickness 足跟缓冲厚度(mm)
- * @param pressureRatio 该脚压力占比 0-1（0.5 为左右均衡）
- */
-export function getZoneSupportCompensation(
-  level: number,
-  baseThickness: number,
-  heelThickness: number,
-  pressureRatio: number = 0.5,
-): ZoneSupportCompensation {
-  const pressureBias = Math.max(-1, Math.min(1, (pressureRatio - 0.5) / 0.08));
-  const clampCompensation = (value: number) => Number(Math.max(-1.5, Math.min(1.5, value)).toFixed(1));
-
-  const forefoot = clampCompensation(
-    -0.3 - Math.max(0, pressureBias) * 0.9 + Math.max(0, level - 4) * 0.1,
-  );
-  const arch = clampCompensation(
-    (level - 4) * 0.45 - Math.max(0, pressureBias) * 0.15,
-  );
-  const heel = clampCompensation(
-    (heelThickness >= 20 ? -0.2 : 0.2) - Math.max(0, pressureBias) * 0.85 + (level <= 3 ? 0.25 : level >= 6 ? -0.15 : 0),
-  );
-
-  return { forefoot, arch, heel };
 }
 
 /** 根据足弓等级返回矫正厚度ΔHS(mm) */

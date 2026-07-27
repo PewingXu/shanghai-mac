@@ -1,33 +1,30 @@
 /**
  * 解决方案页数据层
  *
- * 优先尝试 Python 分析后端；若后端不可用或没有采集帧数据，回退到演示默认值
- * （与 ReportPage 当前一致——App 尚未把采集帧串到各页面）。
- * 后续把 frames 经 AppContext 串入 loadSolution()，即可自动启用后端真实结果。
+ * 数据源优先级（与 ReportPage 保持同一份分析结果，避免两页结论打架）：
+ *   1. AppContext.analysis.python.data —— 测量页/历史回放已经算好的 Python 结果，
+ *      经 solutionFromPythonData() 直接换算，不重跑分析。这是常规路径。
+ *   2. 原始帧 frames —— 只有拿不到 1 的场景才走 loadSolution(frames) 现场跑一次后端。
+ *   3. 演示默认值 DEMO —— 前两者都没有时的兜底。注意 DEMO 恒为「正常足 / 44 码」，
+ *      一旦页面显示这组值就说明真实数据没接上（backend=false 可据此提示用户）。
  */
 
+import type { PythonAnalysisResult } from './pythonApi';
 import { checkPythonBackend, analyzePython, convertPythonResult } from './pythonApi';
 import {
   getArchLevelFromAI,
   calculatePressureAdaptiveThickness,
-  getZoneSupportCompensation,
-  type ZoneSupportCompensation,
+  getInsoleHardness,
   type InsoleParams,
 } from './insoleLogic';
 import { lookupInsoleSize } from './insoleSize';
 import type { FootReport } from './FootAnalysis';
 
-/** 分区加厚量（mm）：前掌 / 足弓(中足) / 后跟 */
-export interface RegionBoost {
-  forefoot: number;
-  midfoot: number;
-  hindfoot: number;
-}
-
 /** 单脚解决方案数据 */
 export interface FootSolution {
   params: InsoleParams;
-  regionBoost: RegionBoost;
+  /** 整垫软硬（邵氏硬度 Shore A）；晶格密度档位见 params.latticeDensity */
+  hardness: number;
   shoeSize: number;
 }
 
@@ -36,11 +33,6 @@ export interface SolutionData {
   right: FootSolution;
   /** 是否取自 Python 后端真实结果 */
   backend: boolean;
-}
-
-// 分区支撑补偿 → RegionBoost 命名映射（arch→midfoot, heel→hindfoot）
-function toRegionBoost(z: ZoneSupportCompensation): RegionBoost {
-  return { forefoot: z.forefoot, midfoot: z.arch, hindfoot: z.heel };
 }
 
 // ─── 演示默认值（对齐设计稿示例：成人男 44 码） ──────────────────────────────
@@ -63,8 +55,8 @@ function demoFoot(): FootSolution {
       heelThickness,
       latticeDensity: 3,
     },
-    // 分区补偿：v1.0 决策逻辑（足弓等级/压力占比/足跟厚度 → ±1.5mm）
-    regionBoost: toRegionBoost(getZoneSupportCompensation(archLevel, baseThickness, heelThickness, pressureRatio)),
+    // 软硬（Shore A）：由足弓等级推导的整垫推荐硬度
+    hardness: getInsoleHardness(archLevel),
     shoeSize: size.shoeSize,
   };
 }
@@ -112,9 +104,31 @@ function footSolutionFromReport(
       heelThickness,
       latticeDensity: 3,
     },
-    // 分区补偿：v1.0 决策逻辑（足弓等级主导 + 压力占比偏差 + 足跟厚度 → ±1.5mm）
-    regionBoost: toRegionBoost(getZoneSupportCompensation(arch.level, baseThicknessCm, heelThickness, pressureRatio)),
+    // 软硬（Shore A）：由足弓等级推导的整垫推荐硬度
+    hardness: getInsoleHardness(arch.level),
     shoeSize: size.shoeSize,
+  };
+}
+
+/**
+ * 由「已经算好的」Python 分析结果换算解决方案参数。
+ *
+ * 与 ReportPage 共用 analysis.python.data 这一份数据，所以两页的足弓指数必定一致；
+ * 历史记录回放时 rawFrames 不会落盘（见 AppContext.slimAnalysisForStorage），
+ * 只有这条路径能让历史记录也出真实解决方案。
+ */
+export function solutionFromPythonData(data: PythonAnalysisResult['data']): SolutionData {
+  const report = convertPythonResult(data);
+
+  // 按左右脚压力占比自适应基础厚度
+  const lr = report.bilateral.leftPressureRatio / 100;
+  const rr = report.bilateral.rightPressureRatio / 100;
+  const adaptive = calculatePressureAdaptiveThickness(lr, rr, 0.3);
+
+  return {
+    left: footSolutionFromReport(report, 'left', adaptive.leftThickness),
+    right: footSolutionFromReport(report, 'right', adaptive.rightThickness),
+    backend: true,
   };
 }
 
@@ -130,18 +144,7 @@ export async function loadSolution(frames?: number[][]): Promise<SolutionData> {
     if (!ok) return DEMO;
 
     const res = await analyzePython(frames);
-    const report = convertPythonResult(res.data);
-
-    // 按左右脚压力占比自适应基础厚度
-    const lr = report.bilateral.leftPressureRatio / 100;
-    const rr = report.bilateral.rightPressureRatio / 100;
-    const adaptive = calculatePressureAdaptiveThickness(lr, rr, 0.3);
-
-    return {
-      left: footSolutionFromReport(report, 'left', adaptive.leftThickness),
-      right: footSolutionFromReport(report, 'right', adaptive.rightThickness),
-      backend: true,
-    };
+    return solutionFromPythonData(res.data);
   } catch (err) {
     console.warn('[solutionData] 后端分析失败，使用演示默认值:', err);
     return DEMO;
