@@ -125,7 +125,3 @@ __pycache__/
 # 设计稿源文件，不纳入仓库
 UI/
 .aciki-python-lock.json
-
-# 大体积鞋垫母版 STL（本地素材，暂不入库；缺失时 3D 预览会退回标准款）
-client/public/models/comfort_pair.stl
-client/public/models/sport_pair.stl
