@@ -9,6 +9,9 @@ const STEPS = [
   { id: 4, label: "方案" },
 ];
 
+// 步骤条统一用色：当前/已完成步骤同一颜色（取原两色中最浅的亮橙），不再深浅区分
+const STEP_COLOR = "#E8944A";
+
 interface TopNavBarProps {
   currentStep: number;
   onHistoryClick?: () => void;
@@ -108,11 +111,7 @@ export default function TopNavBar({
                     height: "30px",
                     borderRadius: "50%",
                     backgroundColor:
-                      step.id === currentStep
-                        ? "#E8944A"
-                        : step.id < currentStep
-                        ? "#C8784A"
-                        : "transparent",
+                      step.id <= currentStep ? STEP_COLOR : "transparent",
                     border:
                       step.id <= currentStep ? "none" : "1.5px solid #CBA173",
                     display: "flex",
@@ -130,12 +129,7 @@ export default function TopNavBar({
                 <span
                   style={{
                     fontSize: "12px",
-                    color:
-                      step.id === currentStep
-                        ? "#E8944A"
-                        : step.id < currentStep
-                        ? "#C8784A"
-                        : "#CBA173",
+                    color: step.id <= currentStep ? STEP_COLOR : "#CBA173",
                     fontWeight: step.id === currentStep ? "600" : "400",
                     transition: "color 0.3s ease",
                   }}
@@ -151,7 +145,7 @@ export default function TopNavBar({
                     width: "36px",
                     height: "1.5px",
                     backgroundColor:
-                      step.id < currentStep ? "#C8784A" : "#CBA173",
+                      step.id < currentStep ? STEP_COLOR : "#CBA173",
                     marginBottom: "18px",
                     opacity: step.id < currentStep ? 0.8 : 0.4,
                     transition: "all 0.3s ease",

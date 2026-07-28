@@ -346,7 +346,8 @@ export default function Home() {
 
   const handleSelectHistoryUser = (user: User) => {
     setCurrentUser(user);
-    setPrevView("history");
+    // 注意：不要在这里覆盖 prevView —— prevView 是"进入用户管理前的页面"
+    //（首页/采集页），若设成 "history" 会让用户管理页的"返回上一页"跳自己（失效）
     setView("userRecords");
   };
 

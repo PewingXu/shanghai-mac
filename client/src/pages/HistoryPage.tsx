@@ -3,7 +3,6 @@ import { formatUserId } from "@/lib/utils";
 import ConfirmModal from "@/components/ConfirmModal";
 import { useApp, User } from "@/contexts/AppContext";
 import PageBackground from "@/components/PageBackground";
-import TopNavBar from "@/components/TopNavBar";
 
 const PAGE_SIZE = 12; // 每页 12 个（3 列 × 4 行）
 
@@ -234,15 +233,17 @@ export default function HistoryPage({
       }}
     >
       <PageBackground />
-      {/* 透明页眉：与首页/设计稿一致，Logo 与步骤条直接浮在暖白背景上 */}
-      <TopNavBar currentStep={0} showHistory={false} transparent />
+      {/* 页眉：用户管理页不展示步骤条导航，仅保留 Logo（同测量记录页） */}
+      <header style={{ padding: "22px 56px 0", position: "relative", zIndex: 10 }}>
+        <img src="/assets/icons/home-page/top-left-logo.svg" alt="ACIKI 动态足底压力解析系统" style={{ height: "48px" }} />
+      </header>
 
       <main
         style={{
           position: "relative",
           zIndex: 10,
-          padding: "108px 64px 90px",
-          minHeight: "100vh",
+          padding: "20px 64px 90px",
+          flex: 1,
           display: "flex",
           flexDirection: "column",
         }}
