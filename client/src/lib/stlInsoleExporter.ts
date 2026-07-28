@@ -19,54 +19,59 @@ import * as THREE from 'three';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
+import {
+  STYLE_DEFS,
+  centerGeometry,
+  splitProductPair,
+  computeScales,
+  applyDeform,
+  ZERO_DEFORM,
+  type InsoleStyle,
+  type BaseDims,
+  type DeformMm,
+} from './insoleModel';
 
-const STL_PATHS = {
-  left: '/models/42-1_L.stl',
-  right: '/models/42-1_R.stl',
-};
-
-const BASE_MODEL = {
-  footLength: 261,
-  footWidth: 95,
-  height: 29.31,
-};
-
-export interface RegionBoostData {
-  forefoot: number;  // mm
-  midfoot: number;   // mm
-  hindfoot: number;  // mm
+interface CachedGeo {
+  geometry: THREE.BufferGeometry;
+  base: BaseDims;
 }
 
-const geometryCache: Record<string, THREE.BufferGeometry> = {};
+const geometryCache: Record<string, CachedGeo> = {}; // key: `${style}:${foot}`
 
-async function loadStlGeometry(foot: 'left' | 'right'): Promise<THREE.BufferGeometry> {
-  if (geometryCache[foot]) {
-    return geometryCache[foot].clone();
+/** 加载并缓存（样式+脚）几何体，返回可安全修改的克隆 + 原生尺寸 */
+async function loadStlGeometry(
+  style: InsoleStyle,
+  foot: 'left' | 'right',
+): Promise<CachedGeo> {
+  const key = `${style}:${foot}`;
+  if (geometryCache[key]) {
+    return { geometry: geometryCache[key].geometry.clone(), base: geometryCache[key].base };
   }
 
-  const url = STL_PATHS[foot];
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`加载模型失败: HTTP ${response.status}`);
+  const def = STYLE_DEFS[style];
+
+  const fetchParse = async (url: string) => {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`加载模型失败: HTTP ${response.status}`);
+    const geometry = new STLLoader().parse(await response.arrayBuffer());
+    if (!geometry.attributes.normal) geometry.computeVertexNormals();
+    return geometry;
+  };
+
+  if (def.kind === 'split') {
+    const geometry = await fetchParse(foot === 'left' ? def.left! : def.right!);
+    const base = centerGeometry(geometry);
+    geometryCache[key] = { geometry, base };
+  } else {
+    // 成品垫：整文件拆成左右一并入缓存
+    const whole = await fetchParse(def.url!);
+    const { left, right } = splitProductPair(whole);
+    whole.dispose();
+    geometryCache[`${style}:left`] = { geometry: left, base: centerGeometry(left) };
+    geometryCache[`${style}:right`] = { geometry: right, base: centerGeometry(right) };
   }
-  const arrayBuffer = await response.arrayBuffer();
-  
-  const loader = new STLLoader();
-  const geometry = loader.parse(arrayBuffer);
 
-  if (!geometry.attributes.normal) {
-    geometry.computeVertexNormals();
-  }
-
-  geometry.computeBoundingBox();
-  const box = geometry.boundingBox!;
-  const cx = (box.max.x + box.min.x) / 2;
-  const cy = (box.max.y + box.min.y) / 2;
-  const cz = box.min.z;
-  geometry.translate(-cx, -cy, -cz);
-
-  geometryCache[foot] = geometry;
-  return geometry.clone();
+  return { geometry: geometryCache[key].geometry.clone(), base: geometryCache[key].base };
 }
 
 function downloadBlob(blob: Blob, filename: string) {
@@ -80,105 +85,8 @@ function downloadBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url);
 }
 
-/** sin² 钟形区权重（= 0520 latticeGeometry 的 createSmoothZoneWeight） */
-function sinBellZone(v: number, start: number, end: number): number {
-  if (v <= start || v >= end) return 0;
-  const t = (v - start) / (end - start);
-  return Math.sin(t * Math.PI) ** 2;
-}
-
-// 若足弓支撑出现在外侧(错侧)，改为 false 翻转；★ 需与 StlInsoleViewer.tsx 保持一致。
-const MEDIAL_ON_POSITIVE_X = true;
-
-/**
- * 局部分区权重（移植自 0520 getCompensationZoneWeights）：
- * 沿足长 sin² 钟形 × 足宽因子（前掌/后跟中心强，足弓偏内侧）。
- * yNorm: 0=后跟 1=前掌；xNorm: 0..1 足宽。
- * ★ 需与 StlInsoleViewer.tsx 的 localZoneWeights 完全一致，否则预览≠导出。
- */
-function localZoneWeights(
-  yNorm: number,
-  xNorm: number,
-  foot: 'left' | 'right',
-): { fore: number; arch: number; heel: number } {
-  const nX = Math.max(-1, Math.min(1, (xNorm - 0.5) * 2));
-  const sideX = MEDIAL_ON_POSITIVE_X ? nX : -nX;
-  const innerSide = foot === 'left' ? sideX : -sideX;
-  return {
-    fore: sinBellZone(yNorm, 0.58, 0.92) * (0.75 + 0.25 * (1 - Math.abs(nX))),
-    arch: sinBellZone(yNorm, 0.28, 0.56) * (0.4 + 0.6 * Math.max(0, innerSide)),
-    heel: sinBellZone(yNorm, 0.02, 0.32) * (0.8 + 0.2 * (1 - Math.abs(nX))),
-  };
-}
-
-/**
- * 对几何体应用分区加厚
- * 
- * 根据顶点Y坐标（足长方向）判断所属区域，
- * 对Z轴（高度方向）施加差异化偏移。
- * 
- * 加厚方向：向上（脚面方向）扩展，即顶面向上凸起，
- * 底面保持不变，这样高压区域能更好地承托和分散压力。
- * 
- * 使用smoothstep在区域边界做平滑过渡，避免几何体突变。
- */
-function applyRegionBoost(
-  geometry: THREE.BufferGeometry,
-  regionBoost: RegionBoostData,
-  totalHeightMm: number,
-  foot: 'left' | 'right',
-): void {
-  if (regionBoost.forefoot === 0 && regionBoost.midfoot === 0 && regionBoost.hindfoot === 0) {
-    return; // 无加厚，跳过
-  }
-
-  const positions = geometry.attributes.position;
-  const count = positions.count;
-
-  // 计算 X(足宽) / Y(足长) / Z(高度) 范围
-  geometry.computeBoundingBox();
-  const box = geometry.boundingBox!;
-  const xMin = box.min.x;
-  const xRange = box.max.x - xMin;
-  const yMin = box.min.y;
-  const yRange = box.max.y - yMin;
-  const zMin = box.min.z;
-  const zRange = box.max.z - zMin;
-
-  if (yRange <= 0 || zRange <= 0) return;
-
-  for (let i = 0; i < count; i++) {
-    const x = positions.getX(i);
-    const y = positions.getY(i);
-    const z = positions.getZ(i);
-
-    // 归一化：yNorm 0=后跟 1=前掌；xNorm 0..1 足宽；zNorm 0=底 1=顶
-    const yNorm = (y - yMin) / yRange;
-    const xNorm = xRange > 0 ? (x - xMin) / xRange : 0.5;
-    const zNorm = (z - zMin) / zRange;
-    const topWeight = Math.max(0, zNorm); // 只抬顶面，底面不动
-
-    // 局部分区权重（sin² 钟形 + 足宽因子；足弓偏内侧）——局部塑形而非整段平台。
-    // ★ 需与 StlInsoleViewer.tsx 的 localZoneWeights 完全一致，否则预览≠导出。
-    const w = localZoneWeights(yNorm, xNorm, foot);
-
-    const boostMm =
-      w.heel * regionBoost.hindfoot +
-      w.arch * regionBoost.midfoot +
-      w.fore * regionBoost.forefoot;
-
-    if (boostMm !== 0) {
-      const zOffset = boostMm * topWeight;
-      positions.setZ(i, Math.max(zMin, z + zOffset)); // 夹住不穿底
-    }
-  }
-
-  positions.needsUpdate = true;
-  geometry.computeVertexNormals();
-  geometry.computeBoundingBox();
-}
-
 export async function exportStlInsoleSTL(
+  style: InsoleStyle,
   foot: 'left' | 'right',
   footLength: number,
   footWidth: number,
@@ -187,24 +95,22 @@ export async function exportStlInsoleSTL(
   heelThickness: number,
   color: string = '#B0B0B0',
   userName?: string,
-  regionBoost?: RegionBoostData
+  deform: DeformMm = ZERO_DEFORM,
 ): Promise<void> {
-  const geometry = await loadStlGeometry(foot);
+  const { geometry, base } = await loadStlGeometry(style, foot);
 
   const targetLengthMm = footLength * 10;
-  const targetWidthMm = footWidth * 10;
-  const totalHeightMm = baseThickness * 10 + archCorrection + heelThickness;
-
-  const scaleX = targetWidthMm / BASE_MODEL.footWidth;
-  const scaleY = targetLengthMm / BASE_MODEL.footLength;
-  const scaleZ = totalHeightMm / BASE_MODEL.height;
+  const { x: scaleX, y: scaleY, z: scaleZ } = computeScales(base, style, {
+    footLengthCm: footLength,
+    footWidthCm: footWidth,
+    baseThicknessCm: baseThickness,
+    archCorrectionMm: archCorrection,
+    heelThicknessMm: heelThickness,
+  });
 
   geometry.scale(scaleX, scaleY, scaleZ);
-
-  // 应用分区加厚
-  if (regionBoost) {
-    applyRegionBoost(geometry, regionBoost, totalHeightMm, foot);
-  }
+  // 成品垫：把厚度增量烘成顶面隆起（与预览着色器同公式；足弓偏内侧故需左右脚）
+  if (STYLE_DEFS[style].heightMode === 'proportional') applyDeform(geometry, deform, foot, style);
 
   const material = new THREE.MeshStandardMaterial({ color: new THREE.Color(color) });
   const mesh = new THREE.Mesh(geometry, material);
@@ -216,14 +122,8 @@ export async function exportStlInsoleSTL(
   const blob = new Blob([stlData], { type: 'application/octet-stream' });
   const footLabel = foot === 'left' ? '左脚' : '右脚';
   const prefix = userName ? `${userName}_` : '';
-  
-  // 文件名包含加厚信息
-  let boostSuffix = '';
-  if (regionBoost && (regionBoost.forefoot > 0 || regionBoost.midfoot > 0 || regionBoost.hindfoot > 0)) {
-    boostSuffix = `_加厚F${regionBoost.forefoot}M${regionBoost.midfoot}H${regionBoost.hindfoot}`;
-  }
-  
-  const filename = `${prefix}${footLabel}_鞋垫_${targetLengthMm.toFixed(0)}mm_矫正${archCorrection}mm${boostSuffix}.stl`;
+
+  const filename = `${prefix}${footLabel}_${STYLE_DEFS[style].label}鞋垫_${targetLengthMm.toFixed(0)}mm_矫正${archCorrection}mm.stl`;
 
   downloadBlob(blob, filename);
   geometry.dispose();
@@ -231,6 +131,7 @@ export async function exportStlInsoleSTL(
 }
 
 export async function exportStlInsoleGLTF(
+  style: InsoleStyle,
   foot: 'left' | 'right',
   footLength: number,
   footWidth: number,
@@ -239,24 +140,20 @@ export async function exportStlInsoleGLTF(
   heelThickness: number,
   color: string = '#B0B0B0',
   userName?: string,
-  regionBoost?: RegionBoostData
+  deform: DeformMm = ZERO_DEFORM,
 ): Promise<void> {
-  const geometry = await loadStlGeometry(foot);
+  const { geometry, base } = await loadStlGeometry(style, foot);
 
-  const targetLengthMm = footLength * 10;
-  const targetWidthMm = footWidth * 10;
-  const totalHeightMm = baseThickness * 10 + archCorrection + heelThickness;
-
-  const scaleX = targetWidthMm / BASE_MODEL.footWidth;
-  const scaleY = targetLengthMm / BASE_MODEL.footLength;
-  const scaleZ = totalHeightMm / BASE_MODEL.height;
+  const { x: scaleX, y: scaleY, z: scaleZ } = computeScales(base, style, {
+    footLengthCm: footLength,
+    footWidthCm: footWidth,
+    baseThicknessCm: baseThickness,
+    archCorrectionMm: archCorrection,
+    heelThicknessMm: heelThickness,
+  });
 
   geometry.scale(scaleX, scaleY, scaleZ);
-
-  // 应用分区加厚
-  if (regionBoost) {
-    applyRegionBoost(geometry, regionBoost, totalHeightMm, foot);
-  }
+  if (STYLE_DEFS[style].heightMode === 'proportional') applyDeform(geometry, deform, foot, style);
 
   const material = new THREE.MeshStandardMaterial({
     color: new THREE.Color(color),
@@ -286,13 +183,8 @@ export async function exportStlInsoleGLTF(
         const footLabel = foot === 'left' ? '左脚' : '右脚';
         const prefix = userName ? `${userName}_` : '';
         const ext = result instanceof ArrayBuffer ? 'glb' : 'gltf';
-        
-        let boostSuffix = '';
-        if (regionBoost && (regionBoost.forefoot > 0 || regionBoost.midfoot > 0 || regionBoost.hindfoot > 0)) {
-          boostSuffix = `_加厚F${regionBoost.forefoot}M${regionBoost.midfoot}H${regionBoost.hindfoot}`;
-        }
-        
-        const filename = `${prefix}${footLabel}_鞋垫_${(footLength * 10).toFixed(0)}mm_矫正${archCorrection}mm${boostSuffix}.${ext}`;
+
+        const filename = `${prefix}${footLabel}_${STYLE_DEFS[style].label}鞋垫_${(footLength * 10).toFixed(0)}mm_矫正${archCorrection}mm.${ext}`;
 
         downloadBlob(blob, filename);
         geometry.dispose();

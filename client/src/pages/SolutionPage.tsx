@@ -4,10 +4,9 @@
  * 左右分栏：左侧 3D 晶格鞋垫（StlInsoleViewer，移植自旧项目）+ 左/右脚切换；
  * 右侧解决方案面板（足弓状态 / 鞋垫尺寸 / 鞋垫厚度）。
  *
- * 四个交互态：
+ * 三个交互态：
  *  - main     主视图
- *  - drawer   鞋垫厚度调节抽屉
- *  - detail   分区支撑补偿细节
+ *  - drawer   鞋垫参数调节抽屉（厚度 + 软硬）
  *  - download 双脚 3D 鞋垫下载弹窗
  *
  * 鞋垫参数 / STL 导出逻辑移植自旧项目 foot-pressure-report。
@@ -15,9 +14,10 @@
 import { useState, useEffect, useMemo } from "react";
 import { toast } from "sonner";
 import { useApp } from "@/contexts/AppContext";
-import { formatUserId } from "@/lib/utils";
+import { useDeviceConnectionStatus } from "@/hooks/useDeviceConnectionStatus";
 // 解决方案页采用左白右橙的分屏背景（见下方 SplitBackground），不复用全屏橙色 PageBackground
 import { StlInsoleViewer, type StlInsoleParams } from "@/components/StlInsoleViewer";
+import { STYLE_DEFS, STYLE_ORDER, productBaseHeightMm, personalDeform, ZERO_DEFORM, type InsoleStyle, type DeformMm } from "@/lib/insoleModel";
 import {
   getArchLevelColor,
   getArchDesignLogic,
@@ -25,8 +25,9 @@ import {
 } from "@/lib/insoleLogic";
 import {
   loadSolution,
-  type RegionBoost,
+  solutionFromPythonData,
   type FootSolution,
+  type SolutionData,
 } from "@/lib/solutionData";
 import { lookupInsoleSize } from "@/lib/insoleSize";
 import { exportStlInsoleSTL, exportStlInsoleGLTF } from "@/lib/stlInsoleExporter";
@@ -43,7 +44,7 @@ const C = {
 };
 
 type Side = "left" | "right";
-type Overlay = "main" | "drawer" | "detail" | "download";
+type Overlay = "main" | "drawer" | "download";
 
 // 可选鞋垫颜色（3D 预览 / STL 导出共用）
 const INSOLE_COLORS: { name: string; value: string }[] = [
@@ -57,15 +58,24 @@ const INSOLE_COLORS: { name: string; value: string }[] = [
 
 interface FootState {
   params: InsoleParams;
-  boost: RegionBoost;
+  /** 整垫软硬（Shore A）；晶格密度档位见 params.latticeDensity */
+  hardness: number;
   shoeSize: number;
 }
 
 function toFootState(fs: FootSolution): FootState {
-  return { params: { ...fs.params }, boost: { ...fs.regionBoost }, shoeSize: fs.shoeSize };
+  return { params: { ...fs.params }, hardness: fs.hardness, shoeSize: fs.shoeSize };
 }
 function toStlParams(fs: FootState): StlInsoleParams {
-  return { ...fs.params, regionBoost: fs.boost };
+  return { ...fs.params, hardness: fs.hardness };
+}
+/**
+ * 顶面隆起量(mm)：相对「标准成品垫原生几何」的完整个性化量。
+ * 此前算的是「当前值 − 系统推荐值」，未动滑块时恒为 0 ——
+ * 等于系统按足弓等级算出的矫正量既没进预览、也没进导出的 STL。
+ */
+function toDeform(cur: FootState, style: InsoleStyle): DeformMm {
+  return personalDeform(cur.params, style);
 }
 
 // ─── 页面背景：左白右橙分屏（右橙内嵌自 background.svg，左白内嵌自 左侧白色背景.svg） ─
@@ -458,6 +468,22 @@ function StepperSliderRow({
   );
 }
 
+// ─── 设备连接徽章 ─────────────────────────────────────────────────────────────
+// 状态取自 deviceManager 的广播（见 hooks/useDeviceConnectionStatus）。
+// 此前顶栏与底部栏各写死一句「设备连接正常」，与真实连接状态无关，掉线也不变。
+function DeviceBadge() {
+  const connected = useDeviceConnectionStatus();
+  const color = connected ? "#3AD2A3" : "#FF5A2C";
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: "6px", background: "#fff", borderRadius: "16px", padding: "5px 12px", boxShadow: "0 1px 6px rgba(180,120,40,0.12)" }}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+        <path d="M9 12h6M8 9a3 3 0 0 0 0 6h2M16 9a3 3 0 0 1 0 6h-2" stroke={color} strokeWidth="2" strokeLinecap="round" />
+      </svg>
+      <span style={{ fontSize: "12px", color, fontWeight: 600 }}>{connected ? "设备连接正常" : "设备未连接"}</span>
+    </div>
+  );
+}
+
 // ─── 底部操作栏 ───────────────────────────────────────────────────────────────
 function BottomBar({ userName, userId, onBack, onRestart, onDownload }: {
   userName: string; userId: string; onBack?: () => void; onRestart: () => void; onDownload: () => void;
@@ -465,10 +491,7 @@ function BottomBar({ userName, userId, onBack, onRestart, onDownload }: {
   const linkBtn: React.CSSProperties = { background: "none", border: "none", cursor: "pointer", fontSize: "14px", fontWeight: 600 };
   return (
     <div style={{ position: "fixed", bottom: 0, left: 0, right: "max(33.44%, 480px)", height: "56px", padding: "0 40px", display: "flex", alignItems: "center", gap: "28px", borderTop: "1px solid rgba(200,160,110,0.25)", zIndex: 30 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: "6px", background: "#fff", borderRadius: "16px", padding: "5px 12px", boxShadow: "0 1px 6px rgba(180,120,40,0.12)" }}>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M9 12h6M8 9a3 3 0 0 0 0 6h2M16 9a3 3 0 0 1 0 6h-2" stroke="#3AD2A3" strokeWidth="2" strokeLinecap="round" /></svg>
-        <span style={{ fontSize: "12px", color: "#3AD2A3", fontWeight: 600 }}>设备连接正常</span>
-      </div>
+      <DeviceBadge />
       <span style={{ fontSize: "14px", color: "#5A4A30", marginLeft: "auto" }}>当前用户：{userName} （ID:{userId}）</span>
       <button onClick={onBack} style={{ ...linkBtn, color: "#5A4A30" }}>重新测量</button>
       <button onClick={onRestart} style={{ ...linkBtn, color: "#17191C", textDecoration: "underline", textUnderlineOffset: "3px" }}>结束体验</button>
@@ -479,19 +502,35 @@ function BottomBar({ userName, userId, onBack, onRestart, onDownload }: {
 
 // ─── 厚度三条（抽屉/细节复用） ────────────────────────────────────────────────
 // drawerMode：抽屉（第2页）里前两项无滑块，仅步进；细节面板（第3页）三项均带滑块。
-function ThicknessSliders({ fs, sys, onParams, drawerMode }: { fs: FootState; sys?: FootState; onParams: (p: Partial<InsoleParams>) => void; drawerMode?: boolean }) {
+function ThicknessSliders({ fs, sys, onParams, drawerMode, style }: { fs: FootState; sys?: FootState; onParams: (p: Partial<InsoleParams>) => void; drawerMode?: boolean; style: InsoleStyle }) {
+  // 成品垫(proportional)：基础厚度默认=原生高度按足长换算(约 50~57mm)，量程较大；
+  // 调节方式与标准垫一致——抽屉里只给 −/+ 步进，不出滑块。
+  const proportional = STYLE_DEFS[style].heightMode === "proportional";
   return (
     <>
-      <StepperSliderRow
-        label="基础厚度（压力自适应）"
-        value={fs.params.baseThickness * 10}
-        min={1.5} max={6} step={0.1}
-        hints={drawerMode ? undefined : ["1.5mm", "6.0mm 最大"]}
-        tightHints
-        systemValue={drawerMode ? undefined : (sys ? sys.params.baseThickness * 10 : undefined)}
-        noSlider={drawerMode}
-        onChange={(v) => onParams({ baseThickness: v / 10 })}
-      />
+      {proportional ? (
+        <StepperSliderRow
+          label="基础厚度（随足长）"
+          value={fs.params.baseThickness * 10}
+          min={20} max={70} step={0.5}
+          hints={drawerMode ? undefined : ["20mm", "70mm"]}
+          tightHints
+          systemValue={drawerMode ? undefined : (sys ? sys.params.baseThickness * 10 : undefined)}
+          noSlider={drawerMode}
+          onChange={(v) => onParams({ baseThickness: v / 10 })}
+        />
+      ) : (
+        <StepperSliderRow
+          label="基础厚度（压力自适应）"
+          value={fs.params.baseThickness * 10}
+          min={1.5} max={6} step={0.1}
+          hints={drawerMode ? undefined : ["1.5mm", "6.0mm 最大"]}
+          tightHints
+          systemValue={drawerMode ? undefined : (sys ? sys.params.baseThickness * 10 : undefined)}
+          noSlider={drawerMode}
+          onChange={(v) => onParams({ baseThickness: v / 10 })}
+        />
+      )}
       <StepperSliderRow
         label="足弓矫正厚度"
         prefix="+"
@@ -513,73 +552,6 @@ function ThicknessSliders({ fs, sys, onParams, drawerMode }: { fs: FootState; sy
         onChange={(v) => onParams({ heelThickness: v })}
       />
     </>
-  );
-}
-
-// ─── 分区支撑补偿：透明晶格体鞋垫 ─────────────────────────────────────────────
-// 脚横放、脚尖/前掌在左、后跟在右。分区按足长归一化：前掌 0–45%、足弓 45–75%、后跟 75–100%
-// （与 StlInsoleViewer / stlInsoleExporter 的 0.55/0.25 边界一致）。虚线与标签相对脚模本身定位。
-const ZONE_BOUNDS = { fore: 45, mid: 75 }; // 前掌|足弓 与 足弓|后跟 的分界（占足长%）
-
-// 分区补偿 → 热力色（与 StlInsoleViewer 一致，按相对最大幅度归一化）：
-// 正值（增强支撑）橙→红；负值（减压/让位）浅蓝→深蓝；0 无色
-function zoneTint(v: number, maxAbs: number): { color: string; opacity: number } | null {
-  if (v === 0) return null;
-  const t = Math.min(1, Math.abs(v) / maxAbs); // 0..1
-  let r: number, g: number, b: number;
-  if (v > 0) {
-    r = Math.round(243 + (231 - 243) * t); // #f39c12 → #e74c3c
-    g = Math.round(156 + (76 - 156) * t);
-    b = Math.round(18 + (60 - 18) * t);
-  } else {
-    r = Math.round(127 + (46 - 127) * t); // #7fb5e6 → #2e6fbf
-    g = Math.round(181 + (111 - 181) * t);
-    b = Math.round(230 + (191 - 230) * t);
-  }
-  return { color: `rgb(${r},${g},${b})`, opacity: 0.3 + 0.55 * t };
-}
-
-function ZoneHeatmap({ boost }: { boost: RegionBoost }) {
-  const maxAbs = Math.max(Math.abs(boost.forefoot), Math.abs(boost.midfoot), Math.abs(boost.hindfoot), 0.1);
-  const zones = [
-    { start: 0, end: ZONE_BOUNDS.fore, tint: zoneTint(boost.forefoot, maxAbs) },
-    { start: ZONE_BOUNDS.fore, end: ZONE_BOUNDS.mid, tint: zoneTint(boost.midfoot, maxAbs) },
-    { start: ZONE_BOUNDS.mid, end: 100, tint: zoneTint(boost.hindfoot, maxAbs) },
-  ];
-  const maskUrl = "url(/assets/insole-lattice.png)";
-  return (
-    <div style={{ position: "relative", height: "142px", borderRadius: "12px", overflow: "hidden", background: "#FCFAF6", marginBottom: "14px", border: `1px solid ${C.border}`, textAlign: "center" }}>
-      {/* 脚模包裹层：按高度撑满、宽度随图自适应，遮罩/虚线/标签相对它定位以对齐真实分区 */}
-      <div style={{ display: "inline-block", position: "relative", height: "78%", marginTop: "28px" }}>
-        <img src="/assets/insole-lattice.png" alt="透明晶格体鞋垫" style={{ height: "100%", width: "auto", display: "block" }} />
-        {/* 分区热力色块：用脚模作遮罩，颜色只落在脚模形状内 */}
-        <div style={{ position: "absolute", inset: 0, WebkitMaskImage: maskUrl, maskImage: maskUrl, WebkitMaskSize: "100% 100%", maskSize: "100% 100%", WebkitMaskRepeat: "no-repeat", maskRepeat: "no-repeat", pointerEvents: "none" }}>
-          {zones.map((z, i) =>
-            z.tint ? (
-              <div
-                key={i}
-                style={{
-                  position: "absolute",
-                  top: 0,
-                  bottom: 0,
-                  left: `${z.start}%`,
-                  width: `${z.end - z.start}%`,
-                  background: `radial-gradient(ellipse 72% 62% at 50% 50%, ${z.tint.color} 0%, transparent 76%)`,
-                  opacity: z.tint.opacity,
-                }}
-              />
-            ) : null
-          )}
-        </div>
-        {/* 竖向虚线：45%（前掌|足弓）、75%（足弓|后跟） */}
-        <div style={{ position: "absolute", top: "-28px", bottom: 0, left: `${ZONE_BOUNDS.fore}%`, borderLeft: "1px dashed rgba(180,150,110,0.55)" }} />
-        <div style={{ position: "absolute", top: "-28px", bottom: 0, left: `${ZONE_BOUNDS.mid}%`, borderLeft: "1px dashed rgba(180,150,110,0.55)" }} />
-        {/* 分区标签：各居中于所在分区 */}
-        <span style={{ position: "absolute", top: "-24px", left: `${ZONE_BOUNDS.fore / 2}%`, transform: "translateX(-50%)", fontSize: "11px", color: C.sub, fontWeight: 600, whiteSpace: "nowrap" }}>前掌区</span>
-        <span style={{ position: "absolute", top: "-24px", left: `${(ZONE_BOUNDS.fore + ZONE_BOUNDS.mid) / 2}%`, transform: "translateX(-50%)", fontSize: "11px", color: C.sub, fontWeight: 600, whiteSpace: "nowrap" }}>足弓区</span>
-        <span style={{ position: "absolute", top: "-24px", left: `${(ZONE_BOUNDS.mid + 100) / 2}%`, transform: "translateX(-50%)", fontSize: "11px", color: C.sub, fontWeight: 600, whiteSpace: "nowrap" }}>后跟区</span>
-      </div>
-    </div>
   );
 }
 
@@ -633,10 +605,7 @@ function SolutionTopBar() {
       <img src="/assets/icons/home-page/top-left-logo.svg" alt="ACIKI 动态足底压力解析系统" style={{ height: "48px", objectFit: "contain" }} />
       {/* 右侧 设备状态 + 步骤 */}
       <div style={{ display: "flex", alignItems: "center", gap: "26px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "6px", background: "#fff", borderRadius: "16px", padding: "5px 12px", boxShadow: "0 1px 6px rgba(180,120,40,0.12)" }}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M9 12h6M8 9a3 3 0 0 0 0 6h2M16 9a3 3 0 0 1 0 6h-2" stroke="#3AD2A3" strokeWidth="2" strokeLinecap="round" /></svg>
-          <span style={{ fontSize: "12px", color: "#3AD2A3", fontWeight: 600 }}>设备连接正常</span>
-        </div>
+        <DeviceBadge />
         <div style={{ display: "flex", alignItems: "center" }}>
           {SOLUTION_STEPS.map((s, i) => (
             <div key={s.id} style={{ display: "flex", alignItems: "center" }}>
@@ -664,17 +633,21 @@ interface SolutionPageProps {
 }
 
 export default function SolutionPage({ onRestart, onHistory, onBack, onViewReport }: SolutionPageProps) {
-  const { currentUser } = useApp();
+  const { currentUser, analysis } = useApp();
 
   const [side, setSide] = useState<Side>("left");
   const [overlay, setOverlay] = useState<Overlay>("main");
   // 当前鞋垫颜色（3D 预览 + STL 导出）
   const [insoleColor, setInsoleColor] = useState<string>(C.insoleColor);
+  // 当前鞋垫样式（整双统一：舒缓 / 运动 / 标准）
+  const [insoleStyle, setInsoleStyle] = useState<InsoleStyle>("comfort");
 
   // 已提交参数 / 加载默认值 / 编辑草稿
   const [committed, setCommitted] = useState<{ left: FootState; right: FootState } | null>(null);
   const [defaults, setDefaults] = useState<{ left: FootState; right: FootState } | null>(null);
   const [draft, setDraft] = useState<{ left: FootState; right: FootState } | null>(null);
+  // 分析原始值（base 为压力自适应厚度）；成品垫的基础厚度按样式另行换算，此处保留标准垫回退用
+  const [analysisBase, setAnalysisBase] = useState<{ left: FootState; right: FootState } | null>(null);
 
   // 保存成功提示（顶部居中绿色胶囊）
   const [savedTip, setSavedTip] = useState(false);
@@ -686,23 +659,60 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
     right: { length: "", width: "" },
   });
 
+  // 解决方案参数来自本次测量/历史回放的分析结果，与报告页同一份 analysis.python.data。
+  // 兜底顺序见 solutionData.ts 顶部注释；走到 DEMO 时 backend=false，页面给出提示。
+  const [isDemoData, setIsDemoData] = useState(false);
+
   useEffect(() => {
     let alive = true;
-    loadSolution().then((data) => {
+    const apply = (data: SolutionData) => {
       if (!alive) return;
-      const init = { left: toFootState(data.left), right: toFootState(data.right) };
-      setCommitted(init);
+      setCommitted({ left: toFootState(data.left), right: toFootState(data.right) });
       setDefaults({ left: toFootState(data.left), right: toFootState(data.right) });
-    });
+      setAnalysisBase({ left: toFootState(data.left), right: toFootState(data.right) });
+      setIsDemoData(!data.backend);
+    };
+
+    const pyData = analysis?.python?.success ? analysis.python.data : null;
+    if (pyData) {
+      // 常规路径：复用已算好的结果，不重跑后端
+      apply(solutionFromPythonData(pyData));
+      return () => { alive = false; };
+    }
+    // 兜底：只有原始帧时现场跑一次；两者都没有则 loadSolution 返回 DEMO
+    loadSolution(analysis?.rawFrames).then(apply);
     return () => { alive = false; };
-  }, []);
+  }, [analysis]);
+
+  // 按样式换算基础厚度：成品垫(proportional) = 原生高度按足长等比(productBaseHeightMm)，
+  // 标准垫(param) = 分析的压力自适应厚度。切换样式时把 base 重置为该样式默认值（其余参数保留）。
+  useEffect(() => {
+    if (!analysisBase) return;
+    const styleBaseCm = (s: Side): number => {
+      const len = analysisBase[s].params.footLength;
+      const mm = productBaseHeightMm(insoleStyle, len);
+      return mm != null ? mm / 10 : analysisBase[s].params.baseThickness;
+    };
+    const withBase = (prev: { left: FootState; right: FootState } | null) =>
+      prev
+        ? {
+            left: { ...prev.left, params: { ...prev.left.params, baseThickness: styleBaseCm("left") } },
+            right: { ...prev.right, params: { ...prev.right.params, baseThickness: styleBaseCm("right") } },
+          }
+        : prev;
+    setCommitted(withBase);
+    setDefaults(withBase);
+    setDraft(withBase);
+  }, [insoleStyle, analysisBase]);
 
   // 编辑期用 draft，否则用 committed
-  const editing = overlay === "drawer" || overlay === "detail";
+  const editing = overlay === "drawer";
   const viewState = editing && draft ? draft : committed;
 
   const stlLeft = useMemo<StlInsoleParams | null>(() => (viewState ? toStlParams(viewState.left) : null), [viewState]);
   const stlRight = useMemo<StlInsoleParams | null>(() => (viewState ? toStlParams(viewState.right) : null), [viewState]);
+  const deformLeft = useMemo<DeformMm>(() => (viewState ? toDeform(viewState.left, insoleStyle) : ZERO_DEFORM), [viewState, insoleStyle]);
+  const deformRight = useMemo<DeformMm>(() => (viewState ? toDeform(viewState.right, insoleStyle) : ZERO_DEFORM), [viewState, insoleStyle]);
 
   if (!committed || !viewState || !stlLeft || !stlRight) {
     return (
@@ -743,35 +753,29 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
     arch: !!dp && Math.abs(cp.archCorrection - dp.archCorrection) > 1e-6,
     base: !!dp && Math.abs(cp.baseThickness - dp.baseThickness) > 1e-6,
     heel: !!dp && Math.abs(cp.heelThickness - dp.heelThickness) > 1e-6,
+    hardness: !!defaults && committed[side].hardness !== defaults[side].hardness,
   };
 
   // ── 编辑动作 ──
-  const cloneFoot = (f: FootState): FootState => ({ params: { ...f.params }, boost: { ...f.boost }, shoeSize: f.shoeSize });
+  const cloneFoot = (f: FootState): FootState => ({ params: { ...f.params }, hardness: f.hardness, shoeSize: f.shoeSize });
   const openDraft = (next: Overlay) => {
     setDraft({ left: cloneFoot(committed.left), right: cloneFoot(committed.right) });
     setOverlay(next);
   };
   const editParams = (p: Partial<InsoleParams>) =>
     setDraft((d) => (d ? { ...d, [side]: { ...d[side], params: { ...d[side].params, ...p } } } : d));
-  const editBoost = (b: Partial<RegionBoost>) =>
-    setDraft((d) => (d ? { ...d, [side]: { ...d[side], boost: { ...d[side].boost, ...b } } } : d));
+  const editHardness = (h: number) =>
+    setDraft((d) => (d ? { ...d, [side]: { ...d[side], hardness: h } } : d));
   const resetDefaults = () => {
     if (!defaults) return;
     setDraft((d) => (d ? { ...d, [side]: cloneFoot(defaults[side]) } : d));
     toast.info(`已恢复${sideLabel}脚默认参数`);
   };
-  // 仅重置厚度三项（基础/足弓/足跟）到系统值
-  const resetThickness = () => {
+  // 仅重置软硬（Shore A）到系统值
+  const resetSoftness = () => {
     if (!defaults) return;
-    const dft = defaults[side].params;
-    setDraft((d) => (d ? { ...d, [side]: { ...d[side], params: { ...d[side].params, baseThickness: dft.baseThickness, archCorrection: dft.archCorrection, heelThickness: dft.heelThickness } } } : d));
-    toast.info(`已重置${sideLabel}脚鞋垫厚度`);
-  };
-  // 仅重置分区补偿到系统值
-  const resetBoost = () => {
-    if (!defaults) return;
-    setDraft((d) => (d ? { ...d, [side]: { ...d[side], boost: { ...defaults[side].boost } } } : d));
-    toast.info(`已重置${sideLabel}脚分区补偿`);
+    setDraft((d) => (d ? { ...d, [side]: { ...d[side], hardness: defaults[side].hardness } } : d));
+    toast.info(`已重置${sideLabel}脚软硬`);
   };
   const saveDraft = () => {
     if (draft) setCommitted(draft);
@@ -797,9 +801,10 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
       const exporter = fmt === "stl" ? exportStlInsoleSTL : exportStlInsoleGLTF;
       for (const f of ["left", "right"] as const) {
         const s = committed[f];
-        await exporter(f, s.params.footLength, s.params.footWidth, s.params.archCorrection, s.params.baseThickness, s.params.heelThickness, insoleColor, name, s.boost);
+        const d = toDeform(s, insoleStyle);
+        await exporter(insoleStyle, f, s.params.footLength, s.params.footWidth, s.params.archCorrection, s.params.baseThickness, s.params.heelThickness, insoleColor, name, d);
       }
-      toast.success(`双脚鞋垫 ${fmt.toUpperCase()} 文件已开始下载`, { description: "已嵌入分区加厚数据，可用于 3D 打印" });
+      toast.success(`双脚鞋垫 ${fmt.toUpperCase()} 文件已开始下载`, { description: "可直接用于 3D 打印" });
     } catch (err) {
       console.error(err);
       toast.error("文件导出失败，请重试");
@@ -835,32 +840,59 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
             </div>
           </div>
           <div style={{ flex: 1, minHeight: "440px", background: "transparent", position: "relative" }}>
-            <StlInsoleViewer activeFoot={side} color={insoleColor} leftParams={stlLeft} rightParams={stlRight} />
-            {/* 鞋垫颜色切换 */}
-            <div style={{ position: "absolute", top: "12px", left: "12px", display: "flex", alignItems: "center", gap: "10px", background: "rgba(255,255,255,0.82)", backdropFilter: "blur(4px)", borderRadius: "14px", padding: "8px 14px", boxShadow: "0 2px 10px rgba(160,110,40,0.14)", zIndex: 5 }}>
-              <span style={{ fontSize: "12px", fontWeight: 600, color: "#5A3A1A" }}>鞋垫颜色</span>
-              <div style={{ display: "flex", gap: "8px" }}>
-                {INSOLE_COLORS.map((c) => {
-                  const active = insoleColor === c.value;
-                  return (
-                    <button
-                      key={c.value}
-                      title={c.name}
-                      onClick={() => setInsoleColor(c.value)}
-                      style={{
-                        width: "22px",
-                        height: "22px",
-                        borderRadius: "50%",
-                        background: c.value,
-                        cursor: "pointer",
-                        border: active ? "2px solid #F08614" : "2px solid #fff",
-                        boxShadow: active ? "0 0 0 1.5px #F08614" : "0 1px 3px rgba(0,0,0,0.18)",
-                        padding: 0,
-                        transition: "all 0.15s",
-                      }}
-                    />
-                  );
-                })}
+            <StlInsoleViewer activeFoot={side} style={insoleStyle} color={insoleColor} leftParams={stlLeft} rightParams={stlRight} leftDeform={deformLeft} rightDeform={deformRight} />
+            {/* 左上悬浮控件：鞋垫颜色 + 其正下方的鞋垫样式 */}
+            <div style={{ position: "absolute", top: "12px", left: "12px", display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "10px", zIndex: 5 }}>
+              {/* 鞋垫颜色切换 */}
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", background: "rgba(255,255,255,0.82)", backdropFilter: "blur(4px)", borderRadius: "14px", padding: "8px 14px", boxShadow: "0 2px 10px rgba(160,110,40,0.14)" }}>
+                <span style={{ fontSize: "12px", fontWeight: 600, color: "#5A3A1A" }}>鞋垫颜色</span>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  {INSOLE_COLORS.map((c) => {
+                    const active = insoleColor === c.value;
+                    return (
+                      <button
+                        key={c.value}
+                        title={c.name}
+                        onClick={() => setInsoleColor(c.value)}
+                        style={{
+                          width: "22px",
+                          height: "22px",
+                          borderRadius: "50%",
+                          background: c.value,
+                          cursor: "pointer",
+                          border: active ? "2px solid #F08614" : "2px solid #fff",
+                          boxShadow: active ? "0 0 0 1.5px #F08614" : "0 1px 3px rgba(0,0,0,0.18)",
+                          padding: 0,
+                          transition: "all 0.15s",
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+              {/* 鞋垫样式切换（整双统一）—— 位于鞋垫颜色正下方 */}
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", background: "rgba(255,255,255,0.82)", backdropFilter: "blur(4px)", borderRadius: "14px", padding: "8px 12px", boxShadow: "0 2px 10px rgba(160,110,40,0.14)" }}>
+                <span style={{ fontSize: "12px", fontWeight: 600, color: "#5A3A1A" }}>鞋垫样式</span>
+                <div style={{ display: "flex", gap: "4px", background: "#EDE5DC", padding: "3px", borderRadius: "9px" }}>
+                  {STYLE_ORDER.map((st) => {
+                    const active = insoleStyle === st;
+                    return (
+                      <button
+                        key={st}
+                        onClick={() => setInsoleStyle(st)}
+                        style={{
+                          height: "26px", padding: "0 12px", borderRadius: "7px", border: "none", cursor: "pointer",
+                          fontSize: "12px", fontWeight: 600,
+                          color: active ? "#fff" : "#8A6A40",
+                          background: active ? C.primary : "transparent",
+                          transition: "all 0.16s",
+                        }}
+                      >
+                        {STYLE_DEFS[st].label}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
           </div>
@@ -881,6 +913,22 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
           {/* 足弓状态 */}
           <Card>
             <SectionTitle zh="足弓状态" en="Foot arch status" />
+            {/* 静默兜底曾被误当真实数据（报告页同款提示），演示值必须显式标注 */}
+            {isDemoData && (
+              <div
+                style={{
+                  marginBottom: "8px",
+                  padding: "6px 10px",
+                  borderRadius: "6px",
+                  background: "rgba(255,90,44,0.10)",
+                  color: "#FF5A2C",
+                  fontSize: "12px",
+                  fontWeight: 600,
+                }}
+              >
+                演示数据：未接入本次测量分析结果，以下参数不可用于生产
+              </div>
+            )}
             <ArchSpectrum params={committed[side].params} />
           </Card>
 
@@ -926,46 +974,28 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
 
       <BottomBar
         userName={currentUser?.name ?? "—"}
-        userId={currentUser ? formatUserId(currentUser.id) : "—"}
+        userId={String(currentUser?.id ?? "—")}
         onBack={handleRemeasure}
         onRestart={handleFinish}
         onDownload={() => setOverlay("download")}
       />
 
-      {/* ── 厚度调节抽屉 ── */}
+      {/* ── 鞋垫参数调节抽屉（厚度 + 软硬） ── */}
       {overlay === "drawer" && (
         <>
           <SidebarDim />
-          <DrawerPanel title="鞋垫厚度调节" onReset={resetDefaults}>
-            <ThicknessSliders fs={cur} sys={defaults?.[side]} onParams={editParams} drawerMode />
+          <DrawerPanel title="鞋垫参数调节" onReset={resetDefaults}>
+            <ThicknessSliders fs={cur} sys={defaults?.[side]} onParams={editParams} drawerMode style={insoleStyle} />
+
+            {/* 软硬调节：Shore A 硬度 */}
+            <DetailSectionHeader title="软硬调节" onReset={resetSoftness} style={{ marginTop: "8px" }} />
+            <StepperSliderRow label="鞋垫软硬" value={cur.hardness} min={20} max={60} step={1} unit="Shore A" hints={["软", "硬"]} tightHints systemValue={defaults?.[side].hardness} onChange={(v) => editHardness(v)} />
+
             <DrawerFooter
-              leftBtn={{ label: "细节调整", onClick: () => setOverlay("detail") }}
               onCancel={cancelDraft}
               onSave={saveDraft}
             />
           </DrawerPanel>
-        </>
-      )}
-
-      {/* ── 分区补偿细节（右侧整屏浮层） ── */}
-      {overlay === "detail" && (
-        <>
-        <SidebarDim />
-        <DetailPanel
-          onBackToDrawer={() => setOverlay("drawer")}
-          onSave={saveDraft}
-        >
-          {/* 鞋垫厚度调节 */}
-          <DetailSectionHeader title="鞋垫厚度调节" onReset={resetThickness} />
-          <ThicknessSliders fs={cur} sys={defaults?.[side]} onParams={editParams} />
-
-          {/* 分区支撑补偿调节 */}
-          <DetailSectionHeader title="分区支撑补偿调节" onReset={resetBoost} style={{ marginTop: "20px" }} />
-          <ZoneHeatmap boost={cur.boost} />
-          <StepperSliderRow label="前掌区" value={cur.boost.forefoot} min={-1.5} max={1.5} step={0.1} hints={["-1.5mm减压", "+1.5mm支撑"]} tightHints systemValue={defaults?.[side].boost.forefoot} onChange={(v) => editBoost({ forefoot: Math.round(v * 10) / 10 })} />
-          <StepperSliderRow label="足弓区" value={cur.boost.midfoot} min={-1.5} max={1.5} step={0.1} hints={["-1.5mm减压", "+1.5mm支撑"]} tightHints systemValue={defaults?.[side].boost.midfoot} onChange={(v) => editBoost({ midfoot: Math.round(v * 10) / 10 })} />
-          <StepperSliderRow label="后跟区" value={cur.boost.hindfoot} min={-1.5} max={1.5} step={0.1} hints={["-1.5mm减压", "+1.5mm支撑"]} tightHints systemValue={defaults?.[side].boost.hindfoot} onChange={(v) => editBoost({ hindfoot: Math.round(v * 10) / 10 })} />
-        </DetailPanel>
         </>
       )}
 
@@ -977,7 +1007,10 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
           onDownload={handleDownload}
           stlLeft={toStlParams(committed.left)}
           stlRight={toStlParams(committed.right)}
+          deformLeft={toDeform(committed.left, insoleStyle)}
+          deformRight={toDeform(committed.right, insoleStyle)}
           color={insoleColor}
+          style={insoleStyle}
           shoeSizeLeft={shoeSizeFor("left")}
           shoeSizeRight={shoeSizeFor("right")}
         />
@@ -1062,44 +1095,7 @@ function DrawerFooter({ leftBtn, onCancel, onSave, saveLabel = "保存" }: { lef
   );
 }
 
-// ─── 细节面板（右侧整屏浮层） ─────────────────────────────────────────────────
-function DetailPanel({ children, onBackToDrawer, onSave }: { children: React.ReactNode; onBackToDrawer: () => void; onSave: () => void }) {
-  return (
-    <div
-      style={{
-        position: "fixed",
-        top: "88px",
-        right: "16px",
-        bottom: "16px",
-        width: "min(500px, 40vw)",
-        minWidth: "440px",
-        background: "#FFFFFF",
-        borderRadius: "18px",
-        boxShadow: "0 16px 60px rgba(150,90,20,0.22)",
-        border: `1px solid ${C.border}`,
-        display: "flex",
-        flexDirection: "column",
-        zIndex: 40,
-        animation: "drawerUp 0.25s cubic-bezier(0.23,1,0.32,1)",
-        overflow: "hidden",
-      }}
-    >
-      {/* 滚动内容 */}
-      <div style={{ flex: 1, overflowY: "auto", padding: "22px 24px 12px" }}>{children}</div>
-      {/* 底部工具行：返回厚度 + 保存参数 */}
-      <div style={{ display: "flex", alignItems: "center", gap: "10px", padding: "14px 24px", borderTop: `1px solid ${C.border}`, background: "#FFFFFF" }}>
-        <button onClick={onBackToDrawer} style={{ background: "none", border: `1.5px solid ${C.primary}`, borderRadius: "8px", height: "40px", padding: "0 16px", cursor: "pointer", fontSize: "13px", fontWeight: 600, color: C.primaryDeep }}>
-          ‹ 返回厚度
-        </button>
-        <button onClick={onSave} style={{ marginLeft: "auto", background: C.primary, border: "none", borderRadius: "8px", height: "40px", padding: "0 30px", cursor: "pointer", fontSize: "14px", fontWeight: 700, color: "#fff", boxShadow: "0 3px 10px rgba(245,166,35,0.3)" }}>
-          保存参数
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// 细节面板内的 section 标题 + 重置
+// section 标题 + 重置（抽屉内软硬调节复用）
 function DetailSectionHeader({ title, onReset, style }: { title: string; onReset: () => void; style?: React.CSSProperties }) {
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px", ...style }}>
@@ -1168,24 +1164,26 @@ function ConfirmModal({ title, body, confirmLabel, onCancel, onConfirm }: {
 }
 
 // ─── 双脚下载弹窗 ─────────────────────────────────────────────────────────────
-function DualFootModal({ committed, onClose, onDownload, stlLeft, stlRight, color, shoeSizeLeft, shoeSizeRight }: {
+function DualFootModal({ committed, onClose, onDownload, stlLeft, stlRight, deformLeft, deformRight, color, style, shoeSizeLeft, shoeSizeRight }: {
   committed: { left: FootState; right: FootState };
   onClose: () => void;
   onDownload: (fmt: "stl" | "glb") => void;
   stlLeft: StlInsoleParams;
   stlRight: StlInsoleParams;
+  deformLeft: DeformMm;
+  deformRight: DeformMm;
   color: string;
+  style: InsoleStyle;
   shoeSizeLeft: number;
   shoeSizeRight: number;
 }) {
   const tableRows: { label: string; left: string; right: string }[] = [
+    { label: "鞋垫样式", left: STYLE_DEFS[style].label, right: STYLE_DEFS[style].label },
     { label: "匹配鞋码", left: `中国${shoeSizeLeft}码`, right: `中国${shoeSizeRight}码` },
     { label: "足弓矫正厚度", left: `+${committed.left.params.archCorrection}mm`, right: `+${committed.right.params.archCorrection}mm` },
     { label: "基础厚度", left: `${(committed.left.params.baseThickness * 10).toFixed(1)}mm`, right: `${(committed.right.params.baseThickness * 10).toFixed(1)}mm` },
     { label: "足跟缓冲厚度", left: `${committed.left.params.heelThickness}mm`, right: `${committed.right.params.heelThickness}mm` },
-    { label: "前掌区补偿", left: `+${committed.left.boost.forefoot}mm`, right: `+${committed.right.boost.forefoot}mm` },
-    { label: "足弓区补偿", left: `+${committed.left.boost.midfoot}mm`, right: `+${committed.right.boost.midfoot}mm` },
-    { label: "后跟区补偿", left: `+${committed.left.boost.hindfoot}mm`, right: `+${committed.right.boost.hindfoot}mm` },
+    { label: "鞋垫软硬", left: `${committed.left.hardness} Shore A`, right: `${committed.right.hardness} Shore A` },
   ];
 
   const cellBorder = "1px solid rgba(200,160,110,0.35)";
@@ -1200,7 +1198,7 @@ function DualFootModal({ committed, onClose, onDownload, stlLeft, stlRight, colo
             <span style={{ fontSize: "18px", fontWeight: 700, color: C.dark }}>双脚3D鞋垫展示</span>
             <span style={{ fontSize: "12px", color: C.sub }}>3D Dual-Foot Insole View</span>
           </div>
-          <StlInsoleViewer activeFoot="both" color={color} leftParams={stlLeft} rightParams={stlRight} />
+          <StlInsoleViewer activeFoot="both" style={style} color={color} leftParams={stlLeft} rightParams={stlRight} leftDeform={deformLeft} rightDeform={deformRight} />
         </div>
 
         {/* 右：参数表 + 底部按钮 */}
