@@ -5,7 +5,11 @@ ACIKI 持久化层（SQLite，标准库 sqlite3，零额外依赖）。
 大 blob 落磁盘文件、DB 只存路径"策略，并做简化：
   - users   : 用户（id 唯一 5 位，name 可重复）
   - records : 每用户每次采集记录；测量大数据（analysis JSON，含热力图/COP/base64 图）
-              落盘为 data/records/<id>.json，DB 只存 data_path
+              落盘为 data/records/<id>.json，DB 只存 data_path。
+              解决方案页改过的参数（约 1KB 结构化数据）直接存 solution_json 列，不落盘。
+  - shells  : 上传的鞋壳（几十上百 MB 的 STL），文件落盘 data/shells/<id>.stl，DB 只存 path。
+              形态缩略图 data/shells/<id>.png（stl_thumb.py 渲的灰模，供选择抽屉的卡片），
+              路径由 id 直接推出，DB 不为它加列（见 shell_thumb_path）。
 
 连接策略：每次操作开一个短连接（sqlite3.connect 很轻），避免 FastAPI 线程池下的
 跨线程复用问题；开启 WAL 提升写并发（同 laonianren util/db.js 的 PRAGMA）。
@@ -14,11 +18,12 @@ ACIKI 持久化层（SQLite，标准库 sqlite3，零额外依赖）。
 import os
 import json
 import sqlite3
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 _DATA_DIR = os.environ.get("ACIKI_DATA_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 _DB_PATH = os.path.join(_DATA_DIR, "aciki.db")
 _RECORDS_DIR = os.path.join(_DATA_DIR, "records")
+_SHELLS_DIR = os.path.join(_DATA_DIR, "shells")
 
 
 def _connect() -> sqlite3.Connection:
@@ -34,6 +39,7 @@ def init_db() -> None:
     """建库建表（幂等）。首次调用时创建目录与表。"""
     os.makedirs(_DATA_DIR, exist_ok=True)
     os.makedirs(_RECORDS_DIR, exist_ok=True)
+    os.makedirs(_SHELLS_DIR, exist_ok=True)
     conn = _connect()
     try:
         conn.execute(
@@ -59,6 +65,9 @@ def init_db() -> None:
                 time       TEXT,
                 data_path  TEXT,                  -- 分析结果 JSON 文件路径（相对 data 目录）
                 raw_path   TEXT,                  -- 原始帧 CSV 文件路径（相对 data 目录，界面不暴露）
+                solution_json       TEXT,         -- 解决方案页改过的参数快照（约 1KB，直接内联）
+                solution_created_at TEXT,         -- 首次保存方案的时间（留档，界面不展示）
+                solution_updated_at TEXT,         -- 最后一次保存方案的时间（记录行「方案更新时间」列）
                 created_at TEXT DEFAULT (datetime('now')),
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
@@ -66,10 +75,24 @@ def init_db() -> None:
         )
         # 自愈补列（老库升级）：参考 laonianren ensureHistoryColumns 的做法
         cols = {r[1] for r in conn.execute("PRAGMA table_info(records)").fetchall()}
-        if "raw_path" not in cols:
-            conn.execute("ALTER TABLE records ADD COLUMN raw_path TEXT")
+        for col in ("raw_path", "solution_json", "solution_created_at", "solution_updated_at"):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE records ADD COLUMN {col} TEXT")
         # 按用户查历史记录的索引（一人多次采集，WHERE user_id=? 走索引）
         conn.execute("CREATE INDEX IF NOT EXISTS idx_records_user ON records(user_id)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS shells (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                label      TEXT NOT NULL,         -- 展示名（默认文件名去扩展名，可重名）
+                filename   TEXT,
+                size       INTEGER,               -- 字节数（选择窗口里展示）
+                path       TEXT,                  -- STL 文件路径（相对 data 目录）
+                adjust     TEXT,                  -- 手动微调 JSON；null = 默认摆位
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+            """
+        )
         conn.commit()
     finally:
         conn.close()
@@ -202,10 +225,12 @@ def _remove_record_file(rel_path: Optional[str]) -> None:
 
 
 def list_records(user_id: int) -> list[dict]:
+    """列表只带元数据 + 方案时间戳，不带 solution_json（避免 1KB×N 的无用负载）。"""
     conn = _connect()
     try:
         rows = conn.execute(
-            "SELECT id, user_id, date, time, created_at FROM records WHERE user_id=? ORDER BY created_at DESC, id DESC",
+            "SELECT id, user_id, date, time, created_at, solution_created_at, solution_updated_at "
+            "FROM records WHERE user_id=? ORDER BY created_at DESC, id DESC",
             (user_id,),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -280,6 +305,48 @@ def get_record_data(rid: int) -> Optional[Any]:
         conn.close()
 
 
+def save_record_solution(rid: int, solution: Any, updated_at: str) -> bool:
+    """保存/覆盖某条记录的解决方案快照。返回 False = 记录不存在。
+
+    时间戳由前端传本地时间字符串（同 create_record 的 date/time），
+    不用 datetime('now')——那是 UTC，与界面上其它时间对不上。
+    solution_created_at 只在第一次保存时写入，之后每次只刷新 updated_at。
+    """
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT solution_created_at FROM records WHERE id=?", (rid,)).fetchone()
+        if not row:
+            return False
+        created = row["solution_created_at"] or updated_at
+        conn.execute(
+            "UPDATE records SET solution_json=?, solution_created_at=?, solution_updated_at=? WHERE id=?",
+            (json.dumps(solution, ensure_ascii=False), created, updated_at, rid),
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def get_record_solution(rid: int) -> Optional[dict]:
+    """读回方案快照 + 两个时间戳；从未保存过方案返回 None。"""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT solution_json, solution_created_at, solution_updated_at FROM records WHERE id=?",
+            (rid,),
+        ).fetchone()
+        if not row or not row["solution_json"]:
+            return None
+        return {
+            "solution": json.loads(row["solution_json"]),
+            "created_at": row["solution_created_at"],
+            "updated_at": row["solution_updated_at"],
+        }
+    finally:
+        conn.close()
+
+
 def delete_record(rid: int) -> int:
     conn = _connect()
     try:
@@ -288,6 +355,126 @@ def delete_record(rid: int) -> int:
             _remove_record_file(row["data_path"])
             _remove_record_file(row["raw_path"])
         cur = conn.execute("DELETE FROM records WHERE id=?", (rid,))
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
+# ─── 鞋壳仓库（元数据进 SQLite，STL 落盘 data/shells/<id>.stl） ─────────────────
+def _shell_rel_path(sid: int) -> str:
+    return os.path.join("shells", f"{sid}.stl")
+
+
+def _shell_thumb_rel_path(sid: int) -> str:
+    return os.path.join("shells", f"{sid}.png")
+
+
+def shell_thumb_path(sid: int) -> str:
+    """
+    鞋壳形态缩略图的绝对路径（可能还不存在 —— 由 api_server 按需渲染，见 stl_thumb.py）。
+    路径可由 id 直接推出，所以 DB 里不为它加列。
+    """
+    return os.path.join(_DATA_DIR, _shell_thumb_rel_path(sid))
+
+
+def _shell_to_dict(row: sqlite3.Row) -> dict:
+    """adjust 列在 DB 里是 JSON 字符串，出库即解成对象（前端直接当 ShellAdjust 用）。"""
+    d = dict(row)
+    raw = d.get("adjust")
+    try:
+        d["adjust"] = json.loads(raw) if raw else None
+    except (TypeError, ValueError):
+        d["adjust"] = None
+    # 缩略图是否已就绪：前端据此决定卡片先显示骨架还是直接上图
+    d["hasThumb"] = os.path.exists(shell_thumb_path(d["id"])) if d.get("id") else False
+    return d
+
+
+def list_shells() -> list[dict]:
+    """按上传时间倒序列出全部鞋壳（选择窗口用；不含文件内容）。"""
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, label, filename, size, adjust, created_at FROM shells ORDER BY created_at DESC, id DESC"
+        ).fetchall()
+        return [_shell_to_dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def create_shell(label: str, filename: str, chunks: Iterable[bytes]) -> dict:
+    """新增一个鞋壳：先插行拿 id → 边收边写盘（几十上百 MB，不整体驻留内存）→ 回写 path/size。
+
+    写盘失败会把刚插的行删掉，不留孤儿记录。
+    """
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            "INSERT INTO shells (label, filename, size, path) VALUES (?,?,?,?)",
+            ((label or "").strip() or "未命名鞋壳", filename, 0, None),
+        )
+        sid = cur.lastrowid
+        conn.commit()
+        rel = _shell_rel_path(sid)
+        abs_path = os.path.join(_DATA_DIR, rel)
+        size = 0
+        try:
+            with open(abs_path, "wb") as f:
+                for chunk in chunks:
+                    if chunk:
+                        f.write(chunk)
+                        size += len(chunk)
+        except Exception:
+            conn.execute("DELETE FROM shells WHERE id=?", (sid,))
+            conn.commit()
+            _remove_record_file(rel)
+            raise
+        conn.execute("UPDATE shells SET path=?, size=? WHERE id=?", (rel, size, sid))
+        conn.commit()
+        row = conn.execute(
+            "SELECT id, label, filename, size, adjust, created_at FROM shells WHERE id=?", (sid,)
+        ).fetchone()
+        return _shell_to_dict(row)
+    finally:
+        conn.close()
+
+
+def shell_path(sid: int) -> Optional[str]:
+    """鞋壳 STL 的绝对路径；记录或文件不存在返回 None。"""
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT path FROM shells WHERE id=?", (sid,)).fetchone()
+        if not row or not row["path"]:
+            return None
+        path = os.path.join(_DATA_DIR, row["path"])
+        return path if os.path.exists(path) else None
+    finally:
+        conn.close()
+
+
+def save_shell_adjust(sid: int, adjust: Any) -> bool:
+    """记住某个鞋壳的手动微调摆位（校正过一次就不用每次重来）。"""
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            "UPDATE shells SET adjust=? WHERE id=?",
+            (json.dumps(adjust, ensure_ascii=False) if adjust is not None else None, sid),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def delete_shell(sid: int) -> int:
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT path FROM shells WHERE id=?", (sid,)).fetchone()
+        if row:
+            _remove_record_file(row["path"])  # 同一套「相对 data 目录 → 静默删」逻辑
+            _remove_record_file(_shell_thumb_rel_path(sid))  # 连带删缩略图，别留孤儿 PNG
+        cur = conn.execute("DELETE FROM shells WHERE id=?", (sid,))
         conn.commit()
         return cur.rowcount
     finally:

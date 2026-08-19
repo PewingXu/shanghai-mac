@@ -9,6 +9,7 @@ import {
   apiCreateRecord,
   apiDeleteRecord,
 } from "@/lib/backendApi";
+import type { SolutionSnapshot } from "@/lib/solutionSnapshot";
 
 /** 一次测量的分析结果：Python 指标 + 前端补充（MLI、左右分压/分面积） */
 export interface MeasureAnalysis {
@@ -44,6 +45,8 @@ export interface CollectionRecord {
   userId: number;
   date: string;   // "2026-5-1"
   time: string;   // "14:30:35"
+  /** 最后一次保存解决方案的时间（"2026-08-19 15:07"）；从未编辑过为 undefined */
+  solutionUpdatedAt?: string;
 }
 
 // 当前视图：home | history | userRecords | measure | report | solution
@@ -70,6 +73,12 @@ interface AppContextType {
   setSelectedRecord: (r: CollectionRecord | null) => void;
   analysis: MeasureAnalysis | null;
   setAnalysis: (a: MeasureAnalysis | null) => void;
+  /**
+   * 历史回看时读回的解决方案快照（点「查看」时在跳转前就位，解决方案页挂载即可用）。
+   * null = 走系统默认值（新测量 / 该记录从未编辑过方案）。
+   */
+  selectedSolution: SolutionSnapshot | null;
+  setSelectedSolution: (s: SolutionSnapshot | null) => void;
 }
 
 const AppContext = createContext<AppContextType>({
@@ -90,6 +99,8 @@ const AppContext = createContext<AppContextType>({
   setSelectedRecord: () => {},
   analysis: null,
   setAnalysis: () => {},
+  selectedSolution: null,
+  setSelectedSolution: () => {},
 });
 
 // 用户种子：已清空（原来 15 条重复"果果"是硬编码演示数据，非数据库；现按需求清空）。
@@ -129,6 +140,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [collectionRecords, setCollectionRecords] = useState<CollectionRecord[]>(DEMO_RECORDS);
   const [selectedRecord, setSelectedRecord] = useState<CollectionRecord | null>(null);
   const [analysis, setAnalysis] = useState<MeasureAnalysis | null>(null);
+  const [selectedSolution, setSelectedSolution] = useState<SolutionSnapshot | null>(null);
 
   // 开机从后端拉取用户列表（后端不可用则保持空，不报错）。
   // 同时校验会话恢复的 currentUser：已被删除（清库/删用户）的幽灵用户直接清掉。
@@ -214,9 +226,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const now = new Date();
       const date = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
       const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
+      // 新测量必须从干净方案开始，否则会带着上一位用户回看时留下的快照
+      setSelectedSolution(null);
       apiCreateRecord(user.id, date, time, slimAnalysisForStorage(detail), detail.rawFrames)
         .then((rec) => {
           setCollectionRecords((prev) => [rec, ...prev.filter((r) => r.id !== rec.id)]);
+          // 选中它：解决方案页保存参数时要有 record id 可挂
+          setSelectedRecord(rec);
         })
         .catch((err) => console.warn("[record] 采集记录入库失败（后端不可用？）:", err));
     };
@@ -244,6 +260,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setSelectedRecord,
         analysis,
         setAnalysis,
+        selectedSolution,
+        setSelectedSolution,
       }}
     >
       {children}

@@ -15,13 +15,15 @@ if sys.platform == "win32":
 import asyncio
 import json
 import tempfile
+import threading
 import traceback
 import base64
 import shutil
 import numpy as np
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Any, List, Optional
 
@@ -50,6 +52,7 @@ from OneStep_report import (
 )
 
 import db_store  # SQLite 持久化（用户 / 采集记录）
+import stl_thumb  # 鞋壳 STL → 灰模缩略图 PNG（选择抽屉的卡片配图）
 
 app = FastAPI(title="HuiSheng Foot Analysis API", version="1.0.0")
 db_store.init_db()  # 启动即建库建表（幂等）
@@ -106,6 +109,24 @@ class RecordCreateRequest(BaseModel):
 
 class RecordDeleteRequest(BaseModel):
     id: int
+
+
+class RecordSolutionRequest(BaseModel):
+    """保存解决方案页改过的参数快照（约 1KB，直接进 records.solution_json 列）。
+    updated_at 由前端传本地时间字符串——datetime('now') 是 UTC，与界面其它时间对不上。"""
+    id: int
+    solution: Any
+    updated_at: str
+
+
+class ShellDeleteRequest(BaseModel):
+    id: int
+
+
+class ShellAdjustRequest(BaseModel):
+    """记住某个鞋壳的手动微调摆位"""
+    id: int
+    adjust: Any = None
 
 
 def numpy_to_python(obj):
@@ -403,6 +424,144 @@ def delete_record(req: RecordDeleteRequest):
     """删除单条采集记录（连同落盘文件）"""
     try:
         n = db_store.delete_record(req.id)
+        return {"success": True, "deleted": n}
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── 解决方案快照（挂在采集记录上，一条记录只留最后一次）─────────────────────
+@app.post("/records/solution")
+def save_record_solution(req: RecordSolutionRequest):
+    """保存/覆盖某条记录的解决方案参数（首存时同时写 solution_created_at）"""
+    try:
+        ok = db_store.save_record_solution(req.id, req.solution, req.updated_at)
+        if not ok:
+            raise HTTPException(status_code=404, detail="record not found")
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/records/{rid}/solution")
+def get_record_solution(rid: int):
+    """读回方案快照；从未保存过方案时 solution 为 null（前端走默认值路径）"""
+    got = db_store.get_record_solution(rid)
+    if got is None:
+        return {"success": True, "solution": None}
+    return {"success": True, **got}
+
+
+# ─── 鞋壳仓库（元数据进 SQLite，STL 落盘 data/shells/）──────────────────────────
+@app.get("/shells")
+def list_shells():
+    """列出已上传的鞋壳（选择窗口用）"""
+    return {"success": True, "shells": db_store.list_shells()}
+
+
+@app.post("/shells")
+async def upload_shell(
+    request: Request,
+    background: BackgroundTasks,
+    label: str = "",
+    filename: str = "",
+):
+    """上传鞋壳：**请求体就是 STL 原始字节**，边收边写盘。
+
+    故意不用 UploadFile（要装 python-multipart），也不用 base64
+    （83MB 的鞋壳会膨胀成 112MB 字符串，白烧内存）。元数据走 query 参数。
+
+    写盘成功后用 BackgroundTasks 预热形态缩略图：上传响应照旧立刻返回，
+    图一秒左右后就绪（84MB 实测 1.0s），前端卡片先骨架后上图。
+    """
+    try:
+        # request.stream() 是异步迭代器，db_store.create_shell 要的是同步可迭代对象，
+        # 所以先在这里收齐分片（各分片仍是原 bytes 对象，不做整体拷贝）再交给它写盘。
+        chunks: list[bytes] = []
+        async for chunk in request.stream():
+            if chunk:
+                chunks.append(chunk)
+        if not chunks:
+            raise HTTPException(status_code=400, detail="请求体为空")
+        shell = db_store.create_shell(label, filename, chunks)
+        background.add_task(_ensure_shell_thumb, shell["id"])
+        return {"success": True, "shell": shell}
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/shells/{sid}/file")
+def get_shell_file(sid: int):
+    """回传鞋壳 STL 原文件（前端 XHR 带进度地拉；FileResponse 会给 Content-Length）"""
+    path = db_store.shell_path(sid)
+    if not path:
+        raise HTTPException(status_code=404, detail="shell not found")
+    return FileResponse(path, media_type="model/stl", filename=f"shell_{sid}.stl")
+
+
+"""鞋壳缩略图：同一个 id 只渲一次。锁按 id 分，避免两个请求同时啃同一个 84MB 文件。"""
+_thumb_locks: dict[int, threading.Lock] = {}
+_thumb_locks_guard = threading.Lock()
+
+
+def _ensure_shell_thumb(sid: int) -> Optional[str]:
+    """返回缩略图路径；没有就现渲一张。鞋壳记录/文件不存在或渲染失败返回 None。"""
+    out = db_store.shell_thumb_path(sid)
+    if os.path.exists(out):
+        return out
+    src = db_store.shell_path(sid)
+    if not src:
+        return None
+    with _thumb_locks_guard:
+        lock = _thumb_locks.setdefault(sid, threading.Lock())
+    with lock:
+        if os.path.exists(out):  # 排队期间别人渲好了
+            return out
+        try:
+            return out if stl_thumb.render_thumb(src, out) else None
+        except Exception:
+            traceback.print_exc()
+            return None
+
+
+@app.get("/shells/{sid}/thumb")
+def get_shell_thumb(sid: int):
+    """
+    鞋壳形态缩略图（选择抽屉的卡片配图）。有缓存直接发，没有就当场渲一张再发
+    —— 这样早先脚本传上来、没经过上传预热的鞋壳也不用额外补数据。
+    """
+    path = _ensure_shell_thumb(sid)
+    if not path:
+        raise HTTPException(status_code=404, detail="shell thumb unavailable")
+    return FileResponse(path, media_type="image/png")
+
+
+@app.post("/shells/adjust")
+def save_shell_adjust(req: ShellAdjustRequest):
+    """记住某个鞋壳的手动微调摆位（下次选中直接沿用）"""
+    try:
+        ok = db_store.save_shell_adjust(req.id, req.adjust)
+        if not ok:
+            raise HTTPException(status_code=404, detail="shell not found")
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/shells/delete")
+def delete_shell(req: ShellDeleteRequest):
+    """删除一个鞋壳（连同落盘 STL）"""
+    try:
+        n = db_store.delete_shell(req.id)
         return {"success": True, "deleted": n}
     except Exception as e:
         traceback.print_exc()

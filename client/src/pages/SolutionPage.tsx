@@ -21,11 +21,26 @@ import { STYLE_DEFS, STYLE_ORDER, productBaseHeightMm, personalDeform, ZERO_DEFO
 import {
   BUILTIN_SHELL,
   DEFAULT_SHELL_ADJUST,
-  HAND_MIN_CONFIDENCE,
+  dbShellId,
+  dbShellSource,
   type ShellSource,
   type ShellAdjust,
   type ShellPairInfo,
 } from "@/lib/shoeShell";
+import ShellPickerDrawer from "@/components/ShellPickerDrawer";
+import {
+  apiListShells,
+  apiSaveRecordSolution,
+  apiUploadShell,
+  shellFileUrl,
+  shellThumbUrl,
+} from "@/lib/backendApi";
+import {
+  buildSolutionSnapshot,
+  localStamp,
+  restoreFoot,
+  type SolutionSnapshot,
+} from "@/lib/solutionSnapshot";
 import {
   getArchLevelColor,
   getArchDesignLogic,
@@ -71,18 +86,7 @@ const SHELL_VIEWS: { value: ShellView; label: string }[] = [
   { value: "assembly", label: "装配" },
 ];
 
-// 鞋壳控件里的小按钮（文字链 / 胶囊），与页面既有配色一致
-const shellLinkBtn: React.CSSProperties = {
-  background: "none",
-  border: "none",
-  padding: 0,
-  cursor: "pointer",
-  fontSize: "11px",
-  fontWeight: 700,
-  color: C.primaryDeep,
-  textDecoration: "underline",
-};
-
+// 鞋壳控件里的小胶囊按钮（三态切换以外的那些），与页面既有配色一致
 const shellChipBtn: React.CSSProperties = {
   height: "24px",
   padding: "0 8px",
@@ -711,44 +715,136 @@ interface SolutionPageProps {
 }
 
 export default function SolutionPage({ onRestart, onHistory, onBack, onViewReport }: SolutionPageProps) {
-  const { currentUser, analysis } = useApp();
+  const { currentUser, analysis, selectedRecord, selectedSolution, setSelectedSolution } = useApp();
+
+  // 历史回看时读回的方案快照（UserRecordsPage 在跳转前已放进 context）。
+  // 存进 ref：只在挂载那一刻取一次，之后无论 context 怎么变都不再二次套用。
+  const snapshotRef = useRef(selectedSolution);
 
   const [side, setSide] = useState<Side>("left");
   const [overlay, setOverlay] = useState<Overlay>("main");
-  // 当前鞋垫颜色（3D 预览 + STL 导出）
-  const [insoleColor, setInsoleColor] = useState<string>(C.insoleColor);
+  // 当前鞋垫颜色（3D 预览 + STL 导出）；有快照就从快照 seed
+  const [insoleColor, setInsoleColor] = useState<string>(snapshotRef.current?.insoleColor ?? C.insoleColor);
   // 当前鞋垫样式（整双统一：舒缓 / 运动 / 标准）
-  const [insoleStyle, setInsoleStyle] = useState<InsoleStyle>("comfort");
+  const [insoleStyle, setInsoleStyle] = useState<InsoleStyle>(snapshotRef.current?.insoleStyle ?? "comfort");
 
   // ── 鞋壳（仅鞋垫 / 仅鞋壳 / 装配） ──
-  // 默认 'off'：内置鞋壳 83MB，不切过去就一个字节都不拉
-  const [shellView, setShellView] = useState<ShellView>("off");
-  const [shellSource, setShellSource] = useState<ShellSource>(BUILTIN_SHELL);
-  const [shellOpacity, setShellOpacity] = useState(0.35);
-  const [shellAdjust, setShellAdjust] = useState<ShellAdjust>(DEFAULT_SHELL_ADJUST);
-  const shellFileRef = useRef<HTMLInputElement | null>(null);
+  // 默认 'off'：内置鞋壳 83MB，不切过去就一个字节都不拉。
+  // 有快照就照当时的视图恢复（用户要求「鞋壳也要保存」）—— 代价是当时停在装配/仅鞋壳的话，
+  // 进页面就会去拉那几十 MB（带进度条），这是明确取舍过的。
+  const [shellView, setShellView] = useState<ShellView>(() => {
+    const snap = snapshotRef.current;
+    if (!snap?.shellView) return "off";
+    // 后端件先按 off 起，等下面那个 effect 确认它还在仓库里再切过去 ——
+    // 直接切会让 3D 抢在核对之前去拉 url，鞋壳早被删掉的话白报一个 404。
+    return dbShellId(snap.shellSourceId ?? "") != null ? "off" : snap.shellView;
+  });
+  const [shellSource, setShellSource] = useState<ShellSource>(() => {
+    // 快照里记着上次选的后端鞋壳 → 恢复选中；名字也存了一份，不必等 /shells 回来
+    const sid = dbShellId(snapshotRef.current?.shellSourceId ?? "");
+    return sid != null
+      ? dbShellSource(sid, snapshotRef.current?.shellLabel ?? "已保存的鞋壳", shellFileUrl(sid), undefined, shellThumbUrl(sid))
+      : BUILTIN_SHELL;
+  });
+  const [shellOpacity, setShellOpacity] = useState(snapshotRef.current?.shellOpacity ?? 0.35);
+  // 快照里的摆位优先于后端按鞋壳存的那份：历史记录要还原「这条记录当时长什么样」
+  const [shellAdjust, setShellAdjust] = useState<ShellAdjust>(snapshotRef.current?.shellAdjust ?? DEFAULT_SHELL_ADJUST);
+  const [shellPickerOpen, setShellPickerOpen] = useState(false);
+  // 上传成功后自增，让抽屉重列表 —— 新传的鞋壳立刻出现在卡片带里
+  const [shellRefreshKey, setShellRefreshKey] = useState(0);
   const isUploadedShell = shellSource.id !== BUILTIN_SHELL.id;
 
+  /**
+   * 用户真的动过手（颜色 / 样式 / 尺寸 / 换鞋壳 / 抽屉保存）→ 此后任何状态变化都自动落盘。
+   * 定义在这么前面是因为下面几个 useCallback 的依赖数组要用它（引用早于定义会踩 TDZ）。
+   */
+  const solutionDirty = useRef(false);
+  const markSolutionEdited = useCallback(() => {
+    solutionDirty.current = true;
+  }, []);
+
+  /**
+   * 上传新鞋壳：本次立刻用内存 buffer 渲染（零等待），同时存进后端仓库供以后选用。
+   * 两者共用后端主键当 id —— 刷新后同一个 id 从 url 拉回来，几何缓存认得是同一件。
+   */
   const handleShellFile = useCallback(async (file: File) => {
     if (!/\.stl$/i.test(file.name)) {
       toast.error("请选择 .stl 格式的鞋壳文件");
       return;
     }
+    markSolutionEdited(); // 换鞋壳也是方案的一部分（快照里记着 shellSourceId）
+    const label = file.name.replace(/\.stl$/i, "");
     try {
       toast.info(`正在解析 ${file.name}…`, { description: "大文件可能需要十几秒" });
       const buffer = await file.arrayBuffer();
       setShellAdjust(DEFAULT_SHELL_ADJUST);
-      setShellSource({
-        // 文件名 + 字节数当缓存键：换文件必然换键，同一文件重选不重复解析
-        id: `upload:${file.name}:${file.size}`,
-        label: file.name.replace(/\.stl$/i, ""),
-        buffer,
-        preOriented: false,
-      });
+      try {
+        const saved = await apiUploadShell(file, label);
+        setShellSource(dbShellSource(saved.id, saved.label, shellFileUrl(saved.id), buffer, shellThumbUrl(saved.id)));
+        setShellRefreshKey((k) => k + 1); // 抽屉重列表，新卡片带形态图冒出来
+        toast.success(`「${saved.label}」已保存，下次可直接从「选择鞋壳形态」里选`);
+      } catch {
+        // 后端不可用：退回纯内存件，功能不减，只是刷新即失
+        setShellSource({ id: `mem:${file.name}:${file.size}`, label, buffer, preOriented: false });
+        toast.warning("鞋壳已载入，但未能存到服务器", { description: "本次可用，刷新后需重新上传" });
+      }
+      // 视图切换放在最后：先切会让 3D 拿着旧的（内置 83MB）鞋壳白拉一次
       setShellView((v) => (v === "off" ? "assembly" : v));
     } catch {
       toast.error("读取文件失败，请重试");
     }
+  }, [markSolutionEdited]);
+
+  /**
+   * 从抽屉挑一款：连带恢复该鞋壳上次校正过的摆位。
+   * 抽屉**不关**（用户要连着点几款对比），但视图若还停在「仅鞋垫」就得切过去，
+   * 否则点了一款主视图毫无反应，等于没选。
+   */
+  const handleShellPick = useCallback((source: ShellSource, adjust: ShellAdjust | null) => {
+    markSolutionEdited();
+    setShellSource(source);
+    setShellAdjust(adjust ?? DEFAULT_SHELL_ADJUST);
+    setShellView((v) => (v === "off" ? "assembly" : v));
+  }, [markSolutionEdited]);
+
+  /*
+   * 摆位现在是【只读】的：页面上没有手动微调按钮了（用户不要），
+   * 值只从三处来 —— 快照、抽屉给的那款鞋壳存过的、后端按鞋壳记的那份，
+   * 一律叠在 buildShellPair 的自动识别结果之上。所以这里没有写回后端的代码。
+   */
+
+  /**
+   * 核对快照里那款鞋壳还在不在（挂载后一次，只针对后端件）。三种结果：
+   *   在   → 用仓库里的真名校正 label（老快照没存名字，seed 出来是占位名）；
+   *          摆位以快照为准，快照没带才用后端按鞋壳记着的那份；
+   *   没了 → 回落内置鞋壳 + 仅鞋垫。快照现在会把视图一起恢复，不兜住的话 3D 会照着
+   *          一个已删除的 url 直接去拉，卡在加载失败上；
+   *   失败（后端没开）→ 什么都不动，快照里的名字与选择照旧可用。
+   * 全程不打 dirty 标 —— 这是还原，不是用户编辑。
+   */
+  useEffect(() => {
+    const snap = snapshotRef.current;
+    const sid = dbShellId(snap?.shellSourceId ?? "");
+    if (sid == null) return;
+    let alive = true;
+    apiListShells()
+      .then((list) => {
+        if (!alive) return;
+        const hit = list.find((s) => s.id === sid);
+        if (!hit) {
+          setShellSource(BUILTIN_SHELL);
+          setShellAdjust(DEFAULT_SHELL_ADJUST);
+          setShellView("off");
+          toast.info("这条记录当时用的鞋壳已被删除", { description: "已回到内置鞋壳" });
+          return;
+        }
+        setShellSource((prev) => (prev.label === hit.label ? prev : { ...prev, label: hit.label }));
+        if (!snap?.shellAdjust) setShellAdjust((hit.adjust as ShellAdjust | null) ?? DEFAULT_SHELL_ADJUST);
+        // 确认鞋壳还在，才把视图切回当时那个（上面 useState 里故意压成了 off）
+        if (snap?.shellView && snap.shellView !== "off") setShellView(snap.shellView);
+      })
+      .catch(() => { /* 后端不可用：保持快照里的名字 */ });
+    return () => { alive = false; };
   }, []);
 
   // 只对上传件提示自动识别结果——内置件摆位是已知的，没必要每次切换都弹
@@ -759,13 +855,9 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
         info.pair ? "识别为双脚合体" : "识别为单只，另一只由镜像生成",
         `${(info.triangles / 10000).toFixed(1)} 万面`,
       ];
-      if (info.confidence < HAND_MIN_CONFIDENCE) {
-        toast.warning(`鞋壳已载入（${parts.join(" · ")}），但左右脚没判准`, {
-          description: "请用下方的手动微调按钮校正摆位",
-        });
-      } else {
-        toast.success(`鞋壳已载入（${parts.join(" · ")}）`);
-      }
+      // 手性判不准就不提示了：正常件的判据余量是门限的 4~5 倍（实测 ±0.124~0.151 对 0.03），
+      // 只有左右近似对称的怪文件才会翻，而手动微调按钮已按需求撤掉，提示了也没得修。
+      toast.success(`鞋壳已载入（${parts.join(" · ")}）`);
     },
     [isUploadedShell],
   );
@@ -782,10 +874,10 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
   // 离开守卫弹窗
   const [confirm, setConfirm] = useState<null | "remeasure" | "finish">(null);
   // 用户手填的鞋垫尺寸（默认置空，用于校验；不回写测量参数）
-  const [insoleSize, setInsoleSize] = useState<{ left: { length: string; width: string }; right: { length: string; width: string } }>({
-    left: { length: "", width: "" },
-    right: { length: "", width: "" },
-  });
+  const [insoleSize, setInsoleSize] = useState<{ left: { length: string; width: string }; right: { length: string; width: string } }>(
+    // 有快照就还原当时手填的四个尺寸（它们决定鞋码档 → 厚度基准，必须早于下面的基准 effect 就位）
+    () => snapshotRef.current?.insoleSize ?? { left: { length: "", width: "" }, right: { length: "", width: "" } },
+  );
 
   // 解决方案参数来自本次测量/历史回放的分析结果，与报告页同一份 analysis.python.data。
   // 兜底顺序见 solutionData.ts 顶部注释；走到 DEMO 时 backend=false，页面给出提示。
@@ -855,6 +947,117 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
     setDefaults(toBaseline);
     setDraft(keepDelta);
   }, [insoleStyle, analysisBase, effLenLeft, effLenRight]);
+
+  /**
+   * 历史回看：把快照里的参数盖回 committed。
+   * 必须等上面那个厚度基准 effect 落定（baselineRef 已有值）才动手，否则会被它当场平移掉；
+   * restoredRef 保证只套一次 —— 之后用户改什么都不会被快照回滚。
+   */
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    const snap = snapshotRef.current;
+    const baseline = baselineRef.current;
+    if (!snap || restoredRef.current || !defaults || !baseline) return;
+    restoredRef.current = true;
+    // 基础厚度取「当次算出的基准 + 快照里的增量」，所以之后换样式/换鞋码增量依旧跟着走。
+    // 基准只能读 baselineRef —— 挂载时上面那个基准 effect 与本 effect 在同一批里跑完，
+    // 此刻闭包里的 defaults 还是分析原始值（压力自适应 3.0mm），拿它当基准会把成品垫的
+    // 54.5mm 还原成 3.0mm，还顺带在「基础厚度」上挂个假的「已调整」。ref 永远是最新的。
+    setCommitted({
+      left: restoreFoot(snap.feet.left, baseline.left),
+      right: restoreFoot(snap.feet.right, baseline.right),
+    });
+    setDraft(null);
+    toast.info("已载入这次测量保存过的方案参数");
+  }, [defaults]);
+
+  /**
+   * 把当前方案参数存回这条采集记录（历史记录行的「方案更新时间 / 已编辑」由它产生）。
+   * 没有 record（后端挂了、演示数据）就静默跳过 —— 用户没做错什么，不该看到报错。
+   *
+   * 所有写盘都过 solutionPending + flushSolution 这一个口子：排队中的那次会被后来的顶掉，
+   * 显式动作（抽屉保存 / 重新测量 / 结束体验 / 导出）立刻发，自动保存合并 800ms 再发。
+   */
+  const solutionSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const solutionPending = useRef<{ rid: number; snap: SolutionSnapshot } | null>(null);
+
+  const flushSolution = useCallback(() => {
+    if (solutionSaveTimer.current) {
+      clearTimeout(solutionSaveTimer.current);
+      solutionSaveTimer.current = null;
+    }
+    const p = solutionPending.current;
+    solutionPending.current = null;
+    if (!p) return;
+    // 同步进 context：本次会话里再从报告页/步骤条回到本页时，快照只有 UserRecordsPage 点行那一次
+    // 会去后端取。不同步的话「改完 → 返回分析报告 → 查看解决方案」会拿着旧的 null 走默认值，
+    // 盘上明明存着也白存（实测记录 16 就是这样：DB 里已是 sport 26/11，页面还显示舒缓 + 空尺寸）。
+    setSelectedSolution(p.snap);
+    apiSaveRecordSolution(p.rid, p.snap, localStamp()).catch((err) =>
+      console.warn("[solution] 方案快照保存失败（后端不可用？）:", err),
+    );
+  }, [setSelectedSolution]);
+
+  /**
+   * 打一份当前状态的快照。显式存点与自动保存共用这一个入口 ——
+   * 两处各拼一遍参数表的话，往快照里加字段（如这轮的鞋壳视图/摆位）必然漏一处。
+   */
+  const makeSnapshot = useCallback(
+    (cm: { left: FootState; right: FootState }, df: { left: FootState; right: FootState }) =>
+      buildSolutionSnapshot({
+        insoleStyle,
+        insoleColor,
+        insoleSize,
+        shellSourceId: shellSource.id,
+        shellLabel: shellSource.label,
+        shellView,
+        shellOpacity,
+        shellAdjust,
+        committed: cm,
+        defaults: df,
+      }),
+    [insoleStyle, insoleColor, insoleSize, shellSource.id, shellSource.label, shellView, shellOpacity, shellAdjust],
+  );
+
+  const persistSolution = useCallback(
+    (overrideCommitted?: { left: FootState; right: FootState } | null) => {
+      const rid = selectedRecord?.id;
+      const cm = overrideCommitted ?? committed;
+      if (rid == null || !cm || !defaults) return;
+      solutionPending.current = { rid, snap: makeSnapshot(cm, defaults) };
+      flushSolution();
+    },
+    [selectedRecord?.id, committed, defaults, makeSnapshot, flushSolution],
+  );
+
+  /**
+   * 自动保存 —— 改完从「返回分析报告」/ 顶部步骤条 / 历史用户离开是常态，
+   * 光靠那几个显式存点必丢：实测在记录 16 上把样式改成运动、尺寸填 26/11，
+   * 点「返回分析报告」再回来，全部回到推荐值，期间一个请求都没发出去过。
+   *
+   * 「改过没有」靠 solutionDirty 由真实用户动作打标，不用状态 diff —— 挂载那几帧里
+   * 厚度基准与历史快照还原会连着改 committed，diff 法会把「只看不改」也算成编辑，
+   * 让历史记录行无端冒出「方案更新时间 / 已编辑」。
+   */
+  useEffect(() => {
+    if (!solutionDirty.current) return;
+    const rid = selectedRecord?.id;
+    if (rid == null || !committed || !defaults) return;
+    solutionPending.current = { rid, snap: makeSnapshot(committed, defaults) };
+    // 合并连续操作（尺寸一位一位地敲、连点几个颜色、拖透明度滑杆），也顺带等厚度基准那个 effect 落定
+    if (solutionSaveTimer.current) clearTimeout(solutionSaveTimer.current);
+    solutionSaveTimer.current = setTimeout(flushSolution, 800);
+  }, [committed, defaults, makeSnapshot, selectedRecord?.id, flushSolution]);
+
+  // 离开页面时把还在排队的那次补发：切走（卸载）走 cleanup，关标签/刷新走 pagehide
+  useEffect(() => {
+    const onLeave = () => flushSolution();
+    window.addEventListener("pagehide", onLeave);
+    return () => {
+      window.removeEventListener("pagehide", onLeave);
+      flushSolution();
+    };
+  }, [flushSolution]);
 
   // 编辑期用 draft，否则用 committed
   const editing = overlay === "drawer";
@@ -954,7 +1157,10 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
     toast.info(`已重置${sideLabel}脚软硬`);
   };
   const saveDraft = () => {
+    markSolutionEdited();
     if (draft) setCommitted(draft);
+    // 传 draft 进去：setCommitted 是异步的，此刻的 committed 还是旧值
+    persistSolution(draft);
     setDraft(null);
     setOverlay("main");
     setSavedTip(true);
@@ -966,8 +1172,9 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
   const sizesFilled =
     !!insoleSize.left.length && !!insoleSize.left.width &&
     !!insoleSize.right.length && !!insoleSize.right.width;
-  const handleRemeasure = () => { if (sizesFilled) onBack?.(); else setConfirm("remeasure"); };
-  const handleFinish = () => { if (sizesFilled) onRestart(); else setConfirm("finish"); };
+  // 离场即存：两个弹窗的文案已经承诺「自动保存到历史记录」，尺寸填没填都要存
+  const handleRemeasure = () => { persistSolution(); if (sizesFilled) onBack?.(); else setConfirm("remeasure"); };
+  const handleFinish = () => { persistSolution(); if (sizesFilled) onRestart(); else setConfirm("finish"); };
 
   // ── STL 下载 ──
   const handleDownload = async (fmt: "stl" | "glb") => {
@@ -982,6 +1189,7 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
         await exporter(insoleStyle, f, s.params.footLength, s.params.footWidth, s.params.archCorrection, s.params.baseThickness, s.params.heelThickness, insoleColor, name, d);
       }
       toast.success(`双脚鞋垫 ${fmt.toUpperCase()} 文件已开始下载`, { description: "可直接用于 3D 打印" });
+      persistSolution(); // 导出过的参数一定要留痕，否则回头对不上手里那份打印件
     } catch (err) {
       console.error(err);
       toast.error("文件导出失败，请重试");
@@ -1046,7 +1254,7 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
                       <button
                         key={c.value}
                         title={c.name}
-                        onClick={() => setInsoleColor(c.value)}
+                        onClick={() => { markSolutionEdited(); setInsoleColor(c.value); }}
                         style={{
                           width: "22px",
                           height: "22px",
@@ -1072,7 +1280,7 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
                     return (
                       <button
                         key={st}
-                        onClick={() => setInsoleStyle(st)}
+                        onClick={() => { markSolutionEdited(); setInsoleStyle(st); }}
                         style={{
                           height: "26px", padding: "0 12px", borderRadius: "7px", border: "none", cursor: "pointer",
                           fontSize: "12px", fontWeight: 600,
@@ -1097,7 +1305,7 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
                       return (
                         <button
                           key={v.value}
-                          onClick={() => setShellView(v.value)}
+                          onClick={() => { markSolutionEdited(); setShellView(v.value); }}
                           style={{
                             height: "26px", padding: "0 10px", borderRadius: "7px", border: "none", cursor: "pointer",
                             fontSize: "12px", fontWeight: 600,
@@ -1117,15 +1325,13 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
                   <span style={{ maxWidth: "150px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={shellSource.label}>
                     当前：{shellSource.label}
                   </span>
-                  <button onClick={() => shellFileRef.current?.click()} style={shellLinkBtn}>上传鞋壳</button>
-                  {isUploadedShell && (
-                    <button
-                      onClick={() => { setShellSource(BUILTIN_SHELL); setShellAdjust(DEFAULT_SHELL_ADJUST); }}
-                      style={shellLinkBtn}
-                    >
-                      恢复内置
-                    </button>
-                  )}
+                  {/* 内置件、历史上传件、上传新件三件事都在这个抽屉里 */}
+                  <button
+                    onClick={() => setShellPickerOpen((v) => !v)}
+                    style={shellPickerOpen ? shellChipBtnOn : shellChipBtn}
+                  >
+                    选择鞋壳形态
+                  </button>
                 </div>
 
                 {shellView === "assembly" && (
@@ -1137,51 +1343,16 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
                       max={0.9}
                       step={0.05}
                       value={shellOpacity}
-                      onChange={(e) => setShellOpacity(Number(e.target.value))}
+                      onChange={(e) => { markSolutionEdited(); setShellOpacity(Number(e.target.value)); }}
                       style={{ width: "110px", accentColor: C.primary }}
                     />
                     <span style={{ fontSize: "11px", color: "#8A6A40", fontFamily: "monospace" }}>{Math.round(shellOpacity * 100)}%</span>
                   </div>
                 )}
 
-                {/* 手动微调：自动识别摆错时兜底，只对上传件出现 */}
-                {isUploadedShell && shellView !== "off" && (
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: "4px", maxWidth: "236px" }}>
-                    {([
-                      { key: "flipUD", label: "↕ 上下翻转" },
-                      { key: "flipFB", label: "⇄ 前后调转" },
-                      { key: "swapLR", label: "⇋ 左右互换" },
-                    ] as const).map((b) => (
-                      <button
-                        key={b.key}
-                        onClick={() => setShellAdjust((a) => ({ ...a, [b.key]: !a[b.key] }))}
-                        style={shellAdjust[b.key] ? shellChipBtnOn : shellChipBtn}
-                      >
-                        {b.label}
-                      </button>
-                    ))}
-                    <button onClick={() => setShellAdjust((a) => ({ ...a, scale: Math.max(0.5, +(a.scale - 0.05).toFixed(2)) }))} style={shellChipBtn}>缩放 −</button>
-                    <button onClick={() => setShellAdjust((a) => ({ ...a, scale: Math.min(2, +(a.scale + 0.05).toFixed(2)) }))} style={shellChipBtn}>缩放 +</button>
-                    <button onClick={() => setShellAdjust(DEFAULT_SHELL_ADJUST)} style={shellChipBtn}>
-                      复位{shellAdjust.scale !== 1 ? ` (${Math.round(shellAdjust.scale * 100)}%)` : ""}
-                    </button>
-                  </div>
-                )}
               </div>
             </div>
 
-            {/* 隐藏文件选择器：value 清空以允许重复选同一文件 */}
-            <input
-              ref={shellFileRef}
-              type="file"
-              accept=".stl"
-              style={{ display: "none" }}
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) void handleShellFile(f);
-                e.target.value = "";
-              }}
-            />
           </div>
         </section>
 
@@ -1230,9 +1401,9 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
               {/* 输入区 */}
               <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "10px" }}>
                 <div style={{ background: "#FFF2E4", borderRadius: "12px", padding: "12px 14px", display: "flex", flexDirection: "column", gap: "10px" }}>
-                  <SizeInputRow label={`${sideLabel}鞋垫长度`} value={insoleSize[side].length} onChange={(v) => setInsoleSize((s) => ({ ...s, [side]: { ...s[side], length: v } }))} />
+                  <SizeInputRow label={`${sideLabel}鞋垫长度`} value={insoleSize[side].length} onChange={(v) => { markSolutionEdited(); setInsoleSize((s) => ({ ...s, [side]: { ...s[side], length: v } })); }} />
                   <div style={{ height: "1px", background: "rgba(200,150,90,0.25)" }} />
-                  <SizeInputRow label={`${sideLabel}鞋垫宽度`} value={insoleSize[side].width} onChange={(v) => setInsoleSize((s) => ({ ...s, [side]: { ...s[side], width: v } }))} />
+                  <SizeInputRow label={`${sideLabel}鞋垫宽度`} value={insoleSize[side].width} onChange={(v) => { markSolutionEdited(); setInsoleSize((s) => ({ ...s, [side]: { ...s[side], width: v } })); }} />
                 </div>
                 <div style={{ background: "#FFF2E4", borderRadius: "12px", padding: "12px 14px", fontSize: "14px", fontWeight: 700, color: "#17191C" }}>
                   匹配鞋码：中国{shoeSizeFor(side)}码
@@ -1304,6 +1475,18 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
           shellView={shellView}
           shellOpacity={shellOpacity}
           shellAdjust={shellAdjust}
+        />
+      )}
+
+      {/* ── 鞋壳选择抽屉（内置件 + 历史上传件 + 上传新件，按形态图挑） ── */}
+      {shellPickerOpen && (
+        <ShellPickerDrawer
+          currentId={shellSource.id}
+          onPick={handleShellPick}
+          // 上传不关抽屉：图渲好后新卡片就出现在带子里，接着还能比
+          onUpload={(f) => void handleShellFile(f)}
+          refreshKey={shellRefreshKey}
+          onClose={() => setShellPickerOpen(false)}
         />
       )}
 

@@ -32,6 +32,8 @@ export interface ShellSource {
   url?: string;
   /** 上传鞋壳：内存里的 STL 原始字节，不落盘不走后端 */
   buffer?: ArrayBuffer;
+  /** 形态缩略图（几十 KB 的灰模 PNG）；选择抽屉的卡片用它，纯内存件没有 */
+  thumbUrl?: string;
   /** true = 与成品鞋垫同一套 CAD 坐标，跳过自动定向 */
   preOriented: boolean;
 }
@@ -40,8 +42,32 @@ export const BUILTIN_SHELL: ShellSource = {
   id: 'hs05-40-41',
   label: 'HS-05 40-41# 鞋壳',
   url: '/models/shell_pair.stl',
+  // 静态资源，与 STL 同目录；由 stl_thumb.py 的 CLI 预生成一次（83MB 的件不适合每次现渲）
+  thumbUrl: '/models/shell_pair_thumb.png',
   preOriented: true,
 };
+
+/**
+ * 后端鞋壳仓库里的一条 → ShellSource。
+ * id 用后端主键，跨刷新稳定 —— 几何缓存（StlInsoleViewer.shellCache）与
+ * 方案快照里记的 shellSourceId 都靠它认人，绝不能掺文件名/字节数这类会变的东西。
+ */
+export function dbShellSource(
+  id: number,
+  label: string,
+  url: string,
+  buffer?: ArrayBuffer,
+  thumbUrl?: string,
+): ShellSource {
+  return { id: `db:${id}`, label, url, buffer, thumbUrl, preOriented: false };
+}
+
+/** 从 ShellSource.id 反解后端主键；不是后端件返回 null */
+export function dbShellId(sourceId: string): number | null {
+  if (!sourceId.startsWith('db:')) return null;
+  const n = Number(sourceId.slice(3));
+  return Number.isFinite(n) ? n : null;
+}
 
 /**
  * 鞋垫↔鞋壳的原生比例（由上面那组 CAD 世界坐标直接解出）。
@@ -372,7 +398,11 @@ export interface LoadedShell {
 export interface ShellPairInfo {
   /** 源文件是双脚合体还是单只（单只时另一只由镜像得到） */
   pair: boolean;
-  /** 手性判据的绝对值，< HAND_MIN_CONFIDENCE 说明没判准，UI 上提示用手动微调 */
+  /**
+   * 手性判据的绝对值。左右归属仍按它的符号定（见 buildShellPair）；
+   * 这个量级只留作排查用 —— 低于 HAND_MIN_CONFIDENCE 时 UI 不再提示，
+   * 因为解决方案页的手动微调按钮已撤掉，提示了也没有修法。
+   */
   confidence: number;
   triangles: number;
 }

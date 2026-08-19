@@ -6,7 +6,8 @@
  */
 import { useEffect, useState } from "react";
 import { useApp, type MeasureAnalysis } from "@/contexts/AppContext";
-import { apiGetRecordData } from "@/lib/backendApi";
+import { apiGetRecordData, apiGetRecordSolution } from "@/lib/backendApi";
+import { isSolutionSnapshot, type SolutionSnapshot } from "@/lib/solutionSnapshot";
 import UserFormModal, { type UserFormData } from "@/components/UserFormModal";
 import ConfirmModal from "@/components/ConfirmModal";
 import PageBackground from "@/components/PageBackground";
@@ -56,6 +57,7 @@ export default function UserRecordsPage({ onBack, onStartMeasure, onOpenReport }
     removeHistoryUsers,
     setSelectedRecord,
     setAnalysis,
+    setSelectedSolution,
     updateUser,
   } = useApp();
   const [loadingId, setLoadingId] = useState<number | null>(null);
@@ -81,9 +83,15 @@ export default function UserRecordsPage({ onBack, onStartMeasure, onOpenReport }
     if (loadingId != null) return; // 防重入
     setLoadingId(record.id);
     try {
-      const data = await apiGetRecordData<MeasureAnalysis>(record.id);
+      // 分析结果 + 方案快照一并取回：快照必须在跳转【之前】就位，
+      // 解决方案页挂载时直接拿它 seed 初值，避免与厚度基准 effect 抢时序。
+      const [data, snap] = await Promise.all([
+        apiGetRecordData<MeasureAnalysis>(record.id),
+        apiGetRecordSolution<SolutionSnapshot>(record.id).catch(() => null),
+      ]);
       setSelectedRecord(record);
       setAnalysis(data); // 报告页由这份历史分析重新渲染（3D/热力图/COP 全部可交互）
+      setSelectedSolution(isSolutionSnapshot(snap) ? snap : null);
       onOpenReport();
     } catch (err) {
       console.warn("[record] 读取采集记录失败:", err);
@@ -298,9 +306,18 @@ export default function UserRecordsPage({ onBack, onStartMeasure, onOpenReport }
                       <span style={{ width: "300px", fontSize: "18px", fontWeight: 500, color: "#17191C", whiteSpace: "nowrap" }}>
                         {record.date}&nbsp;&nbsp;{record.time}
                       </span>
-                      {/* 方案更新时间（灰蓝 #6C7784；暂无方案编辑数据 → 占位） */}
-                      <span style={{ flex: 1, fontSize: "18px", fontWeight: 400, color: "#6C7784", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                        —
+                      {/* 方案更新时间（灰蓝 #6C7784）+「已编辑」标记；从未改过方案 → 占位 */}
+                      <span style={{ flex: 1, display: "flex", alignItems: "center", gap: "10px", fontSize: "18px", fontWeight: 400, color: "#6C7784", whiteSpace: "nowrap", overflow: "hidden" }}>
+                        {record.solutionUpdatedAt ? (
+                          <>
+                            <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{record.solutionUpdatedAt}</span>
+                            <span style={{ flexShrink: 0, padding: "2px 8px", borderRadius: "6px", background: "#FFF1E2", color: "#FF8400", fontSize: "13px", fontWeight: 600 }}>
+                              已编辑
+                            </span>
+                          </>
+                        ) : (
+                          "—"
+                        )}
                       </span>
                       {/* 查看 + 橙色箭头 */}
                       <span style={{ display: "flex", alignItems: "center", gap: "10px", paddingRight: "26px", fontSize: "16px", fontWeight: 600, color: "#FF8400", flexShrink: 0 }}>
