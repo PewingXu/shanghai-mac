@@ -11,13 +11,21 @@
  *
  * 鞋垫参数 / STL 导出逻辑移植自旧项目 foot-pressure-report。
  */
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { toast } from "sonner";
 import { useApp } from "@/contexts/AppContext";
 import { useDeviceConnectionStatus } from "@/hooks/useDeviceConnectionStatus";
 // 解决方案页采用左白右橙的分屏背景（见下方 SplitBackground），不复用全屏橙色 PageBackground
-import { StlInsoleViewer, type StlInsoleParams } from "@/components/StlInsoleViewer";
+import { StlInsoleViewer, type StlInsoleParams, type ShellView } from "@/components/StlInsoleViewer";
 import { STYLE_DEFS, STYLE_ORDER, productBaseHeightMm, personalDeform, ZERO_DEFORM, type InsoleStyle, type DeformMm } from "@/lib/insoleModel";
+import {
+  BUILTIN_SHELL,
+  DEFAULT_SHELL_ADJUST,
+  HAND_MIN_CONFIDENCE,
+  type ShellSource,
+  type ShellAdjust,
+  type ShellPairInfo,
+} from "@/lib/shoeShell";
 import {
   getArchLevelColor,
   getArchDesignLogic,
@@ -55,6 +63,76 @@ const INSOLE_COLORS: { name: string; value: string }[] = [
   { name: "石墨", value: "#5A5F66" },
   { name: "米白", value: "#ECE7DF" },
 ];
+
+// 鞋壳三态。默认 off —— 内置鞋壳 83MB，不主动切过去就不加载
+const SHELL_VIEWS: { value: ShellView; label: string }[] = [
+  { value: "off", label: "仅鞋垫" },
+  { value: "only", label: "仅鞋壳" },
+  { value: "assembly", label: "装配" },
+];
+
+// 鞋壳控件里的小按钮（文字链 / 胶囊），与页面既有配色一致
+const shellLinkBtn: React.CSSProperties = {
+  background: "none",
+  border: "none",
+  padding: 0,
+  cursor: "pointer",
+  fontSize: "11px",
+  fontWeight: 700,
+  color: C.primaryDeep,
+  textDecoration: "underline",
+};
+
+const shellChipBtn: React.CSSProperties = {
+  height: "24px",
+  padding: "0 8px",
+  borderRadius: "7px",
+  border: `1px solid ${C.border}`,
+  background: "#fff",
+  cursor: "pointer",
+  fontSize: "11px",
+  fontWeight: 600,
+  color: "#8A6A40",
+};
+
+const shellChipBtnOn: React.CSSProperties = {
+  ...shellChipBtn,
+  background: C.primary,
+  border: `1px solid ${C.primary}`,
+  color: "#fff",
+};
+
+/**
+ * 手填鞋垫尺寸的合理区间(cm)。输入框是自由 number，边打字边渲染会出现「2cm 的鞋垫」，
+ * 区间外一律回退到测量分析值。上下限取成人足极值再放宽，不做业务校验、只挡明显笔误。
+ */
+const SIZE_MIN = { lenCm: 15, widCm: 5 } as const;
+const SIZE_MAX = { lenCm: 35, widCm: 16 } as const;
+
+/**
+ * 取「生效尺寸」：手填值在区间内就用手填的，否则（空、半截数字、笔误）回退 fallback。
+ * 厚度换算、鞋码匹配、脚型图标注、3D 预览、导出 STL 全都从这一个判定出发，
+ * 否则会出现「图上标 27cm、3D 还是 26cm」这类自相矛盾。
+ */
+function pickSize(raw: string, fallback: number, min: number, max: number): number {
+  const v = parseFloat(raw);
+  return v >= min && v <= max ? v : fallback;
+}
+
+/** 成人男码。鞋码/足宽换算表见 insoleSize.ts，与「匹配鞋码：中国XX码」用同一套。 */
+const SIZE_CATEGORY = "adult_male" as const;
+
+/**
+ * 成品垫的基础厚度 = 按鞋码算。
+ * 足长先落到鞋码档（中国码 0.5cm 一档），再用该档的标称足长换原生高度——
+ * 所以同一个码的垫子厚度唯一，26.1cm 和 26.3cm 都是 42 码、厚度相同。
+ * 标准垫(param) 没有原生高度，回退压力自适应厚度。
+ */
+function baseThicknessCmForSize(style: InsoleStyle, footLengthCm: number, fallbackCm: number): number {
+  const nominalLenCm = lookupInsoleSize(footLengthCm, SIZE_CATEGORY).footLengthCm;
+  const mm = productBaseHeightMm(style, nominalLenCm);
+  return mm != null ? mm / 10 : fallbackCm;
+}
 
 interface FootState {
   params: InsoleParams;
@@ -503,14 +581,14 @@ function BottomBar({ userName, userId, onBack, onRestart, onDownload }: {
 // ─── 厚度三条（抽屉/细节复用） ────────────────────────────────────────────────
 // drawerMode：抽屉（第2页）里前两项无滑块，仅步进；细节面板（第3页）三项均带滑块。
 function ThicknessSliders({ fs, sys, onParams, drawerMode, style }: { fs: FootState; sys?: FootState; onParams: (p: Partial<InsoleParams>) => void; drawerMode?: boolean; style: InsoleStyle }) {
-  // 成品垫(proportional)：基础厚度默认=原生高度按足长换算(约 50~57mm)，量程较大；
-  // 调节方式与标准垫一致——抽屉里只给 −/+ 步进，不出滑块。
+  // 成品垫(proportional)：基础厚度默认=原生高度按鞋码换算(约 50~57mm，见 baseThicknessCmForSize)，
+  // 量程较大；调节方式与标准垫一致——抽屉里只给 −/+ 步进，不出滑块。
   const proportional = STYLE_DEFS[style].heightMode === "proportional";
   return (
     <>
       {proportional ? (
         <StepperSliderRow
-          label="基础厚度（随足长）"
+          label="基础厚度（随鞋码）"
           value={fs.params.baseThickness * 10}
           min={20} max={70} step={0.5}
           hints={drawerMode ? undefined : ["20mm", "70mm"]}
@@ -642,6 +720,56 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
   // 当前鞋垫样式（整双统一：舒缓 / 运动 / 标准）
   const [insoleStyle, setInsoleStyle] = useState<InsoleStyle>("comfort");
 
+  // ── 鞋壳（仅鞋垫 / 仅鞋壳 / 装配） ──
+  // 默认 'off'：内置鞋壳 83MB，不切过去就一个字节都不拉
+  const [shellView, setShellView] = useState<ShellView>("off");
+  const [shellSource, setShellSource] = useState<ShellSource>(BUILTIN_SHELL);
+  const [shellOpacity, setShellOpacity] = useState(0.35);
+  const [shellAdjust, setShellAdjust] = useState<ShellAdjust>(DEFAULT_SHELL_ADJUST);
+  const shellFileRef = useRef<HTMLInputElement | null>(null);
+  const isUploadedShell = shellSource.id !== BUILTIN_SHELL.id;
+
+  const handleShellFile = useCallback(async (file: File) => {
+    if (!/\.stl$/i.test(file.name)) {
+      toast.error("请选择 .stl 格式的鞋壳文件");
+      return;
+    }
+    try {
+      toast.info(`正在解析 ${file.name}…`, { description: "大文件可能需要十几秒" });
+      const buffer = await file.arrayBuffer();
+      setShellAdjust(DEFAULT_SHELL_ADJUST);
+      setShellSource({
+        // 文件名 + 字节数当缓存键：换文件必然换键，同一文件重选不重复解析
+        id: `upload:${file.name}:${file.size}`,
+        label: file.name.replace(/\.stl$/i, ""),
+        buffer,
+        preOriented: false,
+      });
+      setShellView((v) => (v === "off" ? "assembly" : v));
+    } catch {
+      toast.error("读取文件失败，请重试");
+    }
+  }, []);
+
+  // 只对上传件提示自动识别结果——内置件摆位是已知的，没必要每次切换都弹
+  const handleShellInfo = useCallback(
+    (info: ShellPairInfo) => {
+      if (!isUploadedShell) return;
+      const parts = [
+        info.pair ? "识别为双脚合体" : "识别为单只，另一只由镜像生成",
+        `${(info.triangles / 10000).toFixed(1)} 万面`,
+      ];
+      if (info.confidence < HAND_MIN_CONFIDENCE) {
+        toast.warning(`鞋壳已载入（${parts.join(" · ")}），但左右脚没判准`, {
+          description: "请用下方的手动微调按钮校正摆位",
+        });
+      } else {
+        toast.success(`鞋壳已载入（${parts.join(" · ")}）`);
+      }
+    },
+    [isUploadedShell],
+  );
+
   // 已提交参数 / 加载默认值 / 编辑草稿
   const [committed, setCommitted] = useState<{ left: FootState; right: FootState } | null>(null);
   const [defaults, setDefaults] = useState<{ left: FootState; right: FootState } | null>(null);
@@ -671,6 +799,8 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
       setDefaults({ left: toFootState(data.left), right: toFootState(data.right) });
       setAnalysisBase({ left: toFootState(data.left), right: toFootState(data.right) });
       setIsDemoData(!data.backend);
+      // 换人/换历史记录 = 换一套厚度基准，下面那个 effect 要按绝对值重新落一次
+      baselineRef.current = null;
     };
 
     const pyData = analysis?.python?.success ? analysis.python.data : null;
@@ -684,35 +814,83 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
     return () => { alive = false; };
   }, [analysis]);
 
-  // 按样式换算基础厚度：成品垫(proportional) = 原生高度按足长等比(productBaseHeightMm)，
-  // 标准垫(param) = 分析的压力自适应厚度。切换样式时把 base 重置为该样式默认值（其余参数保留）。
+  // 生效足长：手填鞋垫长度优先，没填才用测量值。厚度基准、鞋码、3D、导出都由它派生。
+  // 写成两个标量而不是对象，是为了能直接当下面 effect 的依赖（对象每次渲染都是新引用）。
+  const effLenLeft = pickSize(insoleSize.left.length, analysisBase?.left.params.footLength ?? NaN, SIZE_MIN.lenCm, SIZE_MAX.lenCm);
+  const effLenRight = pickSize(insoleSize.right.length, analysisBase?.right.params.footLength ?? NaN, SIZE_MIN.lenCm, SIZE_MAX.lenCm);
+
+  /** 上一次落下的厚度基准（cm）。用来把用户手动加的量平移到新基准上，null = 按绝对值落。 */
+  const baselineRef = useRef<{ left: number; right: number } | null>(null);
+
+  // 基础厚度 = 「按鞋码算出的基准」+「用户手动加的量」。
+  // 鞋码或样式一变就重算基准：卡片、抽屉、3D、导出的数一起刷新，不会停在旧尺码上；
+  // 同时用平移而不是覆盖——切换舒缓/运动/标准不再把用户手动调的厚度清零。
   useEffect(() => {
     if (!analysisBase) return;
-    const styleBaseCm = (s: Side): number => {
-      const len = analysisBase[s].params.footLength;
-      const mm = productBaseHeightMm(insoleStyle, len);
-      return mm != null ? mm / 10 : analysisBase[s].params.baseThickness;
+    const next = {
+      left: baseThicknessCmForSize(insoleStyle, effLenLeft, analysisBase.left.params.baseThickness),
+      right: baseThicknessCmForSize(insoleStyle, effLenRight, analysisBase.right.params.baseThickness),
     };
-    const withBase = (prev: { left: FootState; right: FootState } | null) =>
+    const prevBase = baselineRef.current;
+    // 同一鞋码档内改足长（26.1→26.3 都是 42 码）基准不变，不必重设状态
+    if (prevBase && prevBase.left === next.left && prevBase.right === next.right) return;
+    baselineRef.current = next;
+
+    const shift = (fs: FootState, s: Side): FootState => ({
+      ...fs,
+      params: { ...fs.params, baseThickness: prevBase ? fs.params.baseThickness + (next[s] - prevBase[s]) : next[s] },
+    });
+    const keepDelta = (prev: { left: FootState; right: FootState } | null) =>
+      prev ? { left: shift(prev.left, "left"), right: shift(prev.right, "right") } : prev;
+    // defaults 是「系统推荐值」，永远等于纯基准（抽屉里那条灰线、以及「已调整」的判据）
+    const toBaseline = (prev: { left: FootState; right: FootState } | null) =>
       prev
         ? {
-            left: { ...prev.left, params: { ...prev.left.params, baseThickness: styleBaseCm("left") } },
-            right: { ...prev.right, params: { ...prev.right.params, baseThickness: styleBaseCm("right") } },
+            left: { ...prev.left, params: { ...prev.left.params, baseThickness: next.left } },
+            right: { ...prev.right, params: { ...prev.right.params, baseThickness: next.right } },
           }
         : prev;
-    setCommitted(withBase);
-    setDefaults(withBase);
-    setDraft(withBase);
-  }, [insoleStyle, analysisBase]);
+
+    setCommitted(keepDelta);
+    setDefaults(toBaseline);
+    setDraft(keepDelta);
+  }, [insoleStyle, analysisBase, effLenLeft, effLenRight]);
 
   // 编辑期用 draft，否则用 committed
   const editing = overlay === "drawer";
   const viewState = editing && draft ? draft : committed;
 
-  const stlLeft = useMemo<StlInsoleParams | null>(() => (viewState ? toStlParams(viewState.left) : null), [viewState]);
-  const stlRight = useMemo<StlInsoleParams | null>(() => (viewState ? toStlParams(viewState.right) : null), [viewState]);
-  const deformLeft = useMemo<DeformMm>(() => (viewState ? toDeform(viewState.left, insoleStyle) : ZERO_DEFORM), [viewState, insoleStyle]);
-  const deformRight = useMemo<DeformMm>(() => (viewState ? toDeform(viewState.right, insoleStyle) : ZERO_DEFORM), [viewState, insoleStyle]);
+  /**
+   * 把用户手填的「鞋垫长度/宽度」叠加到某只脚上 —— 3D 预览与导出 STL 的统一入口。
+   * 手填值是唯一真源：填了就按填的走，没填（或还在打字、数值离谱）才回退测量分析值。
+   *
+   * 基础厚度按同一条公式（baseThicknessCmForSize + 用户增量）再算一遍。上面的 effect 已经把
+   * 结果写进了 committed/draft，所以稳定后这里算出来的就是原值、幂等；它只兜住「刚敲完新尺码、
+   * effect 还没落地」那一帧——否则那一帧会用旧鞋码的厚度配新足长，垫子闪一下高度。
+   *
+   * 厚度卡片与调节抽屉读的是状态里的值，此函数的结果只进几何、不回写状态，不存在二次叠加。
+   */
+  const sizedFoot = useCallback(
+    (s: Side, fs: FootState): FootState => {
+      const len = pickSize(insoleSize[s].length, fs.params.footLength, SIZE_MIN.lenCm, SIZE_MAX.lenCm);
+      const wid = pickSize(insoleSize[s].width, fs.params.footWidth, SIZE_MIN.widCm, SIZE_MAX.widCm);
+      if (len === fs.params.footLength && wid === fs.params.footWidth) return fs;
+
+      const sysBaseCm = defaults?.[s].params.baseThickness;
+      const baseThickness =
+        sysBaseCm != null
+          ? baseThicknessCmForSize(insoleStyle, len, fs.params.baseThickness) + (fs.params.baseThickness - sysBaseCm)
+          : fs.params.baseThickness;
+
+      return { ...fs, params: { ...fs.params, footLength: len, footWidth: wid, baseThickness } };
+    },
+    [insoleSize, insoleStyle, defaults],
+  );
+
+  const stlLeft = useMemo<StlInsoleParams | null>(() => (viewState ? toStlParams(sizedFoot("left", viewState.left)) : null), [viewState, sizedFoot]);
+  const stlRight = useMemo<StlInsoleParams | null>(() => (viewState ? toStlParams(sizedFoot("right", viewState.right)) : null), [viewState, sizedFoot]);
+  const deformLeft = useMemo<DeformMm>(() => (viewState ? toDeform(sizedFoot("left", viewState.left), insoleStyle) : ZERO_DEFORM), [viewState, insoleStyle, sizedFoot]);
+  const deformRight = useMemo<DeformMm>(() => (viewState ? toDeform(sizedFoot("right", viewState.right), insoleStyle) : ZERO_DEFORM), [viewState, insoleStyle, sizedFoot]);
 
   if (!committed || !viewState || !stlLeft || !stlRight) {
     return (
@@ -729,22 +907,20 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
   const cur = viewState[side];
   const sideLabel = side === "left" ? "左" : "右";
 
-  // 匹配鞋码：用户已填鞋垫长度→按输入换算；未填→用分析报告结果
+  // 匹配鞋码：用户已填鞋垫长度→按输入换算；未填→用分析报告结果。
+  // 这个码就是基础厚度的换算依据（baseThicknessCmForSize），显示的码与厚度必然对得上。
   const shoeSizeFor = (s: Side) => {
     const len = parseFloat(insoleSize[s].length);
-    if (!Number.isNaN(len) && len > 0) return lookupInsoleSize(len, "adult_male").shoeSize;
+    if (len >= SIZE_MIN.lenCm && len <= SIZE_MAX.lenCm) return lookupInsoleSize(len, SIZE_CATEGORY).shoeSize;
     return committed[s].shoeSize;
   };
 
-  // 脚型图的长/宽标注：用户填了输入就用输入值（随输入实时变化），未填则回退分析值
-  const dimFor = (s: Side) => {
-    const lv = parseFloat(insoleSize[s].length);
-    const wv = parseFloat(insoleSize[s].width);
-    return {
-      lengthCm: Number.isFinite(lv) && lv > 0 ? lv : Math.round(committed[s].params.footLength),
-      widthCm: Number.isFinite(wv) && wv > 0 ? wv : Math.round(committed[s].params.footWidth),
-    };
-  };
+  // 脚型图的长/宽标注：用户填了输入就用输入值（随输入实时变化），未填则回退分析值。
+  // 生效区间与 sizedFoot 一致——否则会出现「图上标 2cm、3D 却还是 26cm」这种自相矛盾。
+  const dimFor = (s: Side) => ({
+    lengthCm: pickSize(insoleSize[s].length, Math.round(committed[s].params.footLength), SIZE_MIN.lenCm, SIZE_MAX.lenCm),
+    widthCm: pickSize(insoleSize[s].width, Math.round(committed[s].params.footWidth), SIZE_MIN.widCm, SIZE_MAX.widCm),
+  });
 
   // 厚度参数是否被实际调整过（当前值 ≠ 系统默认值）→ 决定是否显示「已调整」
   const dp = defaults?.[side].params;
@@ -800,7 +976,8 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
       toast.info(`正在生成 ${fmt.toUpperCase()} 文件，请稍候…`);
       const exporter = fmt === "stl" ? exportStlInsoleSTL : exportStlInsoleGLTF;
       for (const f of ["left", "right"] as const) {
-        const s = committed[f];
+        // 与 3D 预览同一条 sizedFoot 通道：手填尺寸必须进导出，否则所见非所打印
+        const s = sizedFoot(f, committed[f]);
         const d = toDeform(s, insoleStyle);
         await exporter(insoleStyle, f, s.params.footLength, s.params.footWidth, s.params.archCorrection, s.params.baseThickness, s.params.heelThickness, insoleColor, name, d);
       }
@@ -820,7 +997,9 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
         {/* 左侧：3D 鞋垫 */}
         <section style={{ flex: 1, position: "relative", minHeight: "440px", display: "flex", flexDirection: "column" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
-            <h2 style={{ margin: 0, fontSize: "16px", fontWeight: 700, color: "#5A3A1A" }}>{sideLabel}脚晶格体3D鞋垫展示</h2>
+            <h2 style={{ margin: 0, fontSize: "16px", fontWeight: 700, color: "#5A3A1A" }}>
+              {sideLabel}脚{shellView === "only" ? "鞋壳3D展示" : shellView === "assembly" ? "鞋垫装配3D展示" : "晶格体3D鞋垫展示"}
+            </h2>
             <div style={{ display: "flex", gap: "6px", background: "rgba(255,255,255,0.6)", padding: "4px", borderRadius: "10px", marginRight: "clamp(32px, 6vw, 96px)" }}>
               {(["left", "right"] as const).map((s) => (
                 <button
@@ -840,7 +1019,21 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
             </div>
           </div>
           <div style={{ flex: 1, minHeight: "440px", background: "transparent", position: "relative" }}>
-            <StlInsoleViewer activeFoot={side} style={insoleStyle} color={insoleColor} leftParams={stlLeft} rightParams={stlRight} leftDeform={deformLeft} rightDeform={deformRight} />
+            <StlInsoleViewer
+              activeFoot={side}
+              style={insoleStyle}
+              color={insoleColor}
+              leftParams={stlLeft}
+              rightParams={stlRight}
+              leftDeform={deformLeft}
+              rightDeform={deformRight}
+              shellSource={shellSource}
+              shellView={shellView}
+              shellOpacity={shellOpacity}
+              shellAdjust={shellAdjust}
+              onShellInfo={handleShellInfo}
+              onShellError={(m) => toast.error(`鞋壳加载失败：${m}`)}
+            />
             {/* 左上悬浮控件：鞋垫颜色 + 其正下方的鞋垫样式 */}
             <div style={{ position: "absolute", top: "12px", left: "12px", display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "10px", zIndex: 5 }}>
               {/* 鞋垫颜色切换 */}
@@ -894,7 +1087,101 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
                   })}
                 </div>
               </div>
+              {/* 鞋壳：三态切换 + 透明度 + 上传，位于鞋垫样式正下方 */}
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px", background: "rgba(255,255,255,0.82)", backdropFilter: "blur(4px)", borderRadius: "14px", padding: "8px 12px", boxShadow: "0 2px 10px rgba(160,110,40,0.14)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  <span style={{ fontSize: "12px", fontWeight: 600, color: "#5A3A1A" }}>鞋壳</span>
+                  <div style={{ display: "flex", gap: "4px", background: "#EDE5DC", padding: "3px", borderRadius: "9px" }}>
+                    {SHELL_VIEWS.map((v) => {
+                      const active = shellView === v.value;
+                      return (
+                        <button
+                          key={v.value}
+                          onClick={() => setShellView(v.value)}
+                          style={{
+                            height: "26px", padding: "0 10px", borderRadius: "7px", border: "none", cursor: "pointer",
+                            fontSize: "12px", fontWeight: 600,
+                            color: active ? "#fff" : "#8A6A40",
+                            background: active ? C.primary : "transparent",
+                            transition: "all 0.16s",
+                          }}
+                        >
+                          {v.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "11px", color: "#8A6A40" }}>
+                  <span style={{ maxWidth: "150px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={shellSource.label}>
+                    当前：{shellSource.label}
+                  </span>
+                  <button onClick={() => shellFileRef.current?.click()} style={shellLinkBtn}>上传鞋壳</button>
+                  {isUploadedShell && (
+                    <button
+                      onClick={() => { setShellSource(BUILTIN_SHELL); setShellAdjust(DEFAULT_SHELL_ADJUST); }}
+                      style={shellLinkBtn}
+                    >
+                      恢复内置
+                    </button>
+                  )}
+                </div>
+
+                {shellView === "assembly" && (
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <span style={{ fontSize: "11px", color: "#8A6A40", whiteSpace: "nowrap" }}>鞋壳透明度</span>
+                    <input
+                      type="range"
+                      min={0.1}
+                      max={0.9}
+                      step={0.05}
+                      value={shellOpacity}
+                      onChange={(e) => setShellOpacity(Number(e.target.value))}
+                      style={{ width: "110px", accentColor: C.primary }}
+                    />
+                    <span style={{ fontSize: "11px", color: "#8A6A40", fontFamily: "monospace" }}>{Math.round(shellOpacity * 100)}%</span>
+                  </div>
+                )}
+
+                {/* 手动微调：自动识别摆错时兜底，只对上传件出现 */}
+                {isUploadedShell && shellView !== "off" && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "4px", maxWidth: "236px" }}>
+                    {([
+                      { key: "flipUD", label: "↕ 上下翻转" },
+                      { key: "flipFB", label: "⇄ 前后调转" },
+                      { key: "swapLR", label: "⇋ 左右互换" },
+                    ] as const).map((b) => (
+                      <button
+                        key={b.key}
+                        onClick={() => setShellAdjust((a) => ({ ...a, [b.key]: !a[b.key] }))}
+                        style={shellAdjust[b.key] ? shellChipBtnOn : shellChipBtn}
+                      >
+                        {b.label}
+                      </button>
+                    ))}
+                    <button onClick={() => setShellAdjust((a) => ({ ...a, scale: Math.max(0.5, +(a.scale - 0.05).toFixed(2)) }))} style={shellChipBtn}>缩放 −</button>
+                    <button onClick={() => setShellAdjust((a) => ({ ...a, scale: Math.min(2, +(a.scale + 0.05).toFixed(2)) }))} style={shellChipBtn}>缩放 +</button>
+                    <button onClick={() => setShellAdjust(DEFAULT_SHELL_ADJUST)} style={shellChipBtn}>
+                      复位{shellAdjust.scale !== 1 ? ` (${Math.round(shellAdjust.scale * 100)}%)` : ""}
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
+
+            {/* 隐藏文件选择器：value 清空以允许重复选同一文件 */}
+            <input
+              ref={shellFileRef}
+              type="file"
+              accept=".stl"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) void handleShellFile(f);
+                e.target.value = "";
+              }}
+            />
           </div>
         </section>
 
@@ -1005,14 +1292,18 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
           committed={committed}
           onClose={() => setOverlay("main")}
           onDownload={handleDownload}
-          stlLeft={toStlParams(committed.left)}
-          stlRight={toStlParams(committed.right)}
-          deformLeft={toDeform(committed.left, insoleStyle)}
-          deformRight={toDeform(committed.right, insoleStyle)}
+          stlLeft={toStlParams(sizedFoot("left", committed.left))}
+          stlRight={toStlParams(sizedFoot("right", committed.right))}
+          deformLeft={toDeform(sizedFoot("left", committed.left), insoleStyle)}
+          deformRight={toDeform(sizedFoot("right", committed.right), insoleStyle)}
           color={insoleColor}
           style={insoleStyle}
           shoeSizeLeft={shoeSizeFor("left")}
           shoeSizeRight={shoeSizeFor("right")}
+          shellSource={shellSource}
+          shellView={shellView}
+          shellOpacity={shellOpacity}
+          shellAdjust={shellAdjust}
         />
       )}
 
@@ -1164,7 +1455,7 @@ function ConfirmModal({ title, body, confirmLabel, onCancel, onConfirm }: {
 }
 
 // ─── 双脚下载弹窗 ─────────────────────────────────────────────────────────────
-function DualFootModal({ committed, onClose, onDownload, stlLeft, stlRight, deformLeft, deformRight, color, style, shoeSizeLeft, shoeSizeRight }: {
+function DualFootModal({ committed, onClose, onDownload, stlLeft, stlRight, deformLeft, deformRight, color, style, shoeSizeLeft, shoeSizeRight, shellSource, shellView, shellOpacity, shellAdjust }: {
   committed: { left: FootState; right: FootState };
   onClose: () => void;
   onDownload: (fmt: "stl" | "glb") => void;
@@ -1176,6 +1467,11 @@ function DualFootModal({ committed, onClose, onDownload, stlLeft, stlRight, defo
   style: InsoleStyle;
   shoeSizeLeft: number;
   shoeSizeRight: number;
+  /** 与主视图同一套鞋壳设置：下载确认时看到的就是刚才确认的装配效果 */
+  shellSource: ShellSource;
+  shellView: ShellView;
+  shellOpacity: number;
+  shellAdjust: ShellAdjust;
 }) {
   const tableRows: { label: string; left: string; right: string }[] = [
     { label: "鞋垫样式", left: STYLE_DEFS[style].label, right: STYLE_DEFS[style].label },
@@ -1198,7 +1494,19 @@ function DualFootModal({ committed, onClose, onDownload, stlLeft, stlRight, defo
             <span style={{ fontSize: "18px", fontWeight: 700, color: C.dark }}>双脚3D鞋垫展示</span>
             <span style={{ fontSize: "12px", color: C.sub }}>3D Dual-Foot Insole View</span>
           </div>
-          <StlInsoleViewer activeFoot="both" style={style} color={color} leftParams={stlLeft} rightParams={stlRight} leftDeform={deformLeft} rightDeform={deformRight} />
+          <StlInsoleViewer
+            activeFoot="both"
+            style={style}
+            color={color}
+            leftParams={stlLeft}
+            rightParams={stlRight}
+            leftDeform={deformLeft}
+            rightDeform={deformRight}
+            shellSource={shellSource}
+            shellView={shellView}
+            shellOpacity={shellOpacity}
+            shellAdjust={shellAdjust}
+          />
         </div>
 
         {/* 右：参数表 + 底部按钮 */}
