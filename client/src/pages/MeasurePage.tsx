@@ -1011,6 +1011,8 @@ const measureStyles = `
     overflow: hidden;
     /* 与方案页同款：白 → 底部淡橙 #FFF4EC 渐变 */
     background: linear-gradient(180deg, #FFFFFF 0%, #FFFFFF 42.5%, #FFF4EC 100%);
+    /* 形成独立层叠上下文：让 z-index:-1 的网格画在本页背景之上、内容之下 */
+    isolation: isolate;
     font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
     color: #1f1f1f;
   }
@@ -1042,7 +1044,10 @@ const measureStyles = `
     transform: perspective(1100px) rotateX(52deg);
     -webkit-mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.35) 62%, transparent 96%);
     mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.35) 62%, transparent 96%);
-    z-index: 0;
+    /* 必须为负：fixed + 3D transform + mask 组合会被 Chromium 提升为独立合成层，
+       z-index:0 时实际渲染会盖到 z-index:1 的页面内容上（卡片"透出"网格的假象）。
+       降到 -1（配合 shell 的 isolation:isolate）确保网格永远在内容之下。 */
+    z-index: -1;
   }
 
   .measure-main {

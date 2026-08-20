@@ -622,7 +622,9 @@ function InsoleScene({
         <ContactShadows position={[0, -0.01, 0]} opacity={0.3} scale={8} blur={2} far={3} />
       </Suspense>
 
-      <gridHelper args={[6, 20, '#cbd5e1', '#e2e8f0']} position={[0, -0.02, 0]} />
+      {/* 地面网格：与页面背景网格同暖色调（rgba(180,150,110,.3) 在白底上的等效色）；
+          尺寸加大到常规视角内看不到边界（格距保持 0.3 单位不变） */}
+      <gridHelper args={[40, 132, '#dfd2be', '#e8dfd3']} position={[0, -0.02, 0]} />
     </>
   );
 }
