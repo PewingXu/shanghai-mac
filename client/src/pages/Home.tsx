@@ -279,26 +279,15 @@ export default function Home() {
   const [prevView, setPrevView] = useState<AppView>("landing");
 
   // ===== 进入系统即自动按设备码连接足垫（无需手势，走已授权端口） =====
-  // 连接成功且用户还停在首页 → 直达采集界面开始体验；采集出报告前再登记信息。
-  const viewRef = useRef(view);
-  viewRef.current = view;
+  // 只做后台连接（首页徽章变"设备连接正常"），不自动跳页——进入采集由用户点"开始体验"。
   const [deviceConnecting, setDeviceConnecting] = useState(false);
 
   useEffect(() => {
     let disposed = false;
     setDeviceConnecting(true);
-    void deviceManager
-      .autoConnect()
-      .then((ok) => {
-        if (disposed || !ok) return;
-        if (viewRef.current === "landing") {
-          setCurrentStep(2);
-          setView("measure");
-        }
-      })
-      .finally(() => {
-        if (!disposed) setDeviceConnecting(false);
-      });
+    void deviceManager.autoConnect().finally(() => {
+      if (!disposed) setDeviceConnecting(false);
+    });
     return () => {
       disposed = true;
     };

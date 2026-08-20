@@ -1,5 +1,13 @@
 export type BaudRate = 3000000 | 6000000;
 
+/**
+ * 帧上下翻转开关：真机足垫（45Hz）的行扫描方向与屏幕方向相反——人站上去
+ * 热力图上下颠倒。在帧入口做行反转（display 行 r 取原始行 63-r），
+ * 显示与送 Python 分析的数据同源同向。串口桥路径（deviceManager）与
+ * Web Serial 兜底路径共用此开关，务必保持一致。
+ */
+export const FRAME_FLIP_VERTICAL = true;
+
 // 设备身份查询指令（同旧交付系统 serialServer.js 的 portWirte）："AT+NAME=ESP32\r\n"
 // 设备收到后在数据流中回复文本 "Unique ID: <设备码> ... Versions: ..."
 const ID_QUERY_COMMAND = new Uint8Array([
@@ -313,9 +321,11 @@ export class SerialService {
       let nonZeroCount = 0;
       
       for (let r = 0; r < this.ROWS; r++) {
+        // 行反转开关见 FRAME_FLIP_VERTICAL 注释（真机行扫描方向与屏幕相反）
+        const srcRow = FRAME_FLIP_VERTICAL ? this.ROWS - 1 - r : r;
         const row: number[] = [];
         for (let c = 0; c < this.COLS; c++) {
-          let val = wsPointData[r * this.COLS + c];
+          let val = wsPointData[srcRow * this.COLS + c];
           
           // 滤波：小于等于阈值的数据置为0（去除底噪，例如默认 ADC≤25 视为噪声）
           if (val <= this.filterThreshold) {

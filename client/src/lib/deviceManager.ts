@@ -14,7 +14,7 @@
  *
  * 连接状态通过 "aciki-device-status" 事件 + localStorage 广播，页面各自订阅。
  */
-import { SerialService, normalizeDeviceCode } from "./SerialService";
+import { SerialService, normalizeDeviceCode, FRAME_FLIP_VERTICAL } from "./SerialService";
 import { broadcastException } from "@/components/ExceptionModal";
 
 // 足垫设备码（设备 Unique ID）。旧系统登记格式为 "330005000251333232353831:foot1"，
@@ -255,15 +255,21 @@ class DeviceManager {
     if (wasConnected && !nowConnected) broadcastException("port-error");
   }
 
-  /** 桥帧：4096B 行优先 → 64×64 矩阵，套用与 SerialService 相同的底噪滤波 */
+  /**
+   * 桥帧：4096B 行优先 → 64×64 矩阵，套用与 SerialService 相同的底噪滤波。
+   * FRAME_FLIP_VERTICAL：真机足垫（45Hz 那台）行扫描方向与屏幕相反——人站上去
+   * 热力图上下颠倒。在帧入口做行反转，显示与送分析的数据同源同向。
+   * （SerialService 的 Web Serial 兜底路径连同一台设备，做了同样的反转，改一起改。）
+   */
   private handleBridgeFrame(bytes: Uint8Array) {
     if (bytes.length !== 4096 || !this.onDataCb) return;
     const threshold = this.filterThreshold;
     const matrix: number[][] = [];
     for (let r = 0; r < 64; r++) {
+      const src = FRAME_FLIP_VERTICAL ? 63 - r : r;
       const row = new Array<number>(64);
       for (let c = 0; c < 64; c++) {
-        const v = bytes[r * 64 + c];
+        const v = bytes[src * 64 + c];
         row[c] = v <= threshold ? 0 : v;
       }
       matrix.push(row);
