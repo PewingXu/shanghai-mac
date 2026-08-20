@@ -1516,15 +1516,24 @@ export default function ReportPage({ onNext, onHistory, onBack, onStepBack }: { 
           font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
           color: #1f1f1f;
         }
-        /* 方案页同款网格底纹（正交平铺、无透视无渐隐），无边界铺满全屏 */
+        /* 3D 场景地面网格（同方案页 3D 查看器 gridHelper 的观感）：
+           透视平铺、无边界——四边延伸出视口、线色全强度、仅最远端轻淡出
+           防地平线灰带。与测量页 .measure-grid-bg 同参数。 */
         .report-grid-bg {
           position: fixed;
-          inset: 0;
+          left: -30vw;
+          right: -30vw;
+          top: -4vh;
+          bottom: -55vh;
           pointer-events: none;
           background:
-            linear-gradient(rgba(180, 150, 110, 0.10) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(180, 150, 110, 0.10) 1px, transparent 1px);
-          background-size: 22px 22px;
+            linear-gradient(rgba(180, 150, 110, 0.30) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(180, 150, 110, 0.30) 1px, transparent 1px);
+          background-size: 40px 40px;
+          transform-origin: center top;
+          transform: perspective(1100px) rotateX(52deg);
+          -webkit-mask-image: linear-gradient(to top, #000 0%, #000 86%, transparent 100%);
+          mask-image: linear-gradient(to top, #000 0%, #000 86%, transparent 100%);
           z-index: 0;
         }
         .report-main {

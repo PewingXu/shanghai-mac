@@ -1023,15 +1023,26 @@ const measureStyles = `
     overflow: hidden;
   }
 
-  /* 方案页同款网格底纹（正交平铺、无透视无渐隐），无边界铺满全屏 */
+  /* 3D 场景地面网格（同方案页 3D 查看器 gridHelper 的观感）：
+     透视平铺、无边界——网格四边都延伸出视口，起点(top)在视口外，
+     不再有"网格从中途开始"的边界感；线色全强度（原版 opacity .5 + 全程
+     渐隐 mask 等效只剩 ~0.16，是"很浅"的根源）。仅最远端一小段淡出，
+     避免透视地平线处网格挤成灰带。 */
   .measure-grid-bg {
     position: fixed;
-    inset: 0;
+    left: -30vw;
+    right: -30vw;
+    top: -4vh;
+    bottom: -55vh;
     pointer-events: none;
     background:
-      linear-gradient(rgba(180, 150, 110, 0.10) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(180, 150, 110, 0.10) 1px, transparent 1px);
-    background-size: 22px 22px;
+      linear-gradient(rgba(180, 150, 110, 0.30) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(180, 150, 110, 0.30) 1px, transparent 1px);
+    background-size: 40px 40px;
+    transform-origin: center top;
+    transform: perspective(1100px) rotateX(52deg);
+    -webkit-mask-image: linear-gradient(to top, #000 0%, #000 86%, transparent 100%);
+    mask-image: linear-gradient(to top, #000 0%, #000 86%, transparent 100%);
     z-index: 0;
   }
 
