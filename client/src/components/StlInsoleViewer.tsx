@@ -36,6 +36,25 @@ import {
   type BaseDims,
   type DeformMm,
 } from '@/lib/insoleModel';
+import {
+  BUILTIN_SHELL,
+  buildShellPair,
+  computeShellPlacement,
+  shellAdjustTransform,
+  DEFAULT_SHELL_ADJUST,
+  type ShellSource,
+  type ShellAdjust,
+  type ShellPairInfo,
+  type LoadedShell,
+} from '@/lib/shoeShell';
+
+/** mm 几何 → 场景单位 */
+const SCENE_SCALE = 0.01;
+/** 鞋壳本色：中性冷灰，不与任何鞋垫可选色撞色 */
+const SHELL_COLOR = '#AEB6BF';
+
+/** 鞋壳三态：仅鞋垫 / 仅鞋壳 / 装配 */
+export type ShellView = 'off' | 'only' | 'assembly';
 
 // ============ 几何体加载（按 样式+脚 缓存） ============
 
@@ -112,6 +131,61 @@ async function loadFootGeometry(
   }
   onProgress?.(100);
   return geoCache[key];
+}
+
+// ============ 鞋壳加载（按 来源+脚 缓存，与鞋垫同一套去重写法） ============
+
+const shellCache: Record<string, LoadedShell> = {}; // key: `${sourceId}:${foot}`
+const shellPairPromise: Record<string, Promise<void>> = {};
+const shellInfoCache: Record<string, ShellPairInfo> = {};
+
+/**
+ * 上传件动辄几十上百 MB，换一个就把上一个的几何释放掉，只留内置件与当前件，
+ * 否则连传几个鞋壳会把显存/内存堆满。
+ */
+function pruneShellCache(keepId: string) {
+  for (const key of Object.keys(shellCache)) {
+    const id = key.slice(0, key.lastIndexOf(':'));
+    if (id === keepId || id === BUILTIN_SHELL.id) continue;
+    shellCache[key].geometry.dispose();
+    delete shellCache[key];
+    delete shellPairPromise[`pair:${id}`];
+    delete shellInfoCache[id];
+  }
+}
+
+async function loadShellFoot(
+  source: ShellSource,
+  foot: 'left' | 'right',
+  onProgress?: (pct: number) => void,
+): Promise<LoadedShell> {
+  const key = `${source.id}:${foot}`;
+  if (shellCache[key]) {
+    onProgress?.(100);
+    return shellCache[key];
+  }
+
+  const pkey = `pair:${source.id}`;
+  if (!shellPairPromise[pkey]) {
+    shellPairPromise[pkey] = (async () => {
+      const buffer = source.buffer ?? (await fetchBuffer(source.url!, onProgress));
+      // buildShellPair 是同步重活（内置件 168 万面），先让出一帧把「正在加载鞋壳」画出来
+      onProgress?.(92);
+      await new Promise((r) => setTimeout(r, 30));
+      const { left, right, info } = buildShellPair(buffer, source.preOriented);
+      shellCache[`${source.id}:left`] = left;
+      shellCache[`${source.id}:right`] = right;
+      shellInfoCache[source.id] = info;
+    })();
+  }
+  try {
+    await shellPairPromise[pkey];
+  } catch (err) {
+    delete shellPairPromise[pkey]; // 失败允许重试
+    throw err;
+  }
+  onProgress?.(100);
+  return shellCache[key];
 }
 
 // ============ 几何体准备（克隆 + 缩放） ============
@@ -273,19 +347,101 @@ function SingleStlInsole({
     };
   }, [preparedGeometry, material]);
 
-  const sceneScale = 0.01;
-
   return (
     <group position={[positionX, 0, 0]}>
       <mesh
         geometry={preparedGeometry}
         material={material}
-        scale={[sceneScale, sceneScale, sceneScale]}
+        scale={[SCENE_SCALE, SCENE_SCALE, SCENE_SCALE]}
         rotation={[-Math.PI / 2, 0, 0]}
         renderOrder={0}
         castShadow
         receiveShadow
       />
+    </group>
+  );
+}
+
+// ============ 单只鞋壳 ============
+
+/**
+ * 鞋壳网格。与鞋垫不同，这里【不克隆几何】—— 鞋垫要注入形变着色器才必须克隆，
+ * 鞋壳没有形变，克隆 168 万面纯属浪费；缩放放在 mesh.scale 上。
+ *
+ * 层级：外层 group 负责「mm 局部帧 → 场景帧」（先 ×0.01 再绕 X 转 −90°），
+ * 内层 mesh 的 position/rotation/scale 全部在 mm 局部帧里表达，
+ * 摆位偏移直接用 computeShellPlacement 的毫米数，不用手工换算到世界轴。
+ */
+function ShellMesh({
+  loaded,
+  params,
+  adjust,
+  opacity,
+  solid,
+  positionX,
+}: {
+  loaded: LoadedShell;
+  params: StlInsoleParams;
+  adjust: ShellAdjust;
+  opacity: number;
+  /** 「仅鞋壳」态：实心不透明，看整只鞋的外形 */
+  solid: boolean;
+  positionX: number;
+}) {
+  const placement = useMemo(
+    () =>
+      computeShellPlacement(
+        loaded.base,
+        { footLengthCm: params.footLength, footWidthCm: params.footWidth },
+        adjust,
+      ),
+    [loaded.base, params.footLength, params.footWidth, adjust],
+  );
+
+  const { rotation, liftMm } = useMemo(
+    () => shellAdjustTransform(adjust, placement.scaledHeiMm),
+    [adjust, placement.scaledHeiMm],
+  );
+
+  // depthWrite=false：半透明鞋壳不写深度，里面的鞋垫才透得出来。
+  // DoubleSide 与鞋垫同理——源网格法线朝向不保证一致，单面渲染会出现镂空。
+  const material = useMemo(
+    () =>
+      new THREE.MeshPhysicalMaterial({
+        color: new THREE.Color(SHELL_COLOR),
+        metalness: 0.0,
+        roughness: 0.38,
+        clearcoat: 0.5,
+        clearcoatRoughness: 0.25,
+        envMapIntensity: 0.25,
+        side: THREE.DoubleSide,
+        transparent: !solid,
+        opacity: solid ? 1 : opacity,
+        depthWrite: solid,
+      }),
+    [solid, opacity],
+  );
+
+  useEffect(() => () => material.dispose(), [material]);
+
+  return (
+    <group position={[positionX, 0, 0]}>
+      <group rotation={[-Math.PI / 2, 0, 0]} scale={SCENE_SCALE}>
+        <mesh
+          geometry={loaded.geometry}
+          material={material}
+          scale={[placement.scale.x, placement.scale.y, placement.scale.z]}
+          rotation={rotation}
+          position={[
+            placement.offsetMm.x,
+            placement.offsetMm.y,
+            placement.offsetMm.z + liftMm,
+          ]}
+          renderOrder={1}
+          castShadow={solid}
+          receiveShadow={solid}
+        />
+      </group>
     </group>
   );
 }
@@ -350,6 +506,11 @@ function InsoleScene({
   leftGeo,
   rightGeo,
   heatmap,
+  shellView,
+  shellOpacity,
+  shellAdjust,
+  shellLeft,
+  shellRight,
 }: {
   activeFoot: 'left' | 'right' | 'both';
   autoRotate: boolean;
@@ -362,8 +523,21 @@ function InsoleScene({
   leftGeo: LoadedGeo | null;
   rightGeo: LoadedGeo | null;
   heatmap: boolean;
+  shellView: ShellView;
+  shellOpacity: number;
+  shellAdjust: ShellAdjust;
+  shellLeft: LoadedShell | null;
+  shellRight: LoadedShell | null;
 }) {
   const spacing = 1.6;
+  const showInsole = shellView !== 'only';
+  const showShell = shellView !== 'off';
+  const solidShell = shellView === 'only';
+  // 「左右互换」：自动手性判反时把两只对调，零成本
+  const shellFor = (foot: 'left' | 'right') => {
+    const useRight = shellAdjust.swapLR ? foot === 'left' : foot === 'right';
+    return useRight ? shellRight : shellLeft;
+  };
 
   return (
     <>
@@ -394,7 +568,7 @@ function InsoleScene({
       <directionalLight position={[0, 2, -5]} intensity={0.3} />
 
       <Suspense fallback={null}>
-        {(activeFoot === 'left' || activeFoot === 'both') && leftGeo && (
+        {showInsole && (activeFoot === 'left' || activeFoot === 'both') && leftGeo && (
           <SingleStlInsole
             loaded={leftGeo}
             style={style}
@@ -408,7 +582,7 @@ function InsoleScene({
           />
         )}
 
-        {(activeFoot === 'right' || activeFoot === 'both') && rightGeo && (
+        {showInsole && (activeFoot === 'right' || activeFoot === 'both') && rightGeo && (
           <SingleStlInsole
             loaded={rightGeo}
             style={style}
@@ -419,6 +593,29 @@ function InsoleScene({
             firmness={calcFirmness(rightParams)}
             foot="right"
             heatmap={heatmap}
+          />
+        )}
+
+        {/* 鞋壳画在鞋垫之后：半透明材质由 three 自动排到不透明物体后面渲染 */}
+        {showShell && (activeFoot === 'left' || activeFoot === 'both') && shellFor('left') && (
+          <ShellMesh
+            loaded={shellFor('left')!}
+            params={leftParams}
+            adjust={shellAdjust}
+            opacity={shellOpacity}
+            solid={solidShell}
+            positionX={activeFoot === 'both' ? -spacing / 2 : 0}
+          />
+        )}
+
+        {showShell && (activeFoot === 'right' || activeFoot === 'both') && shellFor('right') && (
+          <ShellMesh
+            loaded={shellFor('right')!}
+            params={rightParams}
+            adjust={shellAdjust}
+            opacity={shellOpacity}
+            solid={solidShell}
+            positionX={activeFoot === 'both' ? spacing / 2 : 0}
           />
         )}
 
@@ -458,6 +655,17 @@ interface StlInsoleViewerProps {
   leftDeform?: DeformMm;
   rightDeform?: DeformMm;
   onLoadError?: (error: string) => void;
+  /** 鞋壳来源：内置件或上传件；不传即无鞋壳 */
+  shellSource?: ShellSource | null;
+  /** 鞋壳三态；'off' 时完全不加载鞋壳文件（内置件 83MB，必须懒加载） */
+  shellView?: ShellView;
+  /** 装配态鞋壳不透明度 0..1 */
+  shellOpacity?: number;
+  /** 上传件摆位手动微调 */
+  shellAdjust?: ShellAdjust;
+  /** 鞋壳解析完成后回传（双脚/单只、手性置信度、面数），供页面提示 */
+  onShellInfo?: (info: ShellPairInfo) => void;
+  onShellError?: (error: string) => void;
 }
 
 // ============ 主组件 ============
@@ -472,6 +680,12 @@ export function StlInsoleViewer({
   leftDeform = ZERO_DEFORM,
   rightDeform = ZERO_DEFORM,
   onLoadError,
+  shellSource = null,
+  shellView = 'off',
+  shellOpacity = 0.35,
+  shellAdjust = DEFAULT_SHELL_ADJUST,
+  onShellInfo,
+  onShellError,
 }: StlInsoleViewerProps) {
   const [leftGeo, setLeftGeo] = useState<LoadedGeo | null>(null);
   const [rightGeo, setRightGeo] = useState<LoadedGeo | null>(null);
@@ -481,6 +695,17 @@ export function StlInsoleViewer({
   const [retryCount, setRetryCount] = useState(0);
   // 定制形变热力图：默认关，默认仍显示客户选的鞋垫颜色
   const [heatmap, setHeatmap] = useState(false);
+
+  // 鞋壳状态独立于鞋垫：加载中/失败都不能顶掉已经画好的鞋垫
+  const [shellLeft, setShellLeft] = useState<LoadedShell | null>(null);
+  const [shellRight, setShellRight] = useState<LoadedShell | null>(null);
+  const [shellLoading, setShellLoading] = useState(false);
+  const [shellProgress, setShellProgress] = useState(0);
+  const [shellError, setShellError] = useState<string | null>(null);
+  const [shellRetry, setShellRetry] = useState(0);
+  // 回调放 ref：父组件常传内联函数，进依赖数组会让 83MB 的加载反复重跑
+  const shellCbRef = useRef({ onShellInfo, onShellError });
+  shellCbRef.current = { onShellInfo, onShellError };
 
   // 仅成品垫走变形着色器；标准垫是整体 Z 缩放，形变均匀、热力图无信息量
   // 三款都可看：成品垫是定制位移量，标准垫是型面相对基准厚度的起伏
@@ -519,6 +744,59 @@ export function StlInsoleViewer({
     setRetryCount((c) => c + 1);
     loadModels();
   }, [loadModels, style]);
+
+  // 鞋壳懒加载：'off' 时一个字节都不拉
+  const shellOn = shellView !== 'off' && shellSource != null;
+  const shellId = shellSource?.id ?? '';
+  useEffect(() => {
+    if (!shellOn || !shellSource) {
+      setShellLeft(null);
+      setShellRight(null);
+      setShellError(null);
+      setShellLoading(false);
+      return;
+    }
+    let cancelled = false;
+    pruneShellCache(shellSource.id);
+    setShellLoading(true);
+    setShellError(null);
+    setShellProgress(0);
+    (async () => {
+      try {
+        const l = await loadShellFoot(shellSource, 'left', (p) => {
+          if (!cancelled) setShellProgress(p);
+        });
+        const r = await loadShellFoot(shellSource, 'right');
+        if (cancelled) return;
+        setShellLeft(l);
+        setShellRight(r);
+        setShellLoading(false);
+        setShellProgress(100);
+        const info = shellInfoCache[shellSource.id];
+        if (info) shellCbRef.current.onShellInfo?.(info);
+      } catch (err) {
+        if (cancelled) return;
+        const msg = err instanceof Error ? err.message : '未知错误';
+        console.error('鞋壳模型加载失败:', msg);
+        setShellError(msg);
+        setShellLoading(false);
+        shellCbRef.current.onShellError?.(msg);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // shellSource 对象每次渲染可能是新引用，按 id 判定即可
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shellOn, shellId, shellRetry]);
+
+  const handleShellRetry = useCallback(() => {
+    if (!shellSource) return;
+    delete shellCache[`${shellSource.id}:left`];
+    delete shellCache[`${shellSource.id}:right`];
+    delete shellPairPromise[`pair:${shellSource.id}`];
+    setShellRetry((c) => c + 1);
+  }, [shellSource]);
 
   if (loading) {
     return (
@@ -562,29 +840,61 @@ export function StlInsoleViewer({
           leftGeo={leftGeo}
           rightGeo={rightGeo}
           heatmap={heatOn}
+          shellView={shellView}
+          shellOpacity={shellOpacity}
+          shellAdjust={shellAdjust}
+          shellLeft={shellLeft}
+          shellRight={shellRight}
         />
       </Canvas>
+
+      {/* 鞋壳状态条：画布内小提示，不顶掉已经画好的鞋垫 */}
+      {shellOn && shellLoading && (
+        <div
+          className="absolute top-2 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs font-medium"
+          style={{ background: 'rgba(255,255,255,0.92)', color: '#5A4A30', border: '1px solid rgba(225,203,180,0.55)' }}
+        >
+          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          正在加载鞋壳… {shellProgress}%
+        </div>
+      )}
+
+      {shellOn && shellError && (
+        <div
+          className="absolute top-2 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs font-medium"
+          style={{ background: 'rgba(255,255,255,0.92)', color: '#b3261e', border: '1px solid rgba(179,38,30,0.35)' }}
+        >
+          <AlertTriangle className="w-3.5 h-3.5" />
+          鞋壳加载失败：{shellError}
+          <button type="button" className="underline" onClick={handleShellRetry}>
+            重试
+          </button>
+        </div>
+      )}
 
       <div className="absolute bottom-2 left-2 text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">
         ◆ 左键: 旋转 · 右键: 平移 · 滚轮: 缩放
       </div>
 
-      <button
-        type="button"
-        onClick={() => setHeatmap((v) => !v)}
-        aria-pressed={heatOn}
-        className="absolute top-2 right-2 flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-semibold transition-colors"
-        style={{
-          background: heatOn ? '#FF8400' : 'rgba(255,255,255,0.92)',
-          color: heatOn ? '#fff' : '#5A4A30',
-          border: '1px solid rgba(225,203,180,0.55)',
-        }}
-      >
-        <Layers className="w-3.5 h-3.5" />
-        定制对比
-      </button>
+      {/* 「仅鞋壳」态看不到鞋垫，定制对比无从谈起 */}
+      {shellView !== 'only' && (
+        <button
+          type="button"
+          onClick={() => setHeatmap((v) => !v)}
+          aria-pressed={heatOn}
+          className="absolute top-2 right-2 flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-semibold transition-colors"
+          style={{
+            background: heatOn ? '#FF8400' : 'rgba(255,255,255,0.92)',
+            color: heatOn ? '#fff' : '#5A4A30',
+            border: '1px solid rgba(225,203,180,0.55)',
+          }}
+        >
+          <Layers className="w-3.5 h-3.5" />
+          定制对比
+        </button>
+      )}
 
-      {heatOn && <HeatLegend />}
+      {heatOn && shellView !== 'only' && <HeatLegend />}
     </div>
   );
 }
