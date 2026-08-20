@@ -1,5 +1,5 @@
-import React, { useState, useMemo } from "react";
-import { formatUserId } from "@/lib/utils";
+import React, { useState, useMemo, useEffect } from "react";
+import { formatUserId, maskPhone, userMatchesQuery } from "@/lib/utils";
 import ConfirmModal from "@/components/ConfirmModal";
 import { useApp, User } from "@/contexts/AppContext";
 import PageBackground from "@/components/PageBackground";
@@ -71,7 +71,7 @@ function UserCard({
       style={{
         display: "flex",
         alignItems: "stretch",
-        height: "132px", // 设计稿：550×132 卡片
+        minHeight: "132px", // 设计稿：550×132；窄屏字段换行时允许卡片撑高，不裁内容
         borderRadius: "12px",
         overflow: "hidden",
         cursor: "pointer",
@@ -97,9 +97,14 @@ function UserCard({
           <span style={{ fontSize: "15px", fontWeight: 500, color: "#17191C", whiteSpace: "nowrap", flexShrink: 0 }}>
             （ID:{formatUserId(user.id)}）
           </span>
+          {user.phone && (
+            <span style={{ fontSize: "14px", fontWeight: 500, color: "#8a8275", whiteSpace: "nowrap", flexShrink: 0 }}>
+              {maskPhone(user.phone)}
+            </span>
+          )}
         </div>
-        {/* 性别 / 鞋码 / 年龄（设计稿：整行浅橙底衬条） */}
-        <div style={{ display: "flex", gap: "24px", alignItems: "baseline", flexWrap: "wrap", background: "#FFF6E9", borderRadius: "6px", padding: "5px 12px", width: "fit-content" }}>
+        {/* 性别 / 鞋码 / 年龄（设计稿：整行浅橙底衬条；窄屏收紧间距减少换行） */}
+        <div style={{ display: "flex", columnGap: "clamp(12px, 1.2vw, 24px)", rowGap: "4px", alignItems: "baseline", flexWrap: "wrap", background: "#FFF6E9", borderRadius: "6px", padding: "5px 12px", width: "fit-content" }}>
           <Field label="性别：" value={user.gender || "—"} />
           <Field label="鞋码：" value={user.shoeSize?.trim() ? (user.shoeSize.trim().endsWith("码") ? user.shoeSize.trim() : `${user.shoeSize.trim()}码`) : "—"} />
           <Field label="年龄：" value={age != null ? `${age}岁` : "—"} />
@@ -146,26 +151,60 @@ function UserCard({
   );
 }
 
-// ─── 分页点 ───────────────────────────────────────────────────────────────────
+// ─── 分页点（滑动窗口）──────────────────────────────────────────────────────
+// 页数再多也最多显示 10 个点。点击窗口最后一个点时，该页滑到窗口第 7 位
+// （后面再露 3 页）；点击窗口第一个点时对称地滑到第 4 位——到头则不再滑。
+const DOT_WINDOW = 10;
+
 function PageDots({ total, current, onDotClick }: { total: number; current: number; onDotClick: (page: number) => void }) {
+  const [start, setStart] = useState(0);
+
+  // 外部翻页/搜索重置/总页数变化时，保证当前页始终在窗口内
+  useEffect(() => {
+    setStart((s) => {
+      const maxStart = Math.max(0, total - DOT_WINDOW);
+      if (current < s) return Math.max(0, Math.min(current - 3, maxStart));
+      if (current > s + DOT_WINDOW - 1) return Math.max(0, Math.min(current - 6, maxStart));
+      return Math.min(s, maxStart);
+    });
+  }, [current, total]);
+
+  const end = Math.min(total, start + DOT_WINDOW);
+  const maxStart = Math.max(0, total - DOT_WINDOW);
+
+  const handleClick = (p: number) => {
+    onDotClick(p);
+    if (p === end - 1 && end < total) {
+      setStart(Math.max(0, Math.min(p - 6, maxStart))); // 该页滑到第 7 位，后面露 3 页
+    } else if (p === start && start > 0) {
+      setStart(Math.max(0, p - 3)); // 对称：滑到第 4 位，前面露 3 页
+    }
+  };
+
   return (
     <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-      {Array.from({ length: total }).map((_, i) => (
-        <button
-          key={i}
-          onClick={() => onDotClick(i)}
-          style={{
-            width: i === current ? "22px" : "10px",
-            height: "10px",
-            borderRadius: "5px",
-            backgroundColor: i === current ? "#FF8400" : "rgba(255,132,0,0.28)",
-            border: "none",
-            cursor: "pointer",
-            padding: 0,
-            transition: "all 0.25s cubic-bezier(0.23, 1, 0.32, 1)",
-          }}
-        />
-      ))}
+      {start > 0 && <span style={{ fontSize: "12px", color: "rgba(255,132,0,0.5)", lineHeight: 1 }}>…</span>}
+      {Array.from({ length: end - start }).map((_, k) => {
+        const i = start + k;
+        return (
+          <button
+            key={i}
+            onClick={() => handleClick(i)}
+            title={`第 ${i + 1} 页`}
+            style={{
+              width: i === current ? "22px" : "10px",
+              height: "10px",
+              borderRadius: "5px",
+              backgroundColor: i === current ? "#FF8400" : "rgba(255,132,0,0.28)",
+              border: "none",
+              cursor: "pointer",
+              padding: 0,
+              transition: "all 0.25s cubic-bezier(0.23, 1, 0.32, 1)",
+            }}
+          />
+        );
+      })}
+      {end < total && <span style={{ fontSize: "12px", color: "rgba(255,132,0,0.5)", lineHeight: 1 }}>…</span>}
     </div>
   );
 }
@@ -186,11 +225,11 @@ export default function HistoryPage({
   const deviceConnected =
     typeof window !== "undefined" && window.localStorage.getItem("aciki-device-connected") !== "false";
 
-  const filtered = useMemo(() => {
-    const q = searchText.trim().toLowerCase();
-    if (!q) return historyUsers;
-    return historyUsers.filter((u) => u.name.toLowerCase().includes(q) || String(u.id).includes(q));
-  }, [historyUsers, searchText]);
+  // 搜索维度：姓名 / ID / 手机号片段（尾号四位重复时全部列出）
+  const filtered = useMemo(
+    () => historyUsers.filter((u) => userMatchesQuery(u, searchText)),
+    [historyUsers, searchText],
+  );
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(currentPage, totalPages - 1);
@@ -276,7 +315,7 @@ export default function HistoryPage({
                 type="text"
                 value={searchText}
                 onChange={handleSearch}
-                placeholder="搜索姓名 / ID"
+                placeholder="搜索姓名 / ID / 手机尾号"
                 style={{ flex: 1, minWidth: 0, border: "none", background: "transparent", outline: "none", fontSize: "14px", color: "#3D2000" }}
               />
               <button
@@ -337,7 +376,8 @@ export default function HistoryPage({
               {searchText ? "未找到匹配的用户" : "暂无用户，请在首页创建"}
             </div>
           ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "20px" }}>
+            // 列数随屏宽自适应（卡片最窄 460px）：小屏自动降为 2 列/1 列，不再压瘪卡片错位
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(460px, 1fr))", gap: "20px" }}>
               {pageUsers.map((user) => (
                 <UserCard
                   key={user.id}
@@ -351,17 +391,35 @@ export default function HistoryPage({
           )}
         </div>
 
-        {/* 底部：第X页 + 分页点 */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "24px" }}>
-          <span style={{ fontSize: "14px", color: "#7A5030", fontWeight: 500, minWidth: "90px" }}>
-            第 <strong style={{ color: "#FF8400" }}>{safePage + 1}</strong> 页
-          </span>
-          <div style={{ flex: 1, display: "flex", justifyContent: "center" }}>
-            <PageDots total={totalPages} current={safePage} onDotClick={setCurrentPage} />
-          </div>
-          <div style={{ minWidth: "90px" }} />
-        </div>
       </main>
+
+      {/* 底部分页线（固定位置，不随卡片数量浮动；在设备徽章那条线上方）：
+          "第 N 页"贴左与卡片列对齐（设计稿位置），分页点独立居中 */}
+      <span
+        style={{
+          position: "fixed",
+          bottom: "76px",
+          left: "64px",
+          zIndex: 20,
+          fontSize: "14px",
+          color: "#7A5030",
+          fontWeight: 500,
+          whiteSpace: "nowrap",
+        }}
+      >
+        第 <strong style={{ color: "#FF8400" }}>{safePage + 1}</strong> / {totalPages} 页
+      </span>
+      <div
+        style={{
+          position: "fixed",
+          bottom: "76px",
+          left: "50%",
+          transform: "translateX(-50%)",
+          zIndex: 20,
+        }}
+      >
+        <PageDots total={totalPages} current={safePage} onDotClick={setCurrentPage} />
+      </div>
 
       {/* 左下角：设备状态 */}
       <div

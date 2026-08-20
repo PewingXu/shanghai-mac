@@ -37,6 +37,10 @@ export interface User {
   weight?: number;
   /** 鞋码（如 "41码"；用户卡展示 + 编辑弹窗录入，后端 shoe_size 字段） */
   shoeSize?: string;
+  /** 手机号（展示脱敏为前四****尾四；搜索支持尾号四位） */
+  phone?: string;
+  /** 联系邮箱 */
+  email?: string;
 }
 
 export interface CollectionRecord {

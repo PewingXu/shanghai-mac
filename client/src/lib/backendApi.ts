@@ -13,6 +13,8 @@ export interface ApiUser {
   height?: number;
   weight?: number;
   shoeSize?: string;
+  phone?: string;
+  email?: string;
 }
 
 /** 列出所有用户；后端不可用时抛错，由调用方兜底 */

@@ -25,6 +25,8 @@ export interface UserFormData {
   height?: number;
   weight?: number;
   shoeSize?: string;
+  phone?: string;
+  email?: string;
 }
 
 export default function UserFormModal({
@@ -66,14 +68,57 @@ export default function UserFormModal({
   const [height, setHeight] = useState(isEdit && initial?.height != null ? String(initial.height) : "");
   const [weight, setWeight] = useState(isEdit && initial?.weight != null ? String(initial.weight) : "");
   const [shoeSize, setShoeSize] = useState(isEdit ? initial?.shoeSize ?? "" : "");
+  const [phone, setPhone] = useState(isEdit ? initial?.phone ?? "" : "");
+  const [email, setEmail] = useState(isEdit ? initial?.email ?? "" : "");
+  // 两步填写：第 1 步基础信息（填写完毕）→ 第 2 步联系方式（手机号 + 邮箱，格式校验后提交）
+  const [step, setStep] = useState<1 | 2>(1);
   const canSubmit = name.trim().length > 0;
 
-  const submit = (event: React.FormEvent) => {
-    event.preventDefault();
+  // 第 1 步 → 第 2 步：基础信息校验
+  const goNextStep = () => {
     if (!canSubmit) return;
     // 兜底：手动键入的未来日期也拦下（正常路径由 input max 挡住）
     if (birthDate && birthDate > todayLocal()) {
       window.alert("出生日期不能晚于今天，请重新选择");
+      return;
+    }
+    setStep(2);
+  };
+
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (step === 1) {
+      goNextStep(); // 回车键提交时同样走分步
+      return;
+    }
+    // 第 2 步：中国大陆手机号（11 位、1 开头、第二位 3-9）+ 标准邮箱格式，均必填
+    const phoneDigits = phone.replace(/\D/g, "");
+    if (!/^1[3-9]\d{9}$/.test(phoneDigits)) {
+      window.alert("请输入正确的中国大陆手机号（11 位，以 13-19 开头）");
+      return;
+    }
+    const mail = email.trim();
+    // 基本格式 + 域名主体至少 2 字符（拦 a@q.com 这类），顶级域至少 2 字母
+    if (!/^[^\s@]+@[^\s@]{2,}\.[A-Za-z]{2,}$/.test(mail)) {
+      window.alert("请输入正确的邮箱地址（如 name@example.com）");
+      return;
+    }
+    // 常见域名手滑校正提示（q.com→qq.com、16.com→163.com 等，一线录入高频错误）
+    const domain = mail.split("@")[1].toLowerCase();
+    const TYPO_DOMAINS: Record<string, string> = {
+      "q.com": "qq.com",
+      "qq.co": "qq.com",
+      "16.com": "163.com",
+      "163.co": "163.com",
+      "126.co": "126.com",
+      "gmial.com": "gmail.com",
+      "gamil.com": "gmail.com",
+      "gmai.com": "gmail.com",
+      "outlok.com": "outlook.com",
+      "foxmial.com": "foxmail.com",
+    };
+    if (TYPO_DOMAINS[domain]) {
+      window.alert(`邮箱域名疑似有误：@${domain} 是否想输入 @${TYPO_DOMAINS[domain]}？请确认后重新提交`);
       return;
     }
     onSubmit({
@@ -84,6 +129,8 @@ export default function UserFormModal({
       height: height ? Number(height) : undefined,
       weight: weight ? Number(weight) : undefined,
       shoeSize: shoeSize.trim() || undefined,
+      phone: phoneDigits,
+      email: email.trim(),
     });
   };
 
@@ -99,56 +146,93 @@ export default function UserFormModal({
           </button>
         </div>
 
-        <div className="user-form-row user-form-row-top">
-          <label className="user-form-field" style={{ width: "200px" }}>
-            <span>姓名</span>
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="请填写姓名" autoFocus />
-          </label>
-          <label className="user-form-field" style={{ flex: 1 }}>
-            <span>出生年/月/日</span>
-            <input type="date" value={birthDate} max={todayLocal()} onChange={(e) => setBirthDate(e.target.value)} placeholder="请选择日期" />
-          </label>
-        </div>
+        {step === 1 && (
+          <>
+            <div className="user-form-row user-form-row-top">
+              <label className="user-form-field" style={{ width: "200px" }}>
+                <span>姓名</span>
+                <input value={name} onChange={(e) => setName(e.target.value)} placeholder="请填写姓名" autoFocus />
+              </label>
+              <label className="user-form-field" style={{ flex: 1 }}>
+                <span>出生年/月/日</span>
+                <input type="date" value={birthDate} max={todayLocal()} onChange={(e) => setBirthDate(e.target.value)} placeholder="请选择日期" />
+              </label>
+            </div>
 
-        <div className="user-form-row">
-          <label className="user-form-field" style={{ width: "92px" }}>
-            <span>性别</span>
-            <select value={gender} onChange={(e) => setGender(e.target.value)} className={gender ? "" : "is-placeholder"}>
-              <option value="" disabled hidden>
-                选择
-              </option>
-              <option value="女">女</option>
-              <option value="男">男</option>
-            </select>
-          </label>
-          <label className="user-form-field" style={{ width: "88px" }}>
-            <span>鞋码</span>
-            <input value={shoeSize} onChange={(e) => setShoeSize(e.target.value)} placeholder="如 41" />
-          </label>
-          <label className="user-form-field user-form-unit" style={{ width: "118px" }}>
-            <span>身高</span>
-            <span className="user-form-unit-box">
-              <input type="number" min="0" max="300" value={height} onChange={(e) => setHeight(e.target.value)} placeholder="身高" />
-              <em>cm</em>
-            </span>
-          </label>
-          <label className="user-form-field user-form-unit" style={{ width: "118px" }}>
-            <span>体重</span>
-            <span className="user-form-unit-box">
-              <input type="number" min="0" max="500" value={weight} onChange={(e) => setWeight(e.target.value)} placeholder="体重" />
-              <em>kg</em>
-            </span>
-          </label>
-        </div>
+            <div className="user-form-row">
+              <label className="user-form-field" style={{ width: "92px" }}>
+                <span>性别</span>
+                <select value={gender} onChange={(e) => setGender(e.target.value)} className={gender ? "" : "is-placeholder"}>
+                  <option value="" disabled hidden>
+                    选择
+                  </option>
+                  <option value="女">女</option>
+                  <option value="男">男</option>
+                </select>
+              </label>
+              <label className="user-form-field" style={{ width: "88px" }}>
+                <span>鞋码</span>
+                <input value={shoeSize} onChange={(e) => setShoeSize(e.target.value)} placeholder="如 41" />
+              </label>
+              <label className="user-form-field user-form-unit" style={{ width: "118px" }}>
+                <span>身高</span>
+                <span className="user-form-unit-box">
+                  <input type="number" min="0" max="300" value={height} onChange={(e) => setHeight(e.target.value)} placeholder="身高" />
+                  <em>cm</em>
+                </span>
+              </label>
+              <label className="user-form-field user-form-unit" style={{ width: "118px" }}>
+                <span>体重</span>
+                <span className="user-form-unit-box">
+                  <input type="number" min="0" max="500" value={weight} onChange={(e) => setWeight(e.target.value)} placeholder="体重" />
+                  <em>kg</em>
+                </span>
+              </label>
+            </div>
 
-        <div className="user-form-actions">
-          <button type="submit" disabled={!canSubmit}>
-            {isEdit ? "确认修改" : "开始体验"}
-          </button>
-          <button type="button" onClick={onCancel}>
-            取消
-          </button>
-        </div>
+            <div className="user-form-actions">
+              {/* 编辑模式语义是"改完确认"，不是首次登记的"填写完毕" */}
+              <button type="button" className="user-form-primary" disabled={!canSubmit} onClick={goNextStep}>
+                {isEdit ? "确认修改" : "填写完毕"}
+              </button>
+              <button type="button" onClick={onCancel}>
+                取消
+              </button>
+            </div>
+          </>
+        )}
+
+        {step === 2 && (
+          <>
+            <p className="user-form-step-hint">请填写联系方式（用于报告联系与查询）</p>
+            <div className="user-form-row user-form-row-top">
+              <label className="user-form-field" style={{ width: "200px" }}>
+                <span>手机号</span>
+                <input
+                  type="tel"
+                  maxLength={11}
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value.replace(/\D/g, ""))}
+                  placeholder="11 位手机号"
+                  autoFocus
+                />
+              </label>
+              <label className="user-form-field" style={{ flex: 1 }}>
+                <span>联系邮箱</span>
+                <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="如 name@example.com" />
+              </label>
+            </div>
+
+            <div className="user-form-actions">
+              <button type="submit" className="user-form-primary">
+                {isEdit ? "确认修改" : "开始体验"}
+              </button>
+              <button type="button" onClick={() => setStep(1)}>
+                上一步
+              </button>
+            </div>
+          </>
+        )}
 
         <style>{styles}</style>
       </form>
@@ -299,24 +383,34 @@ const styles = `
     cursor: pointer;
   }
 
-  .user-form-actions button[type="submit"] {
+  /* 主按钮（填写完毕 / 开始体验 / 确认修改）：橙色实底 */
+  .user-form-actions .user-form-primary {
     border: 0;
     background: #F08614;
     color: #ffffff;
     box-shadow: 0 4px 10px rgba(240, 134, 20, 0.28);
   }
 
-  .user-form-actions button[type="submit"]:disabled {
+  .user-form-actions .user-form-primary:disabled {
     background: #d8d2ca;
     color: #ffffff;
     box-shadow: none;
     cursor: not-allowed;
   }
 
-  .user-form-actions button[type="button"] {
+  /* 次按钮（取消 / 上一步）：浅橙描边 */
+  .user-form-actions button:not(.user-form-primary) {
     border: 1.5px solid #FFB25F;
     background: #fff4e5;
     color: #F08614;
+  }
+
+  /* 第二步顶部提示 */
+  .user-form-step-hint {
+    margin: 0 0 18px;
+    font-size: 14px;
+    font-weight: 500;
+    color: #8a6a40;
   }
 
   @keyframes user-form-fade {

@@ -87,6 +87,8 @@ class UserCreateRequest(BaseModel):
     height: Optional[float] = None
     weight: Optional[float] = None
     shoeSize: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
 
 
 class UserDeleteRequest(BaseModel):
@@ -343,6 +345,8 @@ class UserUpdateRequest(BaseModel):
     height: Optional[float] = None
     weight: Optional[float] = None
     shoeSize: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
 
 
 @app.post("/users/update")

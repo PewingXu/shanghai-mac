@@ -306,7 +306,7 @@ export default function Home() {
   }, []);
 
   // "开始体验"：尝试连接足垫后进入采集界面。连接失败不挡路——照样进入
-  // （可导入数据回放 / 页内重试连接），异常经全局弹窗在采集页提示。
+  // （页内可重试连接），异常经全局弹窗在采集页提示。
   const handleStartExperience = async () => {
     if (deviceConnecting) return;
     setDeviceConnecting(true);

@@ -10,16 +10,15 @@
  */
 import { useMemo, useState } from "react";
 import { useApp, type User } from "@/contexts/AppContext";
-import { formatUserId, computeAge } from "@/lib/utils";
+import { formatUserId, maskPhone, userMatchesQuery } from "@/lib/utils";
 import PageBackground from "@/components/PageBackground";
 import TopNavBar from "@/components/TopNavBar";
 
-/** 候选行 / 确认卡的用户摘要："刘玉华（ID：00012） 女 32岁" */
+/** 候选行 / 确认卡的用户摘要："刘玉华（ID：00012）　1381***5831"（手机前四****尾四脱敏） */
 function userSummary(u: User): string {
-  const age = computeAge(u.birthDate);
   const parts = [`${u.name}（ID：${formatUserId(u.id)}）`];
-  if (u.gender) parts.push(u.gender);
-  if (age != null) parts.push(`${age}岁`);
+  const masked = maskPhone(u.phone);
+  if (masked) parts.push(masked);
   return parts.join("　");
 }
 
@@ -40,11 +39,9 @@ export default function UserPicker({
   const [picked, setPicked] = useState<User | null>(null);
 
   const candidates = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return [];
-    return historyUsers
-      .filter((u) => u.name.toLowerCase().includes(q) || String(u.id).includes(q) || formatUserId(u.id).includes(q))
-      .slice(0, 30);
+    if (!query.trim()) return [];
+    // 姓名 / ID / 手机号片段（尾号四位）模糊匹配；尾号重复的用户全部列出
+    return historyUsers.filter((u) => userMatchesQuery(u, query)).slice(0, 30);
   }, [historyUsers, query]);
 
   const back = () => {
@@ -93,7 +90,7 @@ export default function UserPicker({
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="输入姓名 / ID 检索"
+                placeholder="输入姓名 / ID / 手机尾号检索"
                 autoFocus
               />
               {query && (

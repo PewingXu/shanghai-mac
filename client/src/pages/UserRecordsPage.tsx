@@ -5,6 +5,7 @@
  * 表头（测量时间 / 方案更新时间）+ 白底记录行（序号 / 时间 / 查看 / 行外垃圾桶）。
  */
 import { useEffect, useState } from "react";
+import { formatUserId, maskPhone, maskEmail } from "@/lib/utils";
 import { useApp, type MeasureAnalysis } from "@/contexts/AppContext";
 import { apiGetRecordData } from "@/lib/backendApi";
 import UserFormModal, { type UserFormData } from "@/components/UserFormModal";
@@ -37,12 +38,12 @@ function formatShoeSize(s?: string): string {
   return t.endsWith("码") ? t : `${t}码`;
 }
 
-/** 字段：标签(小/浅) + 值(大/深)，与用户管理卡片同款排版 */
+/** 字段（设计稿标注）：标签 16px/300 浅色 + 值 20px/500 纯黑 */
 function Field({ label, value }: { label: string; value: string }) {
   return (
-    <span style={{ fontSize: "14px", fontWeight: 300, color: "#8a8275", whiteSpace: "nowrap" }}>
+    <span style={{ fontSize: "16px", fontWeight: 300, color: "#8a8275", whiteSpace: "nowrap" }}>
       {label}
-      <span style={{ fontSize: "18px", fontWeight: 500, color: "#17191C", marginLeft: "2px" }}>{value}</span>
+      <span style={{ fontSize: "20px", fontWeight: 500, color: "#000000", marginLeft: "2px" }}>{value}</span>
     </span>
   );
 }
@@ -176,7 +177,8 @@ export default function UserRecordsPage({ onBack, onStartMeasure, onOpenReport }
               </button>
             </div>
 
-            {/* 用户信息卡（设计稿：白底橙细边 + 渐变头像块 + 黑字字段 + 编辑 + 右侧删除用户） */}
+            {/* 用户信息卡（设计稿：白底橙细边 + 渐变头像块 + 黑字字段 + 编辑图标 +
+                卡内右侧"删除用户"；仅记录行的垃圾桶在卡外） */}
             <div
               style={{
                 display: "flex",
@@ -204,32 +206,35 @@ export default function UserRecordsPage({ onBack, onStartMeasure, onOpenReport }
                 <img src="/assets/icons/history-user-page/user-avatar.svg" alt="" style={{ width: "32px", height: "auto" }} />
               </div>
 
-              {/* 字段区（黑字，同设计稿；补充身高/体重，编辑后即时可见） */}
-              <div style={{ flex: 1, minWidth: 0, padding: "0 26px", display: "flex", alignItems: "center", gap: "36px" }}>
-                <span style={{ fontSize: "18px", fontWeight: 700, color: "#17191C", whiteSpace: "nowrap" }}>
-                  用户：{currentUser.name}
+              {/* 字段区（设计稿：名字(ID) + 编辑图标紧随其后，再排字段；含完整手机号与邮箱）。
+                  窄屏允许换行撑高卡片，字段/按钮不被挤出可视区 */}
+              <div style={{ flex: 1, minWidth: 0, padding: "10px 26px", display: "flex", alignItems: "center", flexWrap: "wrap", columnGap: "clamp(14px, 1.6vw, 32px)", rowGap: "6px" }}>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: "8px", whiteSpace: "nowrap" }}>
+                  <span style={{ fontSize: "18px", fontWeight: 700, color: "#17191C" }}>
+                    用户：{currentUser.name}（ID：{formatUserId(currentUser.id)}）
+                  </span>
+                  {/* 编辑图标：紧跟在名字右边（设计稿位置） */}
+                  <button
+                    onClick={() => setShowEdit(true)}
+                    title="编辑资料"
+                    style={{ border: "none", background: "none", cursor: "pointer", padding: "2px", display: "flex", alignItems: "center", transition: "transform 0.15s", flexShrink: 0 }}
+                    onMouseEnter={(e) => (e.currentTarget.style.transform = "scale(1.15)")}
+                    onMouseLeave={(e) => (e.currentTarget.style.transform = "scale(1)")}
+                  >
+                    <img src="/assets/icons/history-user-page/edit.svg" alt="" style={{ width: "18px", height: "18px" }} />
+                  </button>
                 </span>
                 <Field label="性别：" value={currentUser.gender || "—"} />
                 <Field label="鞋码：" value={formatShoeSize(currentUser.shoeSize)} />
                 <Field label="年龄：" value={age != null ? `${age}岁` : "—"} />
-                <Field label="身高：" value={currentUser.height != null ? `${currentUser.height}cm` : "—"} />
-                <Field label="体重：" value={currentUser.weight != null ? `${currentUser.weight}kg` : "—"} />
-                {/* 编辑图标（橙色原色，点击弹编辑资料弹窗） */}
-                <button
-                  onClick={() => setShowEdit(true)}
-                  title="编辑资料"
-                  style={{ border: "none", background: "none", cursor: "pointer", padding: "4px", display: "flex", alignItems: "center", transition: "transform 0.15s" }}
-                  onMouseEnter={(e) => (e.currentTarget.style.transform = "scale(1.15)")}
-                  onMouseLeave={(e) => (e.currentTarget.style.transform = "scale(1)")}
-                >
-                  <img src="/assets/icons/history-user-page/edit.svg" alt="" style={{ width: "18px", height: "18px" }} />
-                </button>
+                <Field label="手机号：" value={maskPhone(currentUser.phone) || "—"} />
+                <Field label="邮箱地址：" value={maskEmail(currentUser.email) || "—"} />
               </div>
 
-              {/* 右侧：删除用户 */}
+              {/* 卡内右侧：删除用户（设计稿位置） */}
               <button
                 onClick={() => setConfirmAction({ type: "user" })}
-                style={{ border: "none", background: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", padding: "0 26px", fontSize: "15px", fontWeight: 600, color: "#FF8400", whiteSpace: "nowrap" }}
+                style={{ border: "none", background: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px", padding: "0 26px", fontSize: "15px", fontWeight: 600, color: "#FF8400", whiteSpace: "nowrap", flexShrink: 0 }}
               >
                 删除用户
                 <img src="/assets/icons/history-user-page/delete.svg" alt="" style={{ width: "17px", height: "17px" }} />
@@ -255,13 +260,14 @@ export default function UserRecordsPage({ onBack, onStartMeasure, onOpenReport }
               <span style={{ flex: 1 }}>方案更新时间</span>
             </div>
 
-            {/* 记录列表 */}
+            {/* 记录列表。行外垃圾桶悬挂在内容区右侧之外（-50px = 图标 30 + 间距 20），
+                使记录行卡片右缘与用户卡/表头对齐（同设计稿） */}
             {userRecords.length === 0 ? (
               <div style={{ textAlign: "center", padding: "60px 0", color: "#B07840", fontSize: "15px" }}>
                 暂无测量记录，点击右上角「开始测量」进行第一次测量
               </div>
             ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginRight: "-50px" }}>
                 {userRecords.map((record, index) => (
                   <div key={record.id} style={{ display: "flex", alignItems: "center", gap: "20px" }}>
                     {/* 记录行卡片（设计稿：白底 72 高 / 2px #F6CDA1 边 / 圆角 10 / 阴影） */}

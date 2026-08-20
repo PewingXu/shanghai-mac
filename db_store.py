@@ -46,6 +46,8 @@ def init_db() -> None:
                 height     REAL,
                 weight     REAL,
                 shoe_size  TEXT,                  -- 鞋码（预留，暂占位）
+                phone      TEXT,                  -- 手机号（展示脱敏：前四****尾四；支持尾号搜索）
+                email      TEXT,                  -- 联系邮箱
                 created_at TEXT DEFAULT (datetime('now'))
             )
             """
@@ -68,6 +70,11 @@ def init_db() -> None:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(records)").fetchall()}
         if "raw_path" not in cols:
             conn.execute("ALTER TABLE records ADD COLUMN raw_path TEXT")
+        ucols = {r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "phone" not in ucols:
+            conn.execute("ALTER TABLE users ADD COLUMN phone TEXT")
+        if "email" not in ucols:
+            conn.execute("ALTER TABLE users ADD COLUMN email TEXT")
         # 按用户查历史记录的索引（一人多次采集，WHERE user_id=? 走索引）
         conn.execute("CREATE INDEX IF NOT EXISTS idx_records_user ON records(user_id)")
         conn.commit()
@@ -85,6 +92,8 @@ def _user_to_dict(row: sqlite3.Row) -> dict:
         "height": row["height"],
         "weight": row["weight"],
         "shoeSize": row["shoe_size"],
+        "phone": row["phone"],
+        "email": row["email"],
     }
 
 
@@ -124,7 +133,7 @@ def create_user(data: dict) -> dict:
         else:
             uid = _gen_unique_id(conn)
         conn.execute(
-            "INSERT INTO users (id, name, gender, birth_date, height, weight, shoe_size) VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO users (id, name, gender, birth_date, height, weight, shoe_size, phone, email) VALUES (?,?,?,?,?,?,?,?,?)",
             (
                 uid,
                 (data.get("name") or "").strip() or "未命名",
@@ -133,6 +142,8 @@ def create_user(data: dict) -> dict:
                 data.get("height"),
                 data.get("weight"),
                 data.get("shoeSize"),
+                (data.get("phone") or "").strip() or None,
+                (data.get("email") or "").strip() or None,
             ),
         )
         conn.commit()
@@ -150,7 +161,7 @@ def update_user(data: dict) -> dict | None:
         if not conn.execute("SELECT 1 FROM users WHERE id=?", (uid,)).fetchone():
             return None
         conn.execute(
-            "UPDATE users SET name=?, gender=?, birth_date=?, height=?, weight=?, shoe_size=? WHERE id=?",
+            "UPDATE users SET name=?, gender=?, birth_date=?, height=?, weight=?, shoe_size=?, phone=?, email=? WHERE id=?",
             (
                 (data.get("name") or "").strip() or "未命名",
                 data.get("gender"),
@@ -158,6 +169,8 @@ def update_user(data: dict) -> dict | None:
                 data.get("height"),
                 data.get("weight"),
                 data.get("shoeSize"),
+                (data.get("phone") or "").strip() or None,
+                (data.get("email") or "").strip() or None,
                 uid,
             ),
         )

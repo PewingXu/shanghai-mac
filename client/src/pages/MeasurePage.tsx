@@ -8,56 +8,15 @@ import { deviceManager } from "@/lib/deviceManager";
 import UserFormModal, { type UserFormData } from "@/components/UserFormModal";
 import UserPicker from "@/components/UserPicker";
 import { broadcastException, classifySerialError } from "@/components/ExceptionModal";
-import { parseCSVData, parseJSONCollectionData } from "@/lib/collectionData";
 import { analyzePython, type PythonAnalysisResult } from "@/lib/pythonApi";
 import { computeMliLine } from "@/lib/mli";
 import type { MeasureAnalysis } from "@/contexts/AppContext";
-import * as XLSX from "xlsx";
 
 // 单个传感点面积：传感器 7mm 间距 → 0.7cm × 0.7cm ≈ 0.49 cm²
 const CELL_AREA_CM2 = 0.49;
 // 指标 UI 刷新节流（约 12fps，避免每帧 setState）
 const METRIC_UI_INTERVAL_MS = 80;
 const EMPTY_METRICS = { realtime: 0, average: 0, peak: 0, total: 0 };
-
-/**
- * 从 xlsx 工作簿提取压力帧（每帧 4096 值）。
- * 多 sheet 时优先名字含"静态站立"的；单 sheet 直接用。
- * 行内取第一个解析后长度为 4096 的 *_data 列（如 foot1_data）。
- */
-function extractFramesFromWorkbook(wb: XLSX.WorkBook): number[][] {
-  const names = wb.SheetNames;
-  const target =
-    names.find((n) => n.includes("静态站立")) ??
-    (names.length === 1 ? names[0] : names.find((n) => n.toLowerCase().includes("standing"))) ??
-    names[0];
-  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[target], { defval: "" });
-  const frames: number[][] = [];
-  for (const row of rows) {
-    for (const key of Object.keys(row)) {
-      if (!key.endsWith("_data")) continue;
-      const cell = row[key];
-      if (typeof cell !== "string" || !cell.startsWith("[")) continue;
-      try {
-        const arr = JSON.parse(cell) as number[];
-        if (Array.isArray(arr) && arr.length === 4096 && arr.some((v) => v > 0)) {
-          frames.push(arr);
-          break; // 每行取第一个有效 data 列
-        }
-      } catch {
-        /* 跳过坏行 */
-      }
-    }
-  }
-  return frames;
-}
-
-/** 4096 平铺帧 → 64×64 矩阵（与串口帧回调同构） */
-function reshapeFrame(flat: number[]): number[][] {
-  const m: number[][] = [];
-  for (let r = 0; r < 64; r++) m.push(flat.slice(r * 64, (r + 1) * 64));
-  return m;
-}
 
 /**
  * 对整段采集帧做前端补充统计：平均帧 → 左右脚 MLI、左右 ADC 总和与接触面积。
@@ -97,15 +56,13 @@ function summarizeFrames(frames: number[][]) {
   };
 }
 
-// ===== 后台回放/分析任务（模块级单例，切走页面也持续运行） =====
-type BgPhase = "idle" | "replaying" | "analyzing";
+// ===== 后台分析任务（模块级单例，切走页面也持续运行） =====
+type BgPhase = "idle" | "analyzing";
 interface BgListener {
-  onFrame?: (matrix: number[][], progress: number) => void;
   onPhase?: (phase: BgPhase) => void;
 }
-const bgJob: { phase: BgPhase; timer: number | null; listeners: Set<BgListener> } = {
+const bgJob: { phase: BgPhase; listeners: Set<BgListener> } = {
   phase: "idle",
-  timer: null,
   listeners: new Set(),
 };
 function bgEmitPhase() {
@@ -117,19 +74,9 @@ function subscribeBgJob(l: BgListener) {
     bgJob.listeners.delete(l);
   };
 }
-function stopBgReplay() {
-  if (bgJob.timer !== null) {
-    window.clearInterval(bgJob.timer);
-    bgJob.timer = null;
-  }
-  if (bgJob.phase === "replaying") {
-    bgJob.phase = "idle";
-    bgEmitPhase();
-  }
-}
 /** 完成后通过 "aciki-analysis-done" 事件广播结果（Home 兜底入库，测量页在场则跳报告） */
 async function runBgAnalysis(frames: number[][]) {
-  if (bgJob.phase === "analyzing") return; // 防重（回放完成路径已启动时，done effect 不再重复）
+  if (bgJob.phase === "analyzing") return; // 防重
   bgJob.phase = "analyzing";
   bgEmitPhase();
   const minDelay = new Promise((r) => window.setTimeout(r, 1500));
@@ -151,38 +98,21 @@ async function runBgAnalysis(frames: number[][]) {
   };
   window.dispatchEvent(new CustomEvent("aciki-analysis-done", { detail }));
 }
-function startBgReplay(frames: number[][]) {
-  stopBgReplay();
-  bgJob.phase = "replaying";
-  bgEmitPhase();
-  const n = frames.length;
-  const FRAME_MS = 70;
-  const startAt = performance.now();
-  let last = -1;
-  // 时间戳追帧：后台标签页 setInterval 被节流到 ~1s/次时，每次醒来按真实耗时
-  // 直接跳到应播帧，总时长不变，播完照常触发分析（不会"停住"）
-  bgJob.timer = window.setInterval(() => {
-    const idx = Math.min(n - 1, Math.floor((performance.now() - startAt) / FRAME_MS));
-    if (idx > last) {
-      last = idx;
-      const m = reshapeFrame(frames[idx]);
-      const progress = (idx + 1) / n;
-      bgJob.listeners.forEach((l) => l.onFrame?.(m, progress));
-    }
-    if (idx >= n - 1) {
-      stopBgReplay();
-      void runBgAnalysis(frames);
-    }
-  }, FRAME_MS);
-}
-
 type CollectState = "idle" | "collecting" | "done";
 
-const TOTAL_DURATION_MS = 30000;
+const TOTAL_DURATION_MS = 30000; // 实采固定 30s
 const TOTAL_DURATION_SECONDS = 30;
 const COUNTDOWN_RADIUS = 34;
 const COUNTDOWN_CIRCUMFERENCE = 2 * Math.PI * COUNTDOWN_RADIUS;
-const COUNTDOWN_ARC_LENGTH = COUNTDOWN_CIRCUMFERENCE * 0.75;
+/**
+ * 轨道与进度弧都占整圈的 75%（顶部留缺口）。
+ * 轨道曾在 CSS 里写死 `169.65 56.55`（按 r=36 算的），与这里 r=34 的 160.22 不一致，
+ * 导致进度走到 100% 仍比轨道短一截 —— 视觉上"倒计时归零了但环没读完"。
+ * 现在两者共用此常量，勿再硬编码。
+ */
+const COUNTDOWN_ARC_RATIO = 0.75;
+const COUNTDOWN_ARC_LENGTH = COUNTDOWN_CIRCUMFERENCE * COUNTDOWN_ARC_RATIO;
+const COUNTDOWN_TRACK_DASH = `${COUNTDOWN_ARC_LENGTH} ${COUNTDOWN_CIRCUMFERENCE - COUNTDOWN_ARC_LENGTH}`;
 const COUNTDOWN_DASH_OFFSET = 0;
 const MODEL_SCALE_DEFAULT = 2.4;
 const MODEL_SCALE_STEP = 0.14;
@@ -412,7 +342,6 @@ function MetricPanel({
       <div className="measure-card-row">
         <WaveCard title={heading === "受压面积" ? "平均面积" : "平均压力"} value={values.average} unit={unit} />
         <WaveCard title={heading === "受压面积" ? "峰值面积" : "峰值压力"} value={values.peak} unit={unit} />
-        <WaveCard title={heading === "受压面积" ? "面积总值" : "压力总值"} value={values.total} unit={unit} />
       </div>
     </section>
   );
@@ -515,7 +444,14 @@ export default function MeasurePage({
 }) {
   const { currentUser, setAnalysis, createUser, setCurrentUser, historyUsers } = useApp();
   const [collectState, setCollectState] = useState<CollectState>("idle");
-  // 体验模式点"开始测量"/"导入数据" → 必须先有用户：
+  // 本次采集/回放总时长：实采固定 30s；导入回放 = CSV 帧数 × REPLAY_FRAME_MS（跟数据走）
+  const [durationMs, setDurationMs] = useState(TOTAL_DURATION_MS);
+  const durationMsRef = useRef(TOTAL_DURATION_MS);
+  const setDuration = (ms: number) => {
+    durationMsRef.current = ms;
+    setDurationMs(ms);
+  };
+  // 体验模式点"开始测量" → 必须先有用户：
   // 库里有用户 → 弹"选择体验用户"（历史用户搜索选择 / 创建）；没有 → 直接弹创建表单
   const [showRegister, setShowRegister] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
@@ -712,11 +648,11 @@ export default function MeasurePage({
     };
   }, []);
 
-  const progress = collectState === "done" ? 1 : Math.min(elapsedMs / TOTAL_DURATION_MS, 1);
-  const remaining = Math.max(0, Math.ceil((TOTAL_DURATION_MS - elapsedMs) / 1000));
+  const progress = collectState === "done" ? 1 : Math.min(elapsedMs / durationMs, 1);
+  const remaining = Math.max(0, Math.ceil((durationMs - elapsedMs) / 1000));
 
   const syncCountdownVisual = (elapsed: number, state: CollectState) => {
-    const p = state === "done" ? 1 : Math.min(Math.max(elapsed / TOTAL_DURATION_MS, 0), 1);
+    const p = state === "done" ? 1 : Math.min(Math.max(elapsed / durationMsRef.current, 0), 1);
     const visibleLength = COUNTDOWN_ARC_LENGTH * p;
     progressArcRef.current?.setAttribute(
       "stroke-dasharray",
@@ -724,7 +660,7 @@ export default function MeasurePage({
     );
 
     if (labelRef.current) {
-      const seconds = Math.max(0, Math.ceil((TOTAL_DURATION_MS - elapsed) / 1000));
+      const seconds = Math.max(0, Math.ceil((durationMsRef.current - elapsed) / 1000));
       const prefix =
         state === "done"
           ? "测量完成"
@@ -747,23 +683,21 @@ export default function MeasurePage({
 
   const runCollectingFrame = (now: number) => {
     if (startedAtRef.current === null) startedAtRef.current = now;
-    const elapsed = Math.min(
-      elapsedBeforeStartRef.current + now - startedAtRef.current,
-      TOTAL_DURATION_MS,
-    );
+    const total = durationMsRef.current;
+    const elapsed = Math.min(elapsedBeforeStartRef.current + now - startedAtRef.current, total);
 
     elapsedRef.current = elapsed;
-    syncCountdownVisual(elapsed, elapsed >= TOTAL_DURATION_MS ? "done" : "collecting");
+    syncCountdownVisual(elapsed, elapsed >= total ? "done" : "collecting");
 
-    if (now - lastStateSyncRef.current > 120 || elapsed >= TOTAL_DURATION_MS) {
+    if (now - lastStateSyncRef.current > 120 || elapsed >= total) {
       lastStateSyncRef.current = now;
       setElapsedMs(elapsed);
     }
 
-    if (elapsed >= TOTAL_DURATION_MS) {
+    if (elapsed >= total) {
       stopRaf();
       setCollectState("done");
-      setElapsedMs(TOTAL_DURATION_MS);
+      setElapsedMs(total);
     }
   };
 
@@ -780,8 +714,14 @@ export default function MeasurePage({
     return () => stopRaf();
   }, []);
 
-  // 空闲 → 开始一次正式采集
+  // 空闲 → 开始一次正式采集（实采需要设备在线）
   const beginCollect = () => {
+    // 设备未连接就开始只会空转倒数（选完用户直接倒数的 bug 即此）：拦下并提示
+    if (!deviceManager.isConnected()) {
+      broadcastException("disconnected");
+      return;
+    }
+    setDuration(TOTAL_DURATION_MS); // 实采固定 30s（回放可能改过时长，这里恢复）
     elapsedBeforeStartRef.current = 0;
     elapsedRef.current = 0;
     setElapsedMs(0);
@@ -791,38 +731,25 @@ export default function MeasurePage({
     startCollectTimer();
   };
 
-  // 登记/选择用户的来源动作：开始测量 / 导入数据（完成后接着做对应的事）
-  const registerIntentRef = useRef<"collect" | "import">("collect");
-
-  // 用户就位后按来源继续：开始测量 → 直接开始采集；导入数据 → 打开文件选择框
-  const continuePendingAction = () => {
-    if (registerIntentRef.current === "import") {
-      fileInputRef.current?.click();
-    } else {
-      beginCollect();
-    }
-  };
-
   // 需要用户时的统一入口：库里有用户 → 选择界面；没有 → 直接创建表单
-  const requireUser = (intent: "collect" | "import") => {
-    registerIntentRef.current = intent;
+  const requireUser = () => {
     if (historyUsers.length > 0) setShowPicker(true);
     else setShowRegister(true);
   };
 
-  // 创建完成：入库设为当前用户（ID 服务端自增分配）→ 关弹窗 → 继续来源动作
+  // 创建完成：入库设为当前用户（ID 服务端自增分配）→ 关弹窗 → 开始采集
   const handleRegister = async (data: UserFormData) => {
     const user = await createUser(data);
     setCurrentUser(user);
     setShowRegister(false);
-    continuePendingAction();
+    beginCollect();
   };
 
-  // 选择历史用户完成（点"开始体验"）：设为当前用户 → 关选择界面 → 继续来源动作
+  // 选择历史用户完成（点"开始体验"）：设为当前用户 → 关选择界面 → 开始采集
   const handlePickUser = (user: (typeof historyUsers)[number]) => {
     setCurrentUser(user);
     setShowPicker(false);
-    continuePendingAction();
+    beginCollect();
   };
 
   const handleCollectClick = () => {
@@ -837,64 +764,42 @@ export default function MeasurePage({
       return;
     }
 
+    // 实采需要设备在线：先查设备再选用户（免得选完用户才提示设备没连）
+    if (!deviceManager.isConnected()) {
+      broadcastException("disconnected");
+      return;
+    }
     // 体验模式（未选定用户）→ 正式采集前先选择/创建用户；完成后自动开始采集
     if (!currentUser) {
-      requireUser("collect");
+      requireUser();
       return;
     }
     beginCollect();
   };
 
-  // ===== 导入数据回放（xlsx/csv/json，后台 job 驱动，切走页面也继续跑） =====
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [replaying, setReplaying] = useState(false);
-
   const resetCollecting = () => {
     stopRaf();
-    stopBgReplay();
-    setReplaying(false);
     startedAtRef.current = null;
     elapsedBeforeStartRef.current = 0;
     elapsedRef.current = 0;
     setElapsedMs(0);
+    setDuration(TOTAL_DURATION_MS); // 回到空闲：恢复默认 30s 显示
     setCollectState("idle");
     resetMetrics();
   };
 
-  /** 逐帧回放：后台 job 播帧（组件订阅刷 UI），完毕后台自动分析并广播结果 */
-  const startReplay = (frames: number[][]) => {
-    if (frames.length === 0) return;
-    stopRaf();
-    resetMetrics();
-    elapsedRef.current = 0;
-    setElapsedMs(0);
-    setCollectState("collecting");
-    setReplaying(true);
-    startBgReplay(frames);
-  };
-
-  // 订阅后台 job：帧 → 复用串口管线刷 UI；相位变化 → 同步采集状态；挂载时恢复进行中的任务
+  // 订阅后台分析 job：相位变化 → 同步"生成报告"状态；挂载时恢复进行中的分析
   const handleFrameRef = useRef<(m: number[][]) => void>(() => {});
   handleFrameRef.current = handleFrame;
   useEffect(() => {
-    // 挂载恢复：切回来时接上还在跑的回放/分析
-    if (bgJob.phase === "replaying") {
-      setCollectState("collecting");
-      setReplaying(true);
-    } else if (bgJob.phase === "analyzing") {
+    // 挂载恢复：切回来时接上还在跑的分析
+    if (bgJob.phase === "analyzing") {
       setCollectState("done");
       setGenerating(true);
     }
     return subscribeBgJob({
-      onFrame: (m, progress) => {
-        handleFrameRef.current(m);
-        const elapsed = Math.round(progress * TOTAL_DURATION_MS);
-        elapsedRef.current = elapsed;
-        setElapsedMs(elapsed);
-      },
       onPhase: (phase) => {
-        setReplaying(phase === "replaying");
-        if (phase === "analyzing") setCollectState("done"); // 回放播完 → 进入生成报告
+        if (phase === "analyzing") setCollectState("done");
       },
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -916,27 +821,6 @@ export default function MeasurePage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleImportFile = async (file: File) => {
-    try {
-      let frames: number[][] = [];
-      const name = file.name.toLowerCase();
-      if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
-        const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
-        frames = extractFramesFromWorkbook(wb);
-      } else if (name.endsWith(".csv")) {
-        frames = parseCSVData(await file.text());
-      } else {
-        frames = parseJSONCollectionData(await file.text());
-      }
-      if (frames.length === 0) {
-        window.alert("未在文件中找到有效的压力帧数据（需 4096 值/帧，xlsx 需含『静态站立』sheet 的 *_data 列）");
-        return;
-      }
-      startReplay(frames);
-    } catch (err) {
-      window.alert(`导入失败：${err instanceof Error ? err.message : String(err)}`);
-    }
-  };
 
   const zoomModel = (direction: 1 | -1) => {
     setModelScale((value) => {
@@ -1066,35 +950,6 @@ export default function MeasurePage({
           >
             {connecting ? "连接中…" : deviceConnected ? "断开设备" : "连接设备"}
           </button>
-          <button
-            className="measure-connect-btn"
-            type="button"
-            onClick={() => {
-              if (replaying) {
-                resetCollecting();
-                return;
-              }
-              // 导入回放同样出报告/入库 → 与开始采集一致：必须先选择/创建用户
-              if (!currentUser) {
-                requireUser("import");
-                return;
-              }
-              fileInputRef.current?.click();
-            }}
-          >
-            {replaying ? "停止回放" : "导入数据"}
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".xlsx,.xls,.csv,.json"
-            style={{ display: "none" }}
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) void handleImportFile(f);
-              e.target.value = ""; // 允许重复选择同一文件
-            }}
-          />
         </div>
         <div className="measure-footer-right">
           <span className="measure-current-user">
