@@ -1516,9 +1516,9 @@ export default function ReportPage({ onNext, onHistory, onBack, onStepBack }: { 
           font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
           color: #1f1f1f;
         }
-        /* 3D 场景地面网格（同方案页 3D 查看器 gridHelper 的观感）：
-           透视平铺、无边界——四边延伸出视口、线色全强度、仅最远端轻淡出
-           防地平线灰带。与测量页 .measure-grid-bg 同参数。 */
+        /* 3D 场景地面网格（设计图效果）：透视平铺、无边界、底部清晰
+           【向上渐浅】。线色全强度 0.30、只靠 mask 渐变（勿再叠 opacity）。
+           与测量页 .measure-grid-bg 同参数。 */
         .report-grid-bg {
           position: fixed;
           left: -30vw;
@@ -1532,8 +1532,8 @@ export default function ReportPage({ onNext, onHistory, onBack, onStepBack }: { 
           background-size: 40px 40px;
           transform-origin: center top;
           transform: perspective(1100px) rotateX(52deg);
-          -webkit-mask-image: linear-gradient(to top, #000 0%, #000 86%, transparent 100%);
-          mask-image: linear-gradient(to top, #000 0%, #000 86%, transparent 100%);
+          -webkit-mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.35) 62%, transparent 96%);
+          mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.35) 62%, transparent 96%);
           z-index: 0;
         }
         .report-main {

@@ -1023,11 +1023,10 @@ const measureStyles = `
     overflow: hidden;
   }
 
-  /* 3D 场景地面网格（同方案页 3D 查看器 gridHelper 的观感）：
-     透视平铺、无边界——网格四边都延伸出视口，起点(top)在视口外，
-     不再有"网格从中途开始"的边界感；线色全强度（原版 opacity .5 + 全程
-     渐隐 mask 等效只剩 ~0.16，是"很浅"的根源）。仅最远端一小段淡出，
-     避免透视地平线处网格挤成灰带。 */
+  /* 3D 场景地面网格（设计图效果）：透视平铺、无边界（四边延伸出视口）、
+     底部清晰【向上渐浅】——上部元素（色条/标题）背后自然干净。
+     线色保持全强度 0.30，只靠 mask 做纵向渐变（原版还叠了 opacity .5，
+     等效浓度仅 ~0.16，整体发虚——不要再加回去）。 */
   .measure-grid-bg {
     position: fixed;
     left: -30vw;
@@ -1041,8 +1040,8 @@ const measureStyles = `
     background-size: 40px 40px;
     transform-origin: center top;
     transform: perspective(1100px) rotateX(52deg);
-    -webkit-mask-image: linear-gradient(to top, #000 0%, #000 86%, transparent 100%);
-    mask-image: linear-gradient(to top, #000 0%, #000 86%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.35) 62%, transparent 96%);
+    mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.35) 62%, transparent 96%);
     z-index: 0;
   }
 
@@ -1493,7 +1492,7 @@ const measureStyles = `
   .measure-card-large {
     height: clamp(136px, 15.74vh, 170px);
     margin-bottom: clamp(8px, 1.1vh, 12px);
-    background: rgba(255, 255, 255, 0.94);
+    background: #ffffff; /* 实色：设计图卡片不透背景网格 */
   }
 
   .measure-card-top {
