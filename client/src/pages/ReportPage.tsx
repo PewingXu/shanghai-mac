@@ -1511,29 +1511,20 @@ export default function ReportPage({ onNext, onHistory, onBack, onStepBack }: { 
           width: 100vw;
           height: 100vh;
           overflow: hidden;
-          background:
-            linear-gradient(180deg, rgba(255, 250, 240, 0.98) 0%, rgba(255, 255, 255, 0.98) 66%, #ffffff 100%),
-            #fffdf8;
+          /* 与方案页同款：白 → 底部淡橙 #FFF4EC 渐变 */
+          background: linear-gradient(180deg, #FFFFFF 0%, #FFFFFF 42.5%, #FFF4EC 100%);
           font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
           color: #1f1f1f;
         }
+        /* 方案页同款网格底纹（正交平铺、无透视无渐隐），无边界铺满全屏 */
         .report-grid-bg {
           position: fixed;
-          left: -18vw;
-          right: -18vw;
-          top: 150px;
-          bottom: -42vh;
+          inset: 0;
           pointer-events: none;
           background:
-            linear-gradient(rgba(184, 177, 166, 0.32) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(184, 177, 166, 0.3) 1px, transparent 1px);
-          background-size: 26px 26px;
-          transform-origin: center top;
-          transform: perspective(1180px) rotateX(54deg) translateY(12px) scaleX(1.04) scaleY(1.04);
-          opacity: 0.5;
-          /* 自下而上渐隐：底部清晰、越往上越淡 */
-          -webkit-mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.35) 62%, transparent 96%);
-          mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.35) 62%, transparent 96%);
+            linear-gradient(rgba(180, 150, 110, 0.10) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(180, 150, 110, 0.10) 1px, transparent 1px);
+          background-size: 22px 22px;
           z-index: 0;
         }
         .report-main {
