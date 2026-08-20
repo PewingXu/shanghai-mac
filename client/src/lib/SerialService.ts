@@ -1,16 +1,19 @@
 export type BaudRate = 3000000 | 6000000;
 
 /**
- * 帧上下翻转开关：真机足垫（45Hz）站上去热力图上下颠倒，在帧入口统一翻正，
- * 显示与送 Python 分析的数据同源同向。
+ * 帧方向校正开关：真机足垫（45Hz）的传感器原点在显示坐标系的对角——站上去
+ * 热力图上下颠倒、抬左脚灭的是右脚模。两个开关都开 = 帧 180° 旋转，在帧入口
+ * 统一翻正，显示与送 Python 分析的数据同源同向（左右脚指标才不会张冠李戴）。
  *
  * 轴向注意：显示管线（2D 网格与 3D 贴图）都做了转置 display[r][c] = raw[c][r]，
  * 即【屏幕纵向 = 帧的列方向】【屏幕横向 = 帧的行方向，双脚按行 0-31/32-63 切分】。
- * 所以"上下翻转"必须反转帧的【列】（c → 63-c）；反转行会变成左右镜像+左右脚调换。
- * 若真机左右也反，再叠加行反转即可。串口桥（deviceManager.handleBridgeFrame）与
- * Web Serial 兜底（本文件 processData）共用此开关，务必保持一致。
+ * - FRAME_FLIP_VERTICAL：反转帧的列（c → 63-c）= 屏幕上下翻转
+ * - FRAME_FLIP_HORIZONTAL：反转帧的行（r → 63-r）= 屏幕左右镜像 + 双脚对调
+ * 串口桥（deviceManager.handleBridgeFrame）与 Web Serial 兜底（本文件
+ * processData）共用这两个开关，务必保持一致。
  */
 export const FRAME_FLIP_VERTICAL = true;
+export const FRAME_FLIP_HORIZONTAL = true;
 
 // 设备身份查询指令（同旧交付系统 serialServer.js 的 portWirte）："AT+NAME=ESP32\r\n"
 // 设备收到后在数据流中回复文本 "Unique ID: <设备码> ... Versions: ..."
@@ -325,11 +328,12 @@ export class SerialService {
       let nonZeroCount = 0;
       
       for (let r = 0; r < this.ROWS; r++) {
+        // 帧方向校正（真机 180° 旋转），见 FRAME_FLIP_* 开关注释
+        const srcRow = FRAME_FLIP_HORIZONTAL ? this.ROWS - 1 - r : r;
         const row: number[] = [];
         for (let c = 0; c < this.COLS; c++) {
-          // 列反转 = 屏幕上下翻转（显示管线转置了帧，见 FRAME_FLIP_VERTICAL 注释）
           const srcCol = FRAME_FLIP_VERTICAL ? this.COLS - 1 - c : c;
-          let val = wsPointData[r * this.COLS + srcCol];
+          let val = wsPointData[srcRow * this.COLS + srcCol];
           
           // 滤波：小于等于阈值的数据置为0（去除底噪，例如默认 ADC≤25 视为噪声）
           if (val <= this.filterThreshold) {

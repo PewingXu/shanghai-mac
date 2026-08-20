@@ -14,7 +14,12 @@
  *
  * 连接状态通过 "aciki-device-status" 事件 + localStorage 广播，页面各自订阅。
  */
-import { SerialService, normalizeDeviceCode, FRAME_FLIP_VERTICAL } from "./SerialService";
+import {
+  SerialService,
+  normalizeDeviceCode,
+  FRAME_FLIP_VERTICAL,
+  FRAME_FLIP_HORIZONTAL,
+} from "./SerialService";
 import { broadcastException } from "@/components/ExceptionModal";
 
 // 足垫设备码（设备 Unique ID）。旧系统登记格式为 "330005000251333232353831:foot1"，
@@ -257,8 +262,8 @@ class DeviceManager {
 
   /**
    * 桥帧：4096B 行优先 → 64×64 矩阵，套用与 SerialService 相同的底噪滤波。
-   * FRAME_FLIP_VERTICAL：真机热力图上下颠倒 → 在帧入口反转【列】翻正
-   * （显示管线转置了帧，屏幕纵向=帧列方向；轴向详解见 SerialService 的开关注释）。
+   * FRAME_FLIP_*：真机帧方向校正（180° 旋转，传感器原点在显示坐标系对角；
+   * 轴向详解见 SerialService 的开关注释）。
    * Web Serial 兜底路径（SerialService.processData）连同一台设备，改一起改。
    */
   private handleBridgeFrame(bytes: Uint8Array) {
@@ -266,10 +271,11 @@ class DeviceManager {
     const threshold = this.filterThreshold;
     const matrix: number[][] = [];
     for (let r = 0; r < 64; r++) {
+      const srcRow = FRAME_FLIP_HORIZONTAL ? 63 - r : r;
       const row = new Array<number>(64);
       for (let c = 0; c < 64; c++) {
-        const src = FRAME_FLIP_VERTICAL ? 63 - c : c;
-        const v = bytes[r * 64 + src];
+        const srcCol = FRAME_FLIP_VERTICAL ? 63 - c : c;
+        const v = bytes[srcRow * 64 + srcCol];
         row[c] = v <= threshold ? 0 : v;
       }
       matrix.push(row);
