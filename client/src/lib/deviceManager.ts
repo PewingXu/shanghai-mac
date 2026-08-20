@@ -257,19 +257,19 @@ class DeviceManager {
 
   /**
    * 桥帧：4096B 行优先 → 64×64 矩阵，套用与 SerialService 相同的底噪滤波。
-   * FRAME_FLIP_VERTICAL：真机足垫（45Hz 那台）行扫描方向与屏幕相反——人站上去
-   * 热力图上下颠倒。在帧入口做行反转，显示与送分析的数据同源同向。
-   * （SerialService 的 Web Serial 兜底路径连同一台设备，做了同样的反转，改一起改。）
+   * FRAME_FLIP_VERTICAL：真机热力图上下颠倒 → 在帧入口反转【列】翻正
+   * （显示管线转置了帧，屏幕纵向=帧列方向；轴向详解见 SerialService 的开关注释）。
+   * Web Serial 兜底路径（SerialService.processData）连同一台设备，改一起改。
    */
   private handleBridgeFrame(bytes: Uint8Array) {
     if (bytes.length !== 4096 || !this.onDataCb) return;
     const threshold = this.filterThreshold;
     const matrix: number[][] = [];
     for (let r = 0; r < 64; r++) {
-      const src = FRAME_FLIP_VERTICAL ? 63 - r : r;
       const row = new Array<number>(64);
       for (let c = 0; c < 64; c++) {
-        const v = bytes[src * 64 + c];
+        const src = FRAME_FLIP_VERTICAL ? 63 - c : c;
+        const v = bytes[r * 64 + src];
         row[c] = v <= threshold ? 0 : v;
       }
       matrix.push(row);

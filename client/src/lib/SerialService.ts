@@ -1,10 +1,14 @@
 export type BaudRate = 3000000 | 6000000;
 
 /**
- * 帧上下翻转开关：真机足垫（45Hz）的行扫描方向与屏幕方向相反——人站上去
- * 热力图上下颠倒。在帧入口做行反转（display 行 r 取原始行 63-r），
- * 显示与送 Python 分析的数据同源同向。串口桥路径（deviceManager）与
- * Web Serial 兜底路径共用此开关，务必保持一致。
+ * 帧上下翻转开关：真机足垫（45Hz）站上去热力图上下颠倒，在帧入口统一翻正，
+ * 显示与送 Python 分析的数据同源同向。
+ *
+ * 轴向注意：显示管线（2D 网格与 3D 贴图）都做了转置 display[r][c] = raw[c][r]，
+ * 即【屏幕纵向 = 帧的列方向】【屏幕横向 = 帧的行方向，双脚按行 0-31/32-63 切分】。
+ * 所以"上下翻转"必须反转帧的【列】（c → 63-c）；反转行会变成左右镜像+左右脚调换。
+ * 若真机左右也反，再叠加行反转即可。串口桥（deviceManager.handleBridgeFrame）与
+ * Web Serial 兜底（本文件 processData）共用此开关，务必保持一致。
  */
 export const FRAME_FLIP_VERTICAL = true;
 
@@ -321,11 +325,11 @@ export class SerialService {
       let nonZeroCount = 0;
       
       for (let r = 0; r < this.ROWS; r++) {
-        // 行反转开关见 FRAME_FLIP_VERTICAL 注释（真机行扫描方向与屏幕相反）
-        const srcRow = FRAME_FLIP_VERTICAL ? this.ROWS - 1 - r : r;
         const row: number[] = [];
         for (let c = 0; c < this.COLS; c++) {
-          let val = wsPointData[srcRow * this.COLS + c];
+          // 列反转 = 屏幕上下翻转（显示管线转置了帧，见 FRAME_FLIP_VERTICAL 注释）
+          const srcCol = FRAME_FLIP_VERTICAL ? this.COLS - 1 - c : c;
+          let val = wsPointData[r * this.COLS + srcCol];
           
           // 滤波：小于等于阈值的数据置为0（去除底噪，例如默认 ADC≤25 视为噪声）
           if (val <= this.filterThreshold) {
