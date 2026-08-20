@@ -1446,13 +1446,34 @@ const measureStyles = `
   }
 
   .measure-sidebar {
+    position: relative;
     display: grid;
     align-content: start;
     gap: clamp(22px, 4.2vh, 62px);
     padding-top: clamp(38px, 7vh, 98px);
     min-width: 0;
     min-height: 0;
-    overflow: hidden;
+  }
+
+  /* 指标区实底面板：设计图上"受压面积/压力"区域不透背景网格。
+     用与页面背景同构的渐变（视觉无缝），左边缘羽化——网格线渐渐消失
+     而不是被一条竖线硬切；右侧延伸出屏，盖住栏外余隙。 */
+  .measure-sidebar::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -70px;
+    right: -100vw;
+    background: linear-gradient(180deg, #FFFFFF 0%, #FFFFFF 42.5%, #FFF4EC 100%);
+    -webkit-mask-image: linear-gradient(to right, transparent 0, #000 70px);
+    mask-image: linear-gradient(to right, transparent 0, #000 70px);
+    pointer-events: none;
+  }
+
+  .measure-panel {
+    position: relative;
+    z-index: 1;
   }
 
   .measure-panel h2 {
