@@ -2,9 +2,11 @@
   <defs>
     <linearGradient id="fade" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#fff" stop-opacity="0"/>
-      <stop offset="0.04" stop-color="#fff" stop-opacity="0"/>
-      <stop offset="0.38" stop-color="#fff" stop-opacity="0.35"/>
-      <stop offset="1" stop-color="#fff" stop-opacity="0.9"/>
+      <stop offset="0.06" stop-color="#fff" stop-opacity="0"/>
+      <stop offset="0.14" stop-color="#fff" stop-opacity="0.9"/>
+      <stop offset="0.62" stop-color="#fff" stop-opacity="0.35"/>
+      <stop offset="0.96" stop-color="#fff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
     </linearGradient>
     <mask id="fadeMask">
       <rect x="0" y="0" width="1920" height="1080" fill="url(#fade)"/>
