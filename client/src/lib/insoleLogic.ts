@@ -19,11 +19,20 @@ export interface InsoleParams {
   latticeDensity: number; // 晶格体密度档位 (1-5)
 }
 
-/** 根据足弓指数(AI)返回足弓等级(1-7)及相关信息 */
+/**
+ * 根据足弓指数(AI)返回足弓等级(1-7)及相关信息
+ *
+ * 分档边界以报告页为准。报告显示的是 Python 的 area_type，多帧测量走
+ * OneStep_report.py 的三档表：AI <0.21 高足弓 / 0.21~0.26 正常足弓 / >0.26 扁平足。
+ * 这里的七档必须嵌在那三档里面，否则同一个 AI 两页会给出相反结论
+ * —— 原先 L3/L4 的界写成 0.20，AI 落在 0.20~0.21 时报告判高足弓、方案判正常足，
+ * 左右脚 AI 常差 0.01~0.03，于是经常只有一只脚对不上。界改成 0.21 后：
+ *   L1~L3 ⊂ 高足弓，L4 = 正常足弓，L5~L7 ⊂ 扁平足，方向永不冲突，方案只是分得更细。
+ */
 export function getArchLevelFromAI(archIndex: number): { level: number; type: string; correction: number } {
   if (archIndex <= 0.10) return { level: 1, type: '重度高弓足', correction: 10.0 };
   if (archIndex <= 0.15) return { level: 2, type: '中度高弓足', correction: 8.0 };
-  if (archIndex <= 0.20) return { level: 3, type: '轻度高弓足', correction: 6.0 };
+  if (archIndex < 0.21) return { level: 3, type: '轻度高弓足', correction: 6.0 };
   if (archIndex <= 0.26) return { level: 4, type: '正常足', correction: 2.5 };
   if (archIndex <= 0.31) return { level: 5, type: '轻度扁平足', correction: 4.0 };
   if (archIndex <= 0.36) return { level: 6, type: '中度扁平足', correction: 6.0 };
