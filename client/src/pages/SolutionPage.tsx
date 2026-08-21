@@ -1196,10 +1196,8 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
     }
   };
 
-  // height 固定 100vh（不能 minHeight）：矮屏时内容超高会把整页撑出滚动，
-  // 内容"溢出"到视口外；固定后由右栏内部滚动消化超出部分
   return (
-    <div style={{ height: "100vh", display: "flex", flexDirection: "column", position: "relative", overflow: "hidden", fontFamily: '"PingFang SC","Microsoft YaHei","Helvetica Neue",Arial,sans-serif' }}>
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", position: "relative", overflow: "hidden", fontFamily: '"PingFang SC","Microsoft YaHei","Helvetica Neue",Arial,sans-serif' }}>
       <SplitBackground />
       <SolutionTopBar />
 
@@ -1364,11 +1362,8 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
 
         {/* 右侧：方案面板 */}
         {/* overflow 不能 hidden：矮屏（如 768/850 高）下三张卡总高超过可视区，
-            hidden 会把「鞋垫厚度」底部直接裁掉——改为内部滚动（实际高度由
-            main 的 flex 布局限制，maxHeight 只是兜底）。
-            滚动条用标准 scrollbar-color 上橙色（Edge/Chrome 的 Windows 悬浮
-            滚动条会忽略 ::-webkit-scrollbar 自定义，但会应用 scrollbar-color）。 */}
-        <aside className="solution-aside" style={{ width: "440px", minWidth: "420px", display: "flex", flexDirection: "column", gap: "12px", overflowY: "auto", overflowX: "hidden", scrollbarColor: "rgba(255,132,0,0.55) rgba(120,80,30,0.10)", maxHeight: "calc(100vh - 108px)", padding: "2px 8px 0 4px" }}>
+            hidden 会把「鞋垫厚度」底部直接裁掉（内容缺失、观感拥挤）——改为内部滚动 */}
+        <aside style={{ width: "440px", minWidth: "420px", display: "flex", flexDirection: "column", gap: "12px", overflowY: "auto", overflowX: "hidden", scrollbarWidth: "thin", maxHeight: "calc(100vh - 150px)", padding: "2px 8px 0 4px" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "2px" }}>
             <span style={{ fontSize: "18px", fontWeight: 800, color: "#17191C" }}>{sideLabel}脚解决方案</span>
             <button
