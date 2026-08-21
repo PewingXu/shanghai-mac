@@ -1361,7 +1361,9 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
         </section>
 
         {/* 右侧：方案面板 */}
-        <aside style={{ width: "440px", minWidth: "420px", display: "flex", flexDirection: "column", gap: "12px", overflow: "hidden", maxHeight: "calc(100vh - 150px)", padding: "2px 8px 0 4px" }}>
+        {/* overflow 不能 hidden：矮屏（如 768/850 高）下三张卡总高超过可视区，
+            hidden 会把「鞋垫厚度」底部直接裁掉（内容缺失、观感拥挤）——改为内部滚动 */}
+        <aside style={{ width: "440px", minWidth: "420px", display: "flex", flexDirection: "column", gap: "12px", overflowY: "auto", overflowX: "hidden", scrollbarWidth: "thin", maxHeight: "calc(100vh - 150px)", padding: "2px 8px 0 4px" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "2px" }}>
             <span style={{ fontSize: "18px", fontWeight: 800, color: "#17191C" }}>{sideLabel}脚解决方案</span>
             <button
