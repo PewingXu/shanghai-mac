@@ -8,9 +8,8 @@
 
 为什么是静态 SVG：网格若做成 fixed+3D transform+mask 的 DOM 层，会触发
 Chromium 合成层排序 bug 盖到页面内容上（卡片"透明"假象）。烘成 SVG 后
-作为 shell 元素的背景图，物理上永远画在内容之下。渐浅用 SVG 内部
-mask 实现（当前方向：顶部清晰、从上往下渐浅；地平线汇聚点处留 6-14%
-一小段渐入，避免透视线在消失点挤成一团），无跨元素合成问题。
+作为 shell 元素的背景图，物理上永远画在内容之下。向上渐浅用 SVG 内部
+mask 实现，无跨元素合成问题。
 """
 import os
 
@@ -48,11 +47,9 @@ svg = f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" preserve
   <defs>
     <linearGradient id="fade" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#fff" stop-opacity="0"/>
-      <stop offset="0.06" stop-color="#fff" stop-opacity="0"/>
-      <stop offset="0.14" stop-color="#fff" stop-opacity="0.9"/>
-      <stop offset="0.62" stop-color="#fff" stop-opacity="0.35"/>
-      <stop offset="0.96" stop-color="#fff" stop-opacity="0"/>
-      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+      <stop offset="0.04" stop-color="#fff" stop-opacity="0"/>
+      <stop offset="0.38" stop-color="#fff" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0.9"/>
     </linearGradient>
     <mask id="fadeMask">
       <rect x="0" y="0" width="{W}" height="{H}" fill="url(#fade)"/>
