@@ -28,6 +28,7 @@ import {
   type ShellPairInfo,
 } from "@/lib/shoeShell";
 import ShellPickerDrawer from "@/components/ShellPickerDrawer";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import {
   apiListShells,
   apiSaveRecordSolution,
@@ -222,13 +223,14 @@ function SplitBackground() {
 }
 
 // ─── 通用子组件 ───────────────────────────────────────────────────────────────
-function SectionTitle({ zh, en, right, info = true }: { zh: string; en: string; right?: React.ReactNode; info?: boolean }) {
+// tip 给了才画 ⓘ —— 原来是个光秃秃的 info 布尔，图标画得出来但鼠标移上去没反应
+function SectionTitle({ zh, en, right, tip }: { zh: string; en: string; right?: React.ReactNode; tip?: string }) {
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
         <span style={{ fontSize: "16px", fontWeight: 800, color: "#17191C", letterSpacing: "0.02em" }}>{zh}</span>
         <span style={{ fontSize: "12px", color: "#A4906C", fontWeight: 500 }}>{en}</span>
-        {info && <InfoIcon />}
+        {tip && <InfoTip text={tip} />}
       </div>
       {right}
     </div>
@@ -243,14 +245,80 @@ function Card({ children }: { children: React.ReactNode }) {
   );
 }
 
-// ⓘ 信息图标
+// ⓘ 信息图标（透明度交给外层 InfoTip 控制，避免与 hover 态相乘）
 function InfoIcon({ size = 14 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, opacity: 0.55 }}>
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, display: "block" }}>
       <circle cx="8" cy="8" r="7" stroke="#9A8158" strokeWidth="1.2" />
       <circle cx="8" cy="4.6" r="0.9" fill="#9A8158" />
       <rect x="7.2" y="6.6" width="1.6" height="5" rx="0.8" fill="#9A8158" />
     </svg>
+  );
+}
+
+/**
+ * 参数说明文案：讲「调它会发生什么」，不是重复标题。
+ * 数值区间与推荐值都取自实际算法（insoleLogic 的分级/硬度表、baseThicknessCmForSize 的鞋码换算），
+ * 别在这儿另写一套，否则文案和滑块能调到的范围会对不上。
+ */
+/**
+ * 参数说明文案：一律讲这个值「依据什么定出来的」，不写「调大支撑更强」那类话
+ * —— 这几项都是按测量结果算出来的，越大越好的暗示是错的。
+ *
+ * 文案沿用旧项目 foot-pressure-report（做新 UI 时整块丢掉了）：
+ *  - archCorrection / base 取自那边的 PARAMETER_EXPLANATIONS，base 后半句换成「由鞋码换算得到」
+ *  - arch 取自那边「足弓分级参考」面板表格下方那句 ⓘ 说明
+ *  - heel 同样出自 PARAMETER_EXPLANATIONS，原文 80 字，压到与 archCorrection 相当的长度
+ *  - hardness 那边没有，按同一句式新写；依据是 getZoneHardness/getInsoleHardness 的三区取平均
+ *
+ * 卡标题「鞋垫厚度」与抽屉小节「软硬调节」不挂说明：它们是分组标题而非参数，
+ * 该讲的都在下面各行里，标题上再挂一枚只是重复。
+ */
+const TIP = {
+  arch: "足弓指数（AI）是基于静态足印面积计算的经典指标，至今仍是判断高足弓与扁平足的金标准。",
+  archCorrection: "依据舟骨下降理论，结合舒适度修正系数，并参考用户足弓高度计算得到，用于在支撑效果与穿着舒适度之间取得平衡。",
+  base: "依据传感器材料特性与穿着舒适度设定，并由鞋码换算得到，是鞋垫整体支撑与缓冲的基础参数。",
+  baseAdaptive: "依据传感器材料特性与穿着舒适度设定，并按左右脚压力占比分配，是鞋垫整体支撑与缓冲的基础参数。",
+  heel: "以 10mm 为基础值，参考足跟脂肪垫平均压缩量设定；足型越偏离正常，给予的后跟缓冲通常越多。",
+  hardness: "依据足弓等级对应的前掌、足弓、后跟三区推荐硬度取平均得到，用于在吸震缓冲与支撑回弹之间取得平衡。",
+} as const;
+
+/**
+ * ⓘ + 悬停说明。走项目里那套 radix Tooltip（App.tsx 已挂 TooltipProvider，delayDuration=0 即时弹出）。
+ * 用它而不是自己画气泡的原因：内容走 portal 渲染，不会被抽屉的 overflow 或右侧面板裁掉。
+ * z-index 显式压过抽屉(40)和顶栏(100)，否则靠上/靠下的几条会被盖住。
+ */
+function InfoTip({ text, size = 14 }: { text: string; size?: number }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          onMouseEnter={() => setHover(true)}
+          onMouseLeave={() => setHover(false)}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            flexShrink: 0,
+            cursor: "help",
+            opacity: hover ? 1 : 0.55,
+            transition: "opacity 0.15s",
+          }}
+        >
+          <InfoIcon size={size} />
+        </span>
+      </TooltipTrigger>
+      {/* textWrap 显式改回 wrap：气泡默认带 text-balance，会把每行均摊成等长短行，
+          配上固定宽度就成了「文字挤在左边、右边空一条」。宽度写死 260 让多行左右对齐。 */}
+      <TooltipContent
+        side="top"
+        sideOffset={6}
+        className="leading-relaxed"
+        style={{ zIndex: 200, width: 260, textWrap: "wrap", textAlign: "justify" }}
+      >
+        {text}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -282,7 +350,21 @@ function PillButton({ children, onClick, filled }: { children: React.ReactNode; 
 // ─── 足弓状态光谱条 ───────────────────────────────────────────────────────────
 const ARCH_LABELS = ["重度高弓", "中度高弓", "轻度高弓", "正常足", "轻度扁平", "中度扁平", "重度扁平"];
 
-function ArchSpectrum({ params }: { params: InsoleParams }) {
+/**
+ * 足弓状态卡的中性配色（对齐设计稿 image.png）。
+ * 此前解读框/建议框走的是页面那套暖褐色（#F7F4EF / #FBEFDD + 褐字），
+ * 与光谱条的红黄绿放在一起互相抢；改成中性浅灰底 + 白底建议框 + 深灰正文，
+ * 颜色只留给光谱条与等级本身。
+ */
+const ARCH_C = {
+  readBg: "#F7F7F8",
+  readBorder: "#EDEDEE",
+  text: "#3D3D3D",
+  sugBg: "#FFFFFF",
+  sugBorder: "#E6E6E7",
+};
+
+function ArchSpectrum({ params, sideLabel }: { params: InsoleParams; sideLabel: string }) {
   const level = params.archLevel; // 1-7
   const levelColor = getArchLevelColor(level);
   // 三角标记定位在第 level 段中心
@@ -291,42 +373,34 @@ function ArchSpectrum({ params }: { params: InsoleParams }) {
 
   return (
     <div>
-      {/* 渐变光谱条 + 下三角标记 */}
-      <div style={{ position: "relative", marginTop: "14px", marginBottom: "7px" }}>
+      {/* 渐变光谱条 + 下三角标记。7 段紧挨、整条统一圆角（设计稿是一条连续色带，段间无白缝） */}
+      <div style={{ position: "relative", marginTop: "14px", marginBottom: "6px" }}>
         {/* 三角标记 */}
-        <div style={{ position: "absolute", top: "-12px", left: `${markerPct}%`, transform: "translateX(-50%)" }}>
+        <div style={{ position: "absolute", top: "-11px", left: `${markerPct}%`, transform: "translateX(-50%)" }}>
           <div style={{ width: 0, height: 0, borderLeft: "6px solid transparent", borderRight: "6px solid transparent", borderTop: `8px solid ${levelColor}` }} />
         </div>
-        <div style={{ display: "flex", gap: "3px" }}>
-          {[1, 2, 3, 4, 5, 6, 7].map((l, i) => (
-            <div
-              key={l}
-              style={{
-                flex: 1,
-                height: "11px",
-                background: getArchLevelColor(l),
-                borderRadius: i === 0 ? "6px 0 0 6px" : i === 6 ? "0 6px 6px 0" : 0,
-              }}
-            />
+        <div style={{ display: "flex", height: "12px", borderRadius: "6px", overflow: "hidden" }}>
+          {[1, 2, 3, 4, 5, 6, 7].map((l) => (
+            <div key={l} style={{ flex: 1, background: getArchLevelColor(l) }} />
           ))}
         </div>
       </div>
-      {/* 7 标签 */}
+      {/* 7 标签：各自染成所属等级的颜色，当前等级加粗 */}
       <div style={{ display: "flex", marginBottom: "10px" }}>
         {ARCH_LABELS.map((t, i) => (
-          <span key={t} style={{ flex: 1, textAlign: "center", fontSize: "10px", color: i === level - 1 ? levelColor : "#7A6647", fontWeight: i === level - 1 ? 700 : 400 }}>{t}</span>
+          <span key={t} style={{ flex: 1, textAlign: "center", fontSize: "10px", color: getArchLevelColor(i + 1), fontWeight: i === level - 1 ? 700 : 500 }}>{t}</span>
         ))}
       </div>
       {/* 解读框 */}
-      <div style={{ background: "#F7F4EF", borderRadius: "10px", padding: "10px 14px" }}>
-        <p style={{ margin: "0 0 5px", fontSize: "12px", color: "#5A4A30", lineHeight: 1.6 }}>
-          详细解读：足弓状态处于足弓分级中的 L{level} 等级
+      <div style={{ background: ARCH_C.readBg, border: `1px solid ${ARCH_C.readBorder}`, borderRadius: "10px", padding: "10px 14px" }}>
+        <p style={{ margin: "0 0 5px", fontSize: "12px", color: ARCH_C.text, lineHeight: 1.6 }}>
+          详细解读：{sideLabel}脚足弓状态处于足弓分级中的 L{level} 等级
           <span style={{ color: levelColor, fontWeight: 700 }}>{params.archType}</span>；
         </p>
-        <p style={{ margin: "0 0 9px", fontSize: "12px", color: "#5A4A30", lineHeight: 1.6 }}>
+        <p style={{ margin: "0 0 9px", fontSize: "12px", color: ARCH_C.text, lineHeight: 1.6 }}>
           {getArchDesignLogic(level)}。
         </p>
-        <div style={{ background: "#FBEFDD", borderRadius: "8px", padding: "8px 12px", fontSize: "12px", color: "#7A5A28", textAlign: "center", lineHeight: 1.5 }}>
+        <div style={{ background: ARCH_C.sugBg, border: `1px solid ${ARCH_C.sugBorder}`, borderRadius: "8px", padding: "8px 12px", fontSize: "12px", color: ARCH_C.text, textAlign: "center", lineHeight: 1.5 }}>
           建议：足弓矫正厚度+{params.archCorrection}mm；鞋垫基础厚度{baseMm}mm；足跟高度{params.heelThickness}mm。
         </div>
       </div>
@@ -405,6 +479,7 @@ function StepperSliderRow({
   tightHints,
   systemValue,
   noSlider,
+  tip,
   onChange,
 }: {
   label: string;
@@ -418,6 +493,7 @@ function StepperSliderRow({
   tightHints?: boolean;
   systemValue?: number;
   noSlider?: boolean;
+  tip?: string;
   onChange: (v: number) => void;
 }) {
   const clamp = (v: number) => Math.max(min, Math.min(max, Math.round(v / step) * step));
@@ -439,6 +515,12 @@ function StepperSliderRow({
   const fillStart = Math.min(zeroPct, valuePct);
   const fillEnd = Math.max(zeroPct, valuePct);
   const fillColor = value >= 0 ? C.primary : "#4A90D9";
+  // 填充的两端要贴到轨道真实边缘。圆钮是内缩定位的（0% 落在 9px 处），
+  // 填充照抄 posX 的话最左/最右各有 9px（半个圆钮）永远不着色 ——
+  // 把滑块拉到最小值时那截浅色轨道就露在最左边，看着像「拉到 0 了最左侧还有空余」。
+  // 端点用 0 而不是 posX(0)/posX(100)，中间值仍对齐圆钮圆心。
+  const fillLeftCss = fillStart <= 0.001 ? "0px" : posX(fillStart);
+  const fillRightCss = fillEnd >= 99.999 ? "0px" : `calc(100% - (${posX(fillEnd)}))`;
   // 系统值刻度是否落在已填充(橙/蓝)区间内——被滑块填充覆盖时虚线改白色以保持可见
   const sysCovered = sysPct != null && sysPct >= fillStart - 0.01 && sysPct <= fillEnd + 0.01;
 
@@ -470,7 +552,10 @@ function StepperSliderRow({
   return (
     <div style={{ marginBottom: "16px" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
-        <span style={{ fontSize: "13px", color: C.dark, fontWeight: 500 }}>{label}</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "13px", color: C.dark, fontWeight: 500 }}>
+          {label}
+          {tip && <InfoTip text={tip} size={13} />}
+        </span>
         <span style={{ fontSize: "13px", fontWeight: 700, color: C.primaryDeep, fontFamily: "monospace", background: "rgba(245,166,35,0.12)", padding: "2px 8px", borderRadius: "6px" }}>
           {prefix}{fmtSigned(value)}{unit}
         </span>
@@ -488,7 +573,7 @@ function StepperSliderRow({
           {/* 轨道底（浅褐胶囊） */}
           <div style={{ position: "absolute", inset: 0, borderRadius: "10px", background: "rgba(219,194,168,0.30)" }} />
           {/* 填充：以 0 为锚点，正值橙色向右、负值蓝色向左 */}
-          <div style={{ position: "absolute", top: 0, bottom: 0, left: posX(fillStart), right: `calc(100% - (${KN / 2}px + (100% - ${KN}px) * ${fillEnd / 100}))`, borderRadius: "10px", background: fillColor }} />
+          <div style={{ position: "absolute", top: 0, bottom: 0, left: fillLeftCss, right: fillRightCss, borderRadius: "10px", background: fillColor }} />
           {/* 系统值刻度线 + 标签 */}
           {sysPct != null && (
             <>
@@ -567,8 +652,10 @@ function DeviceBadge() {
 }
 
 // ─── 底部操作栏 ───────────────────────────────────────────────────────────────
-function BottomBar({ userName, userId, onBack, onRestart, onDownload }: {
+function BottomBar({ userName, userId, onBack, onRestart, onDownload, downloadReady }: {
   userName: string; userId: string; onBack?: () => void; onRestart: () => void; onDownload: () => void;
+  /** 鞋垫长宽是否已填齐。未填齐时按钮置灰，但仍可点——点了给出「缺什么」的提示，比死按钮好懂 */
+  downloadReady: boolean;
 }) {
   const linkBtn: React.CSSProperties = { background: "none", border: "none", cursor: "pointer", fontSize: "14px", fontWeight: 600 };
   return (
@@ -577,7 +664,13 @@ function BottomBar({ userName, userId, onBack, onRestart, onDownload }: {
       <span style={{ fontSize: "14px", color: "#5A4A30", marginLeft: "auto" }}>当前用户：{userName} （ID:{userId}）</span>
       <button onClick={onBack} style={{ ...linkBtn, color: "#5A4A30" }}>重新测量</button>
       <button onClick={onRestart} style={{ ...linkBtn, color: "#17191C", textDecoration: "underline", textUnderlineOffset: "3px" }}>结束体验</button>
-      <button onClick={onDownload} style={{ ...linkBtn, color: C.primaryDeep }}>下载文件</button>
+      <button
+        onClick={onDownload}
+        title={downloadReady ? undefined : "请先填写左右脚鞋垫长度和宽度"}
+        style={{ ...linkBtn, color: downloadReady ? C.primaryDeep : "#B9AFA2", cursor: downloadReady ? "pointer" : "not-allowed" }}
+      >
+        下载文件
+      </button>
     </div>
   );
 }
@@ -593,6 +686,7 @@ function ThicknessSliders({ fs, sys, onParams, drawerMode, style }: { fs: FootSt
       {proportional ? (
         <StepperSliderRow
           label="基础厚度（随鞋码）"
+          tip={TIP.base}
           value={fs.params.baseThickness * 10}
           min={20} max={70} step={0.5}
           hints={drawerMode ? undefined : ["20mm", "70mm"]}
@@ -604,6 +698,7 @@ function ThicknessSliders({ fs, sys, onParams, drawerMode, style }: { fs: FootSt
       ) : (
         <StepperSliderRow
           label="基础厚度（压力自适应）"
+          tip={TIP.baseAdaptive}
           value={fs.params.baseThickness * 10}
           min={1.5} max={6} step={0.1}
           hints={drawerMode ? undefined : ["1.5mm", "6.0mm 最大"]}
@@ -615,6 +710,7 @@ function ThicknessSliders({ fs, sys, onParams, drawerMode, style }: { fs: FootSt
       )}
       <StepperSliderRow
         label="足弓矫正厚度"
+        tip={TIP.archCorrection}
         prefix="+"
         value={fs.params.archCorrection}
         min={1} max={12} step={0.1}
@@ -626,6 +722,7 @@ function ThicknessSliders({ fs, sys, onParams, drawerMode, style }: { fs: FootSt
       />
       <StepperSliderRow
         label="足跟缓冲厚度"
+        tip={TIP.heel}
         value={fs.params.heelThickness}
         min={0} max={30} step={1}
         hints={["0mm 无缓冲", "30mm 最大缓冲"]}
@@ -638,12 +735,12 @@ function ThicknessSliders({ fs, sys, onParams, drawerMode, style }: { fs: FootSt
 }
 
 // ─── 厚度胶囊行 ───────────────────────────────────────────────────────────────
-function ThickPillRow({ label, value, adjusted }: { label: string; value: string; adjusted?: boolean }) {
+function ThickPillRow({ label, value, adjusted, tip }: { label: string; value: string; adjusted?: boolean; tip?: string }) {
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#FFF2E4", borderRadius: "12px", padding: "10px 16px", marginBottom: "8px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
         <span style={{ fontSize: "14px", fontWeight: 600, color: "#17191C" }}>{label}</span>
-        <InfoIcon size={13} />
+        {tip && <InfoTip text={tip} size={13} />}
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
         {adjusted && <span style={{ fontSize: "12px", color: C.primaryDeep, fontWeight: 500 }}>已调整</span>}
@@ -672,7 +769,9 @@ function SizeInputRow({ label, value, onChange }: { label: string; value: string
   );
 }
 
-// ─── 自定义顶栏（左白右橙 + 设备连接 + 步骤） ─────────────────────────────────
+// ─── 自定义顶栏（左白右橙 + 步骤） ────────────────────────────────────────────
+// 设备连接徽章只留底部操作栏那一枚：顶栏右上角原本还有一枚，同一页两处同样的标识，
+// 状态一致时纯属重复、不一致时更让人怀疑哪个是真的。
 const SOLUTION_STEPS = [
   { id: 1, label: "创建" },
   { id: 2, label: "测量" },
@@ -685,9 +784,8 @@ function SolutionTopBar() {
     <header style={{ position: "fixed", top: 0, left: 0, right: 0, height: "72px", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 40px", zIndex: 100 }}>
       {/* 左侧 Logo */}
       <img src="/assets/icons/home-page/top-left-logo.svg" alt="ACIKI 动态足底压力解析系统" style={{ height: "48px", objectFit: "contain" }} />
-      {/* 右侧 设备状态 + 步骤 */}
-      <div style={{ display: "flex", alignItems: "center", gap: "26px" }}>
-        <DeviceBadge />
+      {/* 右侧 步骤 */}
+      <div style={{ display: "flex", alignItems: "center" }}>
         <div style={{ display: "flex", alignItems: "center" }}>
           {SOLUTION_STEPS.map((s, i) => (
             <div key={s.id} style={{ display: "flex", alignItems: "center" }}>
@@ -872,7 +970,7 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
   // 保存成功提示（顶部居中绿色胶囊）
   const [savedTip, setSavedTip] = useState(false);
   // 离开守卫弹窗
-  const [confirm, setConfirm] = useState<null | "remeasure" | "finish">(null);
+  const [confirm, setConfirm] = useState<null | "remeasure" | "remeasureSaved" | "finish" | "finishSaved">(null);
   // 用户手填的鞋垫尺寸（默认置空，用于校验；不回写测量参数）
   const [insoleSize, setInsoleSize] = useState<{ left: { length: string; width: string }; right: { length: string; width: string } }>(
     // 有快照就还原当时手填的四个尺寸（它们决定鞋码档 → 厚度基准，必须早于下面的基准 effect 就位）
@@ -968,7 +1066,8 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
       right: restoreFoot(snap.feet.right, baseline.right),
     });
     setDraft(null);
-    toast.info("已载入这次测量保存过的方案参数");
+    // 这里不弹 toast：历史回看本来就该直接呈现当时的参数，参数是否被调过卡上已有「已调整」角标，
+    // 再来一句「已载入…」只是重复，且每次进页面都弹。
   }, [defaults]);
 
   /**
@@ -1168,16 +1267,37 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
   };
   const cancelDraft = () => { setDraft(null); setOverlay("main"); };
 
-  // ── 离开守卫：鞋垫尺寸是否已填满四项 ──
+  // ── 离开守卫 / 下载闸门：鞋垫尺寸四项是否都填了、且都在合理区间内 ──
+  // 只判「非空」不够：填个 2cm 会被 pickSize 静默回退成测量值，页面显示 26cm、
+  // 用户以为自己填过了，导出的却不是他填的那双。区间判据与 pickSize 保持同一套。
+  const sizeOk = (raw: string, min: number, max: number) => {
+    const v = parseFloat(raw);
+    return raw.trim() !== "" && v >= min && v <= max;
+  };
   const sizesFilled =
-    !!insoleSize.left.length && !!insoleSize.left.width &&
-    !!insoleSize.right.length && !!insoleSize.right.width;
-  // 离场即存：两个弹窗的文案已经承诺「自动保存到历史记录」，尺寸填没填都要存
-  const handleRemeasure = () => { persistSolution(); if (sizesFilled) onBack?.(); else setConfirm("remeasure"); };
-  const handleFinish = () => { persistSolution(); if (sizesFilled) onRestart(); else setConfirm("finish"); };
+    sizeOk(insoleSize.left.length, SIZE_MIN.lenCm, SIZE_MAX.lenCm) &&
+    sizeOk(insoleSize.left.width, SIZE_MIN.widCm, SIZE_MAX.widCm) &&
+    sizeOk(insoleSize.right.length, SIZE_MIN.lenCm, SIZE_MAX.lenCm) &&
+    sizeOk(insoleSize.right.width, SIZE_MIN.widCm, SIZE_MAX.widCm);
+  // 离场即存：几个弹窗的文案都承诺了「自动保存到历史记录」，尺寸填没填都要存
+  // 重新测量、结束体验都一律先弹窗告知（尺寸已填 → 告知已保存；未填 → 提醒尺寸缺失），
+  // 不再有「填完了就直接跳走、什么都不说」这一路 —— 调完参数点重新测量最容易让人以为白改了。
+  const handleRemeasure = () => { persistSolution(); setConfirm(sizesFilled ? "remeasureSaved" : "remeasure"); };
+  const handleFinish = () => { persistSolution(); setConfirm(sizesFilled ? "finishSaved" : "finish"); };
+
+  // 未填齐鞋垫长宽不允许下载：尺寸决定几何，缺了就是照测量值导出，
+  // 拿到手的打印件和用户以为的那双对不上。挡在打开弹窗之前，并说清缺什么。
+  const guardSizes = () => {
+    if (sizesFilled) return true;
+    toast.error("请先填写左右脚的鞋垫长度和宽度", {
+      description: `两只脚共四项都要填（长 ${SIZE_MIN.lenCm}~${SIZE_MAX.lenCm}cm，宽 ${SIZE_MIN.widCm}~${SIZE_MAX.widCm}cm），填完才能下载文件`,
+    });
+    return false;
+  };
 
   // ── STL 下载 ──
   const handleDownload = async (fmt: "stl" | "glb") => {
+    if (!guardSizes()) return;
     const name = currentUser?.name;
     try {
       toast.info(`正在生成 ${fmt.toUpperCase()} 文件，请稍候…`);
@@ -1370,7 +1490,7 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
 
           {/* 足弓状态 */}
           <Card>
-            <SectionTitle zh="足弓状态" en="Foot arch status" />
+            <SectionTitle zh="足弓状态" en="Foot arch status" tip={TIP.arch} />
             {/* 静默兜底曾被误当真实数据（报告页同款提示），演示值必须显式标注 */}
             {isDemoData && (
               <div
@@ -1387,12 +1507,12 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
                 演示数据：未接入本次测量分析结果，以下参数不可用于生产
               </div>
             )}
-            <ArchSpectrum params={committed[side].params} />
+            <ArchSpectrum params={committed[side].params} sideLabel={sideLabel} />
           </Card>
 
           {/* 鞋垫尺寸 */}
           <Card>
-            <SectionTitle zh="鞋垫尺寸" en="Foot dimensions" info={false} />
+            <SectionTitle zh="鞋垫尺寸" en="Foot dimensions" />
             <div style={{ display: "flex", gap: "14px" }}>
               {/* 脚型图 */}
               <div style={{ flex: "0 0 150px" }}>
@@ -1423,9 +1543,10 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
                 </button>
               }
             />
-            <ThickPillRow label="足弓矫正厚度" value={`+${committed[side].params.archCorrection}mm`} adjusted={adjusted.arch} />
-            <ThickPillRow label="基础厚度" value={`${(committed[side].params.baseThickness * 10).toFixed(1)}mm`} adjusted={adjusted.base} />
-            <ThickPillRow label="足跟缓冲厚度" value={`${committed[side].params.heelThickness}mm`} adjusted={adjusted.heel} />
+            <ThickPillRow label="足弓矫正厚度" value={`+${committed[side].params.archCorrection}mm`} adjusted={adjusted.arch} tip={TIP.archCorrection} />
+            {/* 基础厚度按当前样式的高度模式选文案：成品垫随鞋码换算，标准垫走压力自适应 */}
+            <ThickPillRow label="基础厚度" value={`${(committed[side].params.baseThickness * 10).toFixed(1)}mm`} adjusted={adjusted.base} tip={STYLE_DEFS[insoleStyle].heightMode === "proportional" ? TIP.base : TIP.baseAdaptive} />
+            <ThickPillRow label="足跟缓冲厚度" value={`${committed[side].params.heelThickness}mm`} adjusted={adjusted.heel} tip={TIP.heel} />
           </Card>
         </aside>
       </main>
@@ -1435,7 +1556,8 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
         userId={String(currentUser?.id ?? "—")}
         onBack={handleRemeasure}
         onRestart={handleFinish}
-        onDownload={() => setOverlay("download")}
+        onDownload={() => { if (guardSizes()) setOverlay("download"); }}
+        downloadReady={sizesFilled}
       />
 
       {/* ── 鞋垫参数调节抽屉（厚度 + 软硬） ── */}
@@ -1447,7 +1569,7 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
 
             {/* 软硬调节：Shore A 硬度 */}
             <DetailSectionHeader title="软硬调节" onReset={resetSoftness} style={{ marginTop: "8px" }} />
-            <StepperSliderRow label="鞋垫软硬" value={cur.hardness} min={20} max={60} step={1} unit="Shore A" hints={["软", "硬"]} tightHints systemValue={defaults?.[side].hardness} onChange={(v) => editHardness(v)} />
+            <StepperSliderRow label="鞋垫软硬" tip={TIP.hardness} value={cur.hardness} min={20} max={60} step={1} unit="Shore A" hints={["软", "硬"]} tightHints systemValue={defaults?.[side].hardness} onChange={(v) => editHardness(v)} />
 
             <DrawerFooter
               onCancel={cancelDraft}
@@ -1503,10 +1625,30 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
           onConfirm={() => { setConfirm(null); onBack?.(); }}
         />
       )}
+      {/* 尺寸已填齐也要告知一声，用户才知道刚调的参数不会随着离开这页丢掉 */}
+      {confirm === "remeasureSaved" && (
+        <ConfirmModal
+          title="重新测量"
+          body={`本次方案已保存到「${currentUser?.name ?? "当前用户"}」的历史记录，可随时回看并重新下载鞋垫文件。是否重新测量？`}
+          confirmLabel="重新测量"
+          onCancel={() => setConfirm(null)}
+          onConfirm={() => { setConfirm(null); onBack?.(); }}
+        />
+      )}
       {confirm === "finish" && (
         <ConfirmModal
           title="结束体验"
           body="左/右脚鞋垫尺寸未填写，方案将自动保存到历史记录。是否结束体验？"
+          confirmLabel="结束体验"
+          onCancel={() => setConfirm(null)}
+          onConfirm={() => { setConfirm(null); onRestart(); }}
+        />
+      )}
+      {/* 尺寸已填齐也要告知一声，用户才知道点下去不会白填；具体存了哪些不必展开 */}
+      {confirm === "finishSaved" && (
+        <ConfirmModal
+          title="结束体验"
+          body={`本次方案已保存到「${currentUser?.name ?? "当前用户"}」的历史记录，可随时回看并重新下载鞋垫文件。是否结束本次体验？`}
           confirmLabel="结束体验"
           onCancel={() => setConfirm(null)}
           onConfirm={() => { setConfirm(null); onRestart(); }}
@@ -1570,12 +1712,12 @@ function DrawerFooter({ leftBtn, onCancel, onSave, saveLabel = "保存" }: { lef
 }
 
 // section 标题 + 重置（抽屉内软硬调节复用）
-function DetailSectionHeader({ title, onReset, style }: { title: string; onReset: () => void; style?: React.CSSProperties }) {
+function DetailSectionHeader({ title, onReset, style, tip }: { title: string; onReset: () => void; style?: React.CSSProperties; tip?: string }) {
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px", ...style }}>
       <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
         <span style={{ fontSize: "15px", fontWeight: 700, color: C.dark }}>{title}</span>
-        <InfoIcon size={13} />
+        {tip && <InfoTip text={tip} size={13} />}
       </div>
       <button onClick={onReset} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "13px", color: C.primaryDeep, fontWeight: 600 }}>↺ 重置</button>
     </div>
@@ -1670,8 +1812,8 @@ function DualFootModal({ committed, onClose, onDownload, stlLeft, stlRight, defo
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(40,28,12,0.35)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}>
       <div style={{ width: "960px", maxWidth: "94vw", height: "580px", maxHeight: "90vh", background: "#FFFFFF", borderRadius: "18px", boxShadow: "0 16px 60px rgba(120,70,10,0.28)", display: "flex", overflow: "hidden", animation: "modalIn 0.22s ease" }}>
-        {/* 左：3D 预览（浅色底 + 淡网格） */}
-        <div style={{ flex: 1, position: "relative", minWidth: 0, background: "#FCFAF6" }}>
+        {/* 左：3D 预览（浅色底 + 淡网格）。overflow:hidden 兜住画布，任何情况都不越过弹窗圆角边框 */}
+        <div style={{ flex: 1, position: "relative", minWidth: 0, background: "#FCFAF6", overflow: "hidden" }}>
           <div style={{ position: "absolute", inset: 0, backgroundImage: "linear-gradient(rgba(180,150,110,0.06) 1px,transparent 1px),linear-gradient(90deg,rgba(180,150,110,0.06) 1px,transparent 1px)", backgroundSize: "28px 28px", pointerEvents: "none" }} />
           <div style={{ position: "absolute", top: "20px", left: "24px", display: "flex", alignItems: "baseline", gap: "10px", zIndex: 2 }}>
             <span style={{ fontSize: "18px", fontWeight: 700, color: C.dark }}>双脚3D鞋垫展示</span>
