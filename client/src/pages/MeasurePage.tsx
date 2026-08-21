@@ -1009,13 +1009,13 @@ const measureStyles = `
     height: 100vh;
     min-height: 0;
     overflow: hidden;
-    /* 白 → 底部淡橙渐变（同方案页）+ 透视地面网格（静态 SVG，向上渐浅已内置）。
+    /* 顶部淡橙 → 向下渐白的背景 + 透视地面网格（静态 SVG，向上渐浅已内置）。
        网格必须做成元素背景图而不是独立 DOM 层：fixed + 3D transform + mask
        的网格 div 会触发 Chromium 合成层排序 bug，被画到页面内容之上
        （卡片看起来"透明"）。背景图物理上永远在内容之下，杜绝此问题。 */
     background:
       url("/assets/icons/perspective-grid.svg") center bottom / 100% 100% no-repeat,
-      linear-gradient(180deg, #FFFFFF 0%, #FFFFFF 42.5%, #FFF4EC 100%);
+      linear-gradient(180deg, #FFF4EC 0%, #FFFFFF 57.5%, #FFFFFF 100%);
     isolation: isolate;
     font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
     color: #1f1f1f;

@@ -1510,12 +1510,12 @@ export default function ReportPage({ onNext, onHistory, onBack, onStepBack }: { 
           width: 100vw;
           height: 100vh;
           overflow: hidden;
-          /* 白 → 底部淡橙渐变 + 透视地面网格（静态 SVG，向上渐浅内置）。
+          /* 顶部淡橙 → 向下渐白的背景 + 透视地面网格（静态 SVG，向上渐浅内置）。
              网格必须是元素背景图而非独立 DOM 层：fixed+3D transform+mask 的
              网格 div 触发 Chromium 合成层排序 bug 会盖到内容上（见测量页注释）。 */
           background:
             url("/assets/icons/perspective-grid.svg") center bottom / 100% 100% no-repeat,
-            linear-gradient(180deg, #FFFFFF 0%, #FFFFFF 42.5%, #FFF4EC 100%);
+            linear-gradient(180deg, #FFF4EC 0%, #FFFFFF 57.5%, #FFFFFF 100%);
           isolation: isolate;
           font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
           color: #1f1f1f;
