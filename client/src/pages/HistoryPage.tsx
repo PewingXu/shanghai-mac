@@ -402,7 +402,7 @@ export default function HistoryPage({
       <span
         style={{
           position: "fixed",
-          bottom: "100px",
+          bottom: "128px",
           left: "64px",
           zIndex: 20,
           fontSize: "14px",
@@ -416,7 +416,7 @@ export default function HistoryPage({
       <div
         style={{
           position: "fixed",
-          bottom: "100px",
+          bottom: "128px",
           left: "50%",
           transform: "translateX(-50%)",
           zIndex: 20,

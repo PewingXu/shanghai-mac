@@ -1202,8 +1202,12 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
       <SolutionTopBar />
 
       <main style={{ flex: 1, display: "flex", gap: "28px", padding: "20px 40px 84px", position: "relative", zIndex: 1, marginTop: "72px", minHeight: 0 }}>
-        {/* 左侧：3D 鞋垫 */}
-        <section style={{ flex: 1, position: "relative", minHeight: "440px", display: "flex", flexDirection: "column" }}>
+        {/* 左侧：3D 鞋垫。
+            marginRight 把左栏右缘压回白区内：右栏 aside 只有 440px，比橙色区
+            （max(33.44%,480px)）窄，宽屏下 flex:1 的 Canvas 会延伸进橙区——
+            gridHelper 加大到无边界后网格就画到了右侧 dashboard 上。
+            508 = aside 440 + gap 28 + main 右 padding 40。 */}
+        <section style={{ flex: 1, position: "relative", minHeight: "440px", display: "flex", flexDirection: "column", marginRight: "max(calc(max(33.44vw, 480px) - 508px), 0px)" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
             <h2 style={{ margin: 0, fontSize: "16px", fontWeight: 700, color: "#5A3A1A" }}>
               {sideLabel}脚{shellView === "only" ? "鞋壳3D展示" : shellView === "assembly" ? "鞋垫装配3D展示" : "晶格体3D鞋垫展示"}

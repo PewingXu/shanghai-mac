@@ -40,8 +40,10 @@ export function userMatchesQuery(
   if (!q) return true;
   if (u.name.toLowerCase().includes(q)) return true;
   if (String(u.id).includes(q) || formatUserId(u.id).includes(q)) return true;
+  // 手机号只按【尾号】匹配（需求：搜尾 4 位；endsWith 天然兼容输入完整号码），
+  // 前四位/中间片段不命中——脱敏展示下用户能看到的只有尾 4 位
   const digits = q.replace(/\D/g, "");
-  if (digits && (u.phone ?? "").replace(/\D/g, "").includes(digits)) return true;
+  if (digits && (u.phone ?? "").replace(/\D/g, "").endsWith(digits)) return true;
   return false;
 }
 
