@@ -35,35 +35,43 @@ export interface SolutionData {
   backend: boolean;
 }
 
+/** 后跟缓冲默认值(mm)：足型越偏离正常给得越多。演示值与真实换算共用同一张表 */
+const HEEL_DEFAULT_MM: Record<number, number> = { 1: 25, 2: 20, 3: 15, 4: 10, 5: 15, 6: 20, 7: 25 };
+
 // ─── 演示默认值（对齐设计稿示例：成人男 44 码） ──────────────────────────────
-function demoFoot(): FootSolution {
+/**
+ * @param archIndex 足弓指数，取 ReportPage 的 REPORT_DATA.arch 同一组演示值。
+ *   两页兜底值必须同源：以前这里写死「正常足 L4」，而报告的演示值是左右双脚扁平，
+ *   后端没接上时两页直接互相矛盾。等级、矫正量、后跟、软硬现在全部由 AI 推出来，
+ *   不再手抄，改一个数就整套跟着走。
+ */
+function demoFoot(archIndex: number): FootSolution {
   const footLength = 27.0; // cm
   const size = lookupInsoleSize(footLength, 'adult_male');
-  const archLevel = 4;
+  const arch = getArchLevelFromAI(archIndex);
   const baseThickness = 0.3; // cm = 3.0mm
-  const heelThickness = 10;
   const pressureRatio = 0.5;
   return {
     params: {
       footLength,
       footWidth: size.footWidthCm,
-      archCorrection: 2.5,
-      archLevel,
-      archType: '正常足',
+      archCorrection: arch.correction,
+      archLevel: arch.level,
+      archType: arch.type,
       baseThickness,
       pressureRatio,
-      heelThickness,
+      heelThickness: HEEL_DEFAULT_MM[arch.level] ?? 10,
       latticeDensity: 3,
     },
     // 软硬（Shore A）：由足弓等级推导的整垫推荐硬度
-    hardness: getInsoleHardness(archLevel),
+    hardness: getInsoleHardness(arch.level),
     shoeSize: size.shoeSize,
   };
 }
 
 const DEMO: SolutionData = {
-  left: demoFoot(),
-  right: demoFoot(),
+  left: demoFoot(0.272),
+  right: demoFoot(0.285),
   backend: false,
 };
 
@@ -88,8 +96,7 @@ function footSolutionFromReport(
   const arch = getArchLevelFromAI(ai);
   const size = lookupInsoleSize(footLength, 'adult_male');
 
-  const heelDefaults: Record<number, number> = { 1: 25, 2: 20, 3: 15, 4: 10, 5: 15, 6: 20, 7: 25 };
-  const heelThickness = heelDefaults[arch.level] ?? 10;
+  const heelThickness = HEEL_DEFAULT_MM[arch.level] ?? 10;
   const pressureRatio = Math.max(0, Math.min(1, ratioPct / 100));
 
   return {

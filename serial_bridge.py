@@ -34,6 +34,22 @@ FRAME_SIZE = 4096
 IDENTITY_TIMEOUT_S = 4.0     # 单口身份查询超时（同前端/旧系统节奏：300ms 重发）
 RESCAN_INTERVAL_S = 3.0      # 未连接时的重扫间隔（拔插即自动恢复）
 READ_IDLE_DROP_S = 5.0       # 连接后持续无数据超过该时长 → 判定掉线
+WRITE_TIMEOUT_S = 0.5        # 写超时：没有对端的蓝牙 SPP 口会让 write 永久阻塞，必须设
+
+
+def scan_order(ports):
+    """扫描顺序：USB 串口（足垫是 CH343）优先，蓝牙虚拟口垫底。
+
+    本机常挂着若干 BTHENUM 蓝牙 SPP 口，没有对端时 open 要阻塞 5s、write 会永久
+    阻塞。排在前面会把整轮扫描拖死，扫描线程再也走不到足垫那个口。
+    """
+    def rank(p):
+        hwid = (p.hwid or "").upper()
+        if "BTHENUM" in hwid:
+            return 2
+        return 0 if "USB" in hwid else 1
+
+    return sorted(ports, key=lambda p: (rank(p), p.device))
 
 
 def normalize_device_code(value) -> str:
@@ -133,13 +149,13 @@ class SerialBridge:
     def _scan_and_connect(self) -> bool:
         """扫描全部 COM 口，逐个 AT 查询设备码，匹配登记足垫后锁定。"""
         self._set_state("scanning")
-        ports = [p.device for p in serial.tools.list_ports.comports()]
+        ports = [p.device for p in scan_order(serial.tools.list_ports.comports())]
         print(f"[bridge] scanning ports: {ports}")
         for dev in ports:
             if self._stop:
                 return False
             try:
-                ser = serial.Serial(dev, BAUD_RATE, timeout=0.2)
+                ser = serial.Serial(dev, BAUD_RATE, timeout=0.2, write_timeout=WRITE_TIMEOUT_S)
             except Exception as exc:
                 print(f"[bridge] {dev} open failed: {exc}")
                 continue

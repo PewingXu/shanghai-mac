@@ -53,8 +53,14 @@ const BRIDGE_HTTP = "http://127.0.0.1:8766";
 const BRIDGE_WS = "ws://127.0.0.1:8766/device/stream";
 /** 桥状态探测超时：Python 未启动时 fetch 会快速失败，这里只是兜底 */
 const BRIDGE_PROBE_TIMEOUT_MS = 2500;
-/** autoConnect 等待桥完成一轮扫描的最长时间（扫描若干 COM 口 × 4s 身份超时） */
+/** autoConnect 等待桥出结果的最长时间（扫描若干 COM 口 × 4s 身份超时） */
 const BRIDGE_SCAN_WAIT_MS = 20000;
+/**
+ * 放弃前容忍的完整扫描轮数。一轮扫完没找到设备，桥会落回 disconnected 再睡 3s 重扫；
+ * 若只认第一次 disconnected 就报错，用户恰好在那个空档点"连接设备"就会误报未连接
+ * （设备明明在，下一轮 1s 内就能命中）。
+ */
+const BRIDGE_SCAN_ROUNDS = 2;
 /** Web Serial 兜底：逐端口身份查询超时（同旧系统 300ms 重发节奏） */
 const IDENTITY_TIMEOUT_MS = 4000;
 
@@ -197,11 +203,24 @@ class DeviceManager {
   private waitBridgeSettled(): Promise<boolean> {
     return new Promise((resolve) => {
       const started = Date.now();
+      let rounds = 0;
+      let inRound = false; // 已计入当前这次 disconnected，避免同一轮重复累加
       const timer = window.setInterval(() => {
         if (this.bridgeState === "connected") {
           window.clearInterval(timer);
           resolve(true);
-        } else if (this.bridgeState === "disconnected" || Date.now() - started > BRIDGE_SCAN_WAIT_MS) {
+          return;
+        }
+        // 一轮扫完落回 disconnected → 桥 3s 后重扫（回到 scanning），算作一轮结束
+        if (this.bridgeState === "disconnected") {
+          if (!inRound) {
+            inRound = true;
+            rounds += 1;
+          }
+        } else {
+          inRound = false;
+        }
+        if (rounds >= BRIDGE_SCAN_ROUNDS || Date.now() - started > BRIDGE_SCAN_WAIT_MS) {
           window.clearInterval(timer);
           resolve(false);
         }

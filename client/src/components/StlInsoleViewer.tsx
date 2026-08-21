@@ -9,7 +9,7 @@
  * 软硬仅通过材质观感体现（Shore A），不改几何。
  */
 
-import { Canvas } from '@react-three/fiber';
+import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera, ContactShadows } from '@react-three/drei';
 import { Suspense, useMemo, useRef, useEffect, useState, useCallback } from 'react';
 import * as THREE from 'three';
@@ -533,6 +533,30 @@ function InsoleScene({
   const showInsole = shellView !== 'only';
   const showShell = shellView !== 'off';
   const solidShell = shellView === 'only';
+
+  /**
+   * 相机距离按画布宽高比反推，保证内容横向装得下。
+   *
+   * fov 是【纵向】视角，横向可见宽度 = 2·dist·tan(fov/2)·aspect —— 画布越窄横向越吃紧。
+   * 双脚并排（activeFoot='both'）横向需求最大：间距 1.6 + 一只垫子约 1.0（100mm×0.01）。
+   * 页面上的取景器很宽（aspect≈1.6）够用，下载弹窗里只有 ~540×540（aspect≈1.0），
+   * 同样的距离下两只垫子就顶出画布、越过弹窗边框。取「基准距离」与「装得下所需距离」的大者：
+   * 宽画布保持原样、窄画布自动后退。
+   */
+  const { size } = useThree();
+  const camPos = useMemo<[number, number, number]>(() => {
+    const BASE: [number, number, number] = [0, 3.0, 3.5];
+    const baseDist = Math.hypot(BASE[1], BASE[2]);
+    const aspect = size.width > 0 && size.height > 0 ? size.width / size.height : 16 / 9;
+    // 需覆盖的横向半宽（场景单位）。含鞋壳时整只鞋比垫子宽，留更多余量
+    const halfFoot = showShell ? 0.95 : 0.75;
+    const halfNeed = activeFoot === 'both' ? spacing / 2 + halfFoot : halfFoot;
+    // 上限 9.8 < OrbitControls 的 maxDistance(10)，否则控件会在首帧把相机拉回来、白算一次
+    const fit = halfNeed / (Math.tan((35 / 2) * (Math.PI / 180)) * aspect);
+    const dist = Math.min(9.8, Math.max(baseDist, fit));
+    const k = dist / baseDist;
+    return [0, BASE[1] * k, BASE[2] * k];
+  }, [activeFoot, showShell, size.width, size.height]);
   // 「左右互换」：自动手性判反时把两只对调，零成本
   const shellFor = (foot: 'left' | 'right') => {
     const useRight = shellAdjust.swapLR ? foot === 'left' : foot === 'right';
@@ -541,7 +565,7 @@ function InsoleScene({
 
   return (
     <>
-      <PerspectiveCamera makeDefault position={[0, 3.0, 3.5]} fov={35} />
+      <PerspectiveCamera makeDefault position={camPos} fov={35} />
       <OrbitControls
         enablePan
         enableZoom
