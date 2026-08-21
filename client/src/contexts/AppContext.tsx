@@ -114,30 +114,19 @@ const DEMO_USERS: User[] = [];
 // 采集记录种子：清空（原演示记录挂在已删除的果果 userId 上）
 const DEMO_RECORDS: CollectionRecord[] = [];
 
-// 当前用户随会话持久化：刷新页面 / URL 直达（?view=userRecords 等）不丢选中用户
-const CURRENT_USER_KEY = "aciki-current-user";
-
+// 当前用户只存内存：刷新页面 = 重新开始（回到未登记的体验模式）。
+// 曾经用 sessionStorage 持久化过（刷新不丢用户），但那与"刷新即重置"
+// 的预期相悖，还出过恢复已删幽灵用户的问题——不要再加回来。
 export function AppProvider({ children }: { children: React.ReactNode }) {
-  const [currentUser, setCurrentUserState] = useState<User | null>(() => {
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  // 兼容清理：删掉旧版本残留的会话存储，避免误会"还在持久化"
+  useEffect(() => {
     try {
-      const raw = window.sessionStorage.getItem(CURRENT_USER_KEY);
-      return raw ? (JSON.parse(raw) as User) : null;
+      window.sessionStorage.removeItem("aciki-current-user");
     } catch {
-      return null;
+      /* 忽略 */
     }
-  });
-  const setCurrentUser: React.Dispatch<React.SetStateAction<User | null>> = (action) => {
-    setCurrentUserState((prev) => {
-      const next = typeof action === "function" ? (action as (p: User | null) => User | null)(prev) : action;
-      try {
-        if (next) window.sessionStorage.setItem(CURRENT_USER_KEY, JSON.stringify(next));
-        else window.sessionStorage.removeItem(CURRENT_USER_KEY);
-      } catch {
-        /* sessionStorage 不可用则仅内存态 */
-      }
-      return next;
-    });
-  };
+  }, []);
   const [currentStep, setCurrentStep] = useState(1);
   const [currentView, setCurrentView] = useState<AppView>("home");
   const [historyUsers, setHistoryUsers] = useState<User[]>(DEMO_USERS);
@@ -147,14 +136,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [selectedSolution, setSelectedSolution] = useState<SolutionSnapshot | null>(null);
 
   // 开机从后端拉取用户列表（后端不可用则保持空，不报错）。
-  // 同时校验会话恢复的 currentUser：已被删除（清库/删用户）的幽灵用户直接清掉。
   useEffect(() => {
     let alive = true;
     apiListUsers()
       .then((us) => {
         if (!alive) return;
         setHistoryUsers(us as User[]);
-        setCurrentUser((prev) => (prev && !us.some((u) => u.id === prev.id) ? null : prev));
       })
       .catch(() => {
         /* 后端未就绪：保持本地内存 */

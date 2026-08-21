@@ -329,6 +329,14 @@ export default function Home() {
     setView("history");
   };
 
+  // "结束体验"统一出口（测量/报告/方案页共用）：清当前用户，直接回首页。
+  // 不是流程"下一步"——用户在任何一步点结束都应立刻退出整个体验。
+  const endExperience = () => {
+    setCurrentUser(null);
+    setCurrentStep(1);
+    setView("landing");
+  };
+
   const handleBackFromHistory = () => {
     setView(prevView);
   };
@@ -396,7 +404,7 @@ export default function Home() {
             setCurrentStep(3);
             setView("report");
           }}
-          onHistory={handleShowHistory}
+          onEnd={endExperience}
           onStepBack={goToStep}
         />
       );
@@ -409,7 +417,7 @@ export default function Home() {
             setCurrentStep(4);
             setView("solution");
           }}
-          onHistory={handleShowHistory}
+          onEnd={endExperience}
           onStepBack={goToStep}
         />
       );
@@ -418,11 +426,7 @@ export default function Home() {
       return (
         <SolutionPage
           onHistory={handleShowHistory}
-          onRestart={() => {
-            setCurrentUser(null);
-            setCurrentStep(1);
-            setView("landing");
-          }}
+          onRestart={endExperience}
           onBack={() => {
             setCurrentStep(2);
             setView("measure");

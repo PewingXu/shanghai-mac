@@ -1414,7 +1414,18 @@ function ReportPanel({
 }
 
 // ─── 主页面 ───────────────────────────────────────────────────────────────────
-export default function ReportPage({ onNext, onHistory, onBack, onStepBack }: { onNext: () => void; onHistory: () => void; onBack: () => void; onStepBack?: (step: number) => void }) {
+export default function ReportPage({
+  onNext,
+  onEnd,
+  onBack,
+  onStepBack,
+}: {
+  onNext: () => void;
+  /** 结束体验：清当前用户并直接回首页（不是流程下一步） */
+  onEnd: () => void;
+  onBack: () => void;
+  onStepBack?: (step: number) => void;
+}) {
   const { currentUser, analysis } = useApp();
   // 真实测量分析结果 → 报告数据（Python 缺席时逐字段回退演示值）
   const reportData = useMemo(() => buildReportData(analysis), [analysis]);
@@ -1491,7 +1502,7 @@ export default function ReportPage({ onNext, onHistory, onBack, onStepBack }: { 
           <button onClick={onBack} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "14px", color: "#3d3d3d", fontWeight: "700", textDecoration: "underline", textUnderlineOffset: "4px" }}>
             重新测量
           </button>
-          <button onClick={onNext} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "14px", color: "#ff8400", fontWeight: "700", textDecoration: "underline", textUnderlineOffset: "4px" }}>
+          <button onClick={onEnd} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "14px", color: "#ff8400", fontWeight: "700", textDecoration: "underline", textUnderlineOffset: "4px" }}>
             结束体验
           </button>
           <span style={{ fontSize: "14px", color: "#c0b6a6", fontWeight: 700 }}>下载文件</span>

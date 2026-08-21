@@ -435,11 +435,12 @@ function CountdownButton({
 
 export default function MeasurePage({
   onNext,
-  onHistory,
+  onEnd,
   onStepBack,
 }: {
   onNext: () => void;
-  onHistory: () => void;
+  /** 结束体验：清当前用户并直接回首页（不是流程下一步） */
+  onEnd: () => void;
   onStepBack?: (step: number) => void;
 }) {
   const { currentUser, setAnalysis, createUser, setCurrentUser, historyUsers } = useApp();
@@ -956,7 +957,7 @@ export default function MeasurePage({
             {currentUser ? `当前用户：${currentUser.name}（ID:${formatUserId(currentUser.id)}）` : "体验模式：未登记用户"}
           </span>
           <button onClick={resetCollecting}>重新测量</button>
-          <button className="primary-link" onClick={onNext}>
+          <button className="primary-link" onClick={onEnd}>
             结束体验
           </button>
         </div>
