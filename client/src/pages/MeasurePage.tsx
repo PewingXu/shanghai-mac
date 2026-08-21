@@ -737,19 +737,19 @@ export default function MeasurePage({
     else setShowRegister(true);
   };
 
-  // 创建完成：入库设为当前用户（ID 服务端自增分配）→ 关弹窗 → 开始采集
+  // 创建完成：入库设为当前用户（ID 服务端自增分配）→ 关弹窗。
+  // 不自动开始采集——填完信息就立刻倒数体验太突兀，由用户再点"开始测量"。
   const handleRegister = async (data: UserFormData) => {
     const user = await createUser(data);
     setCurrentUser(user);
     setShowRegister(false);
-    beginCollect();
   };
 
-  // 选择历史用户完成（点"开始体验"）：设为当前用户 → 关选择界面 → 开始采集
+  // 选择历史用户完成（点"开始体验"）：设为当前用户 → 关选择界面。
+  // 同上：不自动开始采集，等用户再点"开始测量"。
   const handlePickUser = (user: (typeof historyUsers)[number]) => {
     setCurrentUser(user);
     setShowPicker(false);
-    beginCollect();
   };
 
   const handleCollectClick = () => {
@@ -769,7 +769,7 @@ export default function MeasurePage({
       broadcastException("disconnected");
       return;
     }
-    // 体验模式（未选定用户）→ 正式采集前先选择/创建用户；完成后自动开始采集
+    // 体验模式（未选定用户）→ 正式采集前先选择/创建用户；完成后需再点"开始测量"
     if (!currentUser) {
       requireUser();
       return;
