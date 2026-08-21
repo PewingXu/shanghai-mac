@@ -267,7 +267,9 @@ export default function HistoryPage({
         minHeight: "100vh",
         width: "100%",
         position: "relative",
-        overflow: "hidden",
+        // 不能 overflow:hidden——小屏下卡片网格降为 2 列变高，裁掉溢出会让
+        // 固定定位的分页条压在卡片上（错位）。允许纵向滚动，横向由布局自适应。
+        overflowX: "hidden",
         fontFamily: '"PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif',
       }}
     >
@@ -281,7 +283,9 @@ export default function HistoryPage({
         style={{
           position: "relative",
           zIndex: 10,
-          padding: "20px 64px 90px",
+          // 底部留出分页条(bottom 100)+设备徽章(bottom 30)的空间：
+          // 小屏滚动到底时最后一行卡片不被固定元素盖住
+          padding: "20px 64px 170px",
           flex: 1,
           display: "flex",
           flexDirection: "column",
@@ -398,7 +402,7 @@ export default function HistoryPage({
       <span
         style={{
           position: "fixed",
-          bottom: "76px",
+          bottom: "100px",
           left: "64px",
           zIndex: 20,
           fontSize: "14px",
@@ -412,7 +416,7 @@ export default function HistoryPage({
       <div
         style={{
           position: "fixed",
-          bottom: "76px",
+          bottom: "100px",
           left: "50%",
           transform: "translateX(-50%)",
           zIndex: 20,
