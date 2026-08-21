@@ -1429,7 +1429,6 @@ export default function ReportPage({ onNext, onHistory, onBack, onStepBack }: { 
 
   return (
     <div className="report-shell">
-      <div className="report-grid-bg" />
       {/* 报告页不显示"历史用户"，步骤条支持点击回退 */}
       <TopNavBar currentStep={3} transparent showHistory={false} onStepClick={onStepBack} />
 
@@ -1511,35 +1510,18 @@ export default function ReportPage({ onNext, onHistory, onBack, onStepBack }: { 
           width: 100vw;
           height: 100vh;
           overflow: hidden;
-          /* 与方案页同款：白 → 底部淡橙 #FFF4EC 渐变 */
-          background: linear-gradient(180deg, #FFFFFF 0%, #FFFFFF 42.5%, #FFF4EC 100%);
-          /* 形成独立层叠上下文：让 z-index:-1 的网格画在本页背景之上、内容之下 */
+          /* 白 → 底部淡橙渐变 + 透视地面网格（静态 SVG，向上渐浅内置）。
+             网格必须是元素背景图而非独立 DOM 层：fixed+3D transform+mask 的
+             网格 div 触发 Chromium 合成层排序 bug 会盖到内容上（见测量页注释）。 */
+          background:
+            url("/assets/icons/perspective-grid.svg") center bottom / 100% 100% no-repeat,
+            linear-gradient(180deg, #FFFFFF 0%, #FFFFFF 42.5%, #FFF4EC 100%);
           isolation: isolate;
           font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
           color: #1f1f1f;
         }
-        /* 3D 场景地面网格（设计图效果）：透视平铺、无边界、底部清晰
-           【向上渐浅】。线色全强度 0.30、只靠 mask 渐变（勿再叠 opacity）。
-           与测量页 .measure-grid-bg 同参数。 */
-        .report-grid-bg {
-          position: fixed;
-          left: -30vw;
-          right: -30vw;
-          top: -4vh;
-          bottom: -55vh;
-          pointer-events: none;
-          background:
-            linear-gradient(rgba(180, 150, 110, 0.30) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(180, 150, 110, 0.30) 1px, transparent 1px);
-          background-size: 40px 40px;
-          transform-origin: center top;
-          transform: perspective(1100px) rotateX(52deg);
-          -webkit-mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.35) 62%, transparent 96%);
-          mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.35) 62%, transparent 96%);
-          /* 必须为负：fixed + 3D transform + mask 组合会被 Chromium 提升为独立合成层，
-             z-index:0 时实际渲染会盖到 z-index:1 的页面内容上。见测量页同款注释。 */
-          z-index: -1;
-        }
+        /* 网格已并入 .report-shell 的 background（perspective-grid.svg），
+           不再使用独立网格 DOM 层（合成层 bug，见 shell 注释） */
         .report-main {
           position: relative;
           z-index: 1;

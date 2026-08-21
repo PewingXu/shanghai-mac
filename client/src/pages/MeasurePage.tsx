@@ -835,8 +835,8 @@ export default function MeasurePage({
 
   return (
     <div className="measure-shell">
-      <div className="measure-grid-bg" />
-      <TopNavBar currentStep={2} onHistoryClick={onHistory} transparent onStepClick={onStepBack} />
+      {/* 测量页不放"历史用户"入口（设计要求）；步骤条保留可回退 */}
+      <TopNavBar currentStep={2} transparent showHistory={false} onStepClick={onStepBack} />
 
       <main className="measure-main">
         <section className="measure-stage">
@@ -1009,9 +1009,13 @@ const measureStyles = `
     height: 100vh;
     min-height: 0;
     overflow: hidden;
-    /* 与方案页同款：白 → 底部淡橙 #FFF4EC 渐变 */
-    background: linear-gradient(180deg, #FFFFFF 0%, #FFFFFF 42.5%, #FFF4EC 100%);
-    /* 形成独立层叠上下文：让 z-index:-1 的网格画在本页背景之上、内容之下 */
+    /* 白 → 底部淡橙渐变（同方案页）+ 透视地面网格（静态 SVG，向上渐浅已内置）。
+       网格必须做成元素背景图而不是独立 DOM 层：fixed + 3D transform + mask
+       的网格 div 会触发 Chromium 合成层排序 bug，被画到页面内容之上
+       （卡片看起来"透明"）。背景图物理上永远在内容之下，杜绝此问题。 */
+    background:
+      url("/assets/icons/perspective-grid.svg") center bottom / 100% 100% no-repeat,
+      linear-gradient(180deg, #FFFFFF 0%, #FFFFFF 42.5%, #FFF4EC 100%);
     isolation: isolate;
     font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
     color: #1f1f1f;
@@ -1025,30 +1029,8 @@ const measureStyles = `
     overflow: hidden;
   }
 
-  /* 3D 场景地面网格（设计图效果）：透视平铺、无边界（四边延伸出视口）、
-     底部清晰【向上渐浅】——上部元素（色条/标题）背后自然干净。
-     线色保持全强度 0.30，只靠 mask 做纵向渐变（原版还叠了 opacity .5，
-     等效浓度仅 ~0.16，整体发虚——不要再加回去）。 */
-  .measure-grid-bg {
-    position: fixed;
-    left: -30vw;
-    right: -30vw;
-    top: -4vh;
-    bottom: -55vh;
-    pointer-events: none;
-    background:
-      linear-gradient(rgba(180, 150, 110, 0.30) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(180, 150, 110, 0.30) 1px, transparent 1px);
-    background-size: 40px 40px;
-    transform-origin: center top;
-    transform: perspective(1100px) rotateX(52deg);
-    -webkit-mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.35) 62%, transparent 96%);
-    mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.35) 62%, transparent 96%);
-    /* 必须为负：fixed + 3D transform + mask 组合会被 Chromium 提升为独立合成层，
-       z-index:0 时实际渲染会盖到 z-index:1 的页面内容上（卡片"透出"网格的假象）。
-       降到 -1（配合 shell 的 isolation:isolate）确保网格永远在内容之下。 */
-    z-index: -1;
-  }
+  /* 网格已并入 .measure-shell 的 background（perspective-grid.svg），
+     不再使用独立网格 DOM 层（合成层 bug，见 shell 注释） */
 
   .measure-main {
     position: relative;
@@ -1451,34 +1433,13 @@ const measureStyles = `
   }
 
   .measure-sidebar {
-    position: relative;
     display: grid;
     align-content: start;
     gap: clamp(22px, 4.2vh, 62px);
     padding-top: clamp(38px, 7vh, 98px);
     min-width: 0;
     min-height: 0;
-  }
-
-  /* 指标区实底面板：设计图上"受压面积/压力"区域不透背景网格。
-     用与页面背景同构的渐变（视觉无缝），左边缘羽化——网格线渐渐消失
-     而不是被一条竖线硬切；右侧延伸出屏，盖住栏外余隙。 */
-  .measure-sidebar::before {
-    content: "";
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    left: -70px;
-    right: -100vw;
-    background: linear-gradient(180deg, #FFFFFF 0%, #FFFFFF 42.5%, #FFF4EC 100%);
-    -webkit-mask-image: linear-gradient(to right, transparent 0, #000 70px);
-    mask-image: linear-gradient(to right, transparent 0, #000 70px);
-    pointer-events: none;
-  }
-
-  .measure-panel {
-    position: relative;
-    z-index: 1;
+    overflow: hidden;
   }
 
   .measure-panel h2 {
