@@ -76,11 +76,15 @@ export function resolvePython() {
   const home = os.homedir();
   const candidates = [];
   if (process.env.ACIKI_PYTHON) candidates.push({ cmd: process.env.ACIKI_PYTHON, args: [] });
+  // macOS：scripts/setup-mac.sh 准备的独立运行时（开发与打包共用），优先于系统 Python
+  candidates.push({ cmd: path.join(ROOT, "release", "dist-mac", "python-rt", "bin", "python3"), args: [] });
   for (const d of ["anaconda3", "Anaconda3", "miniconda3", "Miniconda3"]) {
     candidates.push({ cmd: path.join(home, d, "python.exe"), args: [] }); // Windows
     candidates.push({ cmd: path.join(home, d, "bin", "python"), args: [] }); // *nix
   }
   candidates.push({ cmd: "conda", args: ["run", "--no-capture-output", "-n", "base", "python"] });
+  candidates.push({ cmd: "python3.12", args: [] });
+  candidates.push({ cmd: "python3", args: [] });
   candidates.push({ cmd: "python", args: [] });
   candidates.push({ cmd: "py", args: [] });
 

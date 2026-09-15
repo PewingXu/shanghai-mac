@@ -6,6 +6,7 @@ import {
   apiUpdateUser,
   apiDeleteUsers,
   apiListRecords,
+  apiListAllRecords,
   apiCreateRecord,
   apiDeleteRecord,
 } from "@/lib/backendApi";
@@ -72,6 +73,8 @@ interface AppContextType {
   collectionRecords: CollectionRecord[];
   /** 从后端拉取某用户的全部采集记录（进入采集信息页时调用） */
   loadRecordsForUser: (userId: number) => Promise<void>;
+  /** 体验记录页：拉取全部采集记录（不分用户） */
+  loadAllRecords: () => Promise<void>;
   removeCollectionRecord: (id: number) => void;
   selectedRecord: CollectionRecord | null;
   setSelectedRecord: (r: CollectionRecord | null) => void;
@@ -98,6 +101,7 @@ const AppContext = createContext<AppContextType>({
   removeHistoryUsers: () => {},
   collectionRecords: [],
   loadRecordsForUser: async () => {},
+  loadAllRecords: async () => {},
   removeCollectionRecord: () => {},
   selectedRecord: null,
   setSelectedRecord: () => {},
@@ -113,6 +117,9 @@ const DEMO_USERS: User[] = [];
 
 // 采集记录种子：清空（原演示记录挂在已删除的果果 userId 上）
 const DEMO_RECORDS: CollectionRecord[] = [];
+
+/** 体验模式的匿名用户名（记录不登记人名，全部挂在这一个用户下；seed 脚本同名） */
+export const ANON_USER_NAME = "体验";
 
 // 当前用户只存内存：刷新页面 = 重新开始（回到未登记的体验模式）。
 // 曾经用 sessionStorage 持久化过（刷新不丢用户），但那与"刷新即重置"
@@ -197,6 +204,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const loadAllRecords = async () => {
+    try {
+      setCollectionRecords(await apiListAllRecords());
+    } catch {
+      setCollectionRecords([]); // 后端不可用：显示为空
+    }
+  };
+
   const removeCollectionRecord = (id: number) => {
     setCollectionRecords((prev) => prev.filter((r) => r.id !== id));
     apiDeleteRecord(id).catch(() => {
@@ -208,18 +223,31 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   //   分析结果瘦身后落盘 <id>.json；原始帧落盘 <id>.csv（仿 sit 格式，界面不暴露）
   const currentUserRef = useRef(currentUser);
   currentUserRef.current = currentUser;
+  const historyUsersRef = useRef(historyUsers);
+  historyUsersRef.current = historyUsers;
+
+  // 体验模式不登记人名：所有记录挂在同一个匿名「体验」用户名下（首次用到时创建）
+  const ensureSessionUser = async (): Promise<User> => {
+    const cur = currentUserRef.current;
+    if (cur) return cur;
+    const existing = historyUsersRef.current.find((u) => u.name === ANON_USER_NAME);
+    const user = existing ?? (await createUser({ name: ANON_USER_NAME }));
+    setCurrentUser(user);
+    return user;
+  };
+
   useEffect(() => {
     const h = (e: Event) => {
       const detail = (e as CustomEvent<MeasureAnalysis>).detail;
-      const user = currentUserRef.current;
-      // 只保存真实分析（python.success）；无用户/演示回退不入库
-      if (!detail?.python?.success || !user) return;
+      // 只保存真实分析（python.success）；演示回退不入库
+      if (!detail?.python?.success) return;
       const now = new Date();
-      const date = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
+      const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
       const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
-      // 新测量必须从干净方案开始，否则会带着上一位用户回看时留下的快照
+      // 新测量必须从干净方案开始，否则会带着上一次回看时留下的快照
       setSelectedSolution(null);
-      apiCreateRecord(user.id, date, time, slimAnalysisForStorage(detail), detail.rawFrames)
+      ensureSessionUser()
+        .then((user) => apiCreateRecord(user.id, date, time, slimAnalysisForStorage(detail), detail.rawFrames))
         .then((rec) => {
           setCollectionRecords((prev) => [rec, ...prev.filter((r) => r.id !== rec.id)]);
           // 选中它：解决方案页保存参数时要有 record id 可挂
@@ -229,6 +257,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
     window.addEventListener("aciki-analysis-done", h);
     return () => window.removeEventListener("aciki-analysis-done", h);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
@@ -246,6 +275,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         removeHistoryUsers,
         collectionRecords,
         loadRecordsForUser,
+        loadAllRecords,
         removeCollectionRecord,
         selectedRecord,
         setSelectedRecord,

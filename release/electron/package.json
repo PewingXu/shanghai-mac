@@ -1,0 +1,38 @@
+{
+  "name": "juqiao-plantar-pressure-app",
+  "version": "1.0.0",
+  "description": "矩侨工业 足底压力分析 桌面端",
+  "main": "main.js",
+  "author": "矩侨工业",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.juqiao.plantarpressure",
+    "productName": "矩侨工业足底压力分析",
+    "directories": {
+      "output": "../dist"
+    },
+    "asar": false,
+    "files": ["main.js"],
+    "extraResources": [
+      { "from": "../dist/python-rt", "to": "python-rt" },
+      { "from": "../dist/backend", "to": "backend" },
+      { "from": "../../dist/public", "to": "public" }
+    ],
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "icon": "icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "矩侨工业足底压力分析",
+      "artifactName": "矩侨工业足底压力分析-Setup-${version}.${ext}"
+    }
+  }
+}

@@ -1,6 +1,5 @@
 import React, { useState } from "react";
-
-const LOGO_URL = "/assets/icons/home-page/top-left-logo.svg";
+import BrandLogo from "./BrandLogo";
 
 const STEPS = [
   { id: 1, label: "创建" },
@@ -10,7 +9,7 @@ const STEPS = [
 ];
 
 // 步骤条统一用色：当前/已完成步骤同一颜色（取原两色中最浅的亮橙），不再深浅区分
-const STEP_COLOR = "#E8944A";
+const STEP_COLOR = "#1544A2";
 
 interface TopNavBarProps {
   currentStep: number;
@@ -33,18 +32,18 @@ function HistoryButton({ onClick }: { onClick?: () => void }) {
       onMouseDown={() => setPressed(true)}
       onMouseUp={() => setPressed(false)}
       style={{
-        background: hovered ? "rgba(232, 148, 74, 0.12)" : "none",
-        border: hovered ? "1.5px solid rgba(232, 148, 74, 0.5)" : "1.5px solid transparent",
+        background: hovered ? "rgba(21,68,162,0.12)" : "none",
+        border: hovered ? "1.5px solid rgba(21,68,162,0.5)" : "1.5px solid transparent",
         borderRadius: "8px",
         cursor: "pointer",
         fontSize: "16px",
         fontWeight: "600",
-        color: hovered ? "#C8682A" : "#E8944A",
+        color: hovered ? "#1B3C7E" : "#1544A2",
         padding: "7px 18px",
         letterSpacing: "0.02em",
         transform: pressed ? "scale(0.95)" : hovered ? "scale(1.03)" : "scale(1)",
         transition: "all 0.18s cubic-bezier(0.23, 1, 0.32, 1)",
-        boxShadow: hovered ? "0 2px 10px rgba(232, 148, 74, 0.2)" : "none",
+        boxShadow: hovered ? "0 2px 10px rgba(21,68,162,0.2)" : "none",
       }}
     >
       历史用户
@@ -67,9 +66,9 @@ export default function TopNavBar({
         left: 0,
         right: 0,
         height: "88px",
-        backgroundColor: transparent ? "transparent" : "rgba(255, 240, 210, 0.92)",
+        backgroundColor: transparent ? "transparent" : "rgba(215,228,255,0.92)",
         backdropFilter: transparent ? "none" : "blur(12px)",
-        borderBottom: transparent ? "none" : "1px solid rgba(203, 161, 115, 0.2)",
+        borderBottom: transparent ? "none" : "1px solid rgba(115,144,203,0.2)",
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
@@ -79,11 +78,7 @@ export default function TopNavBar({
     >
       {/* 左侧 Logo */}
       <div style={{ display: "flex", alignItems: "center" }}>
-        <img
-          src={LOGO_URL}
-          alt="ACIKI 动态足底压力解析系统"
-          style={{ height: "56px", objectFit: "contain" }}
-        />
+        <BrandLogo size={52} />
       </div>
 
       {/* 右侧：步骤指示器 + 历史用户 */}
@@ -113,14 +108,14 @@ export default function TopNavBar({
                     backgroundColor:
                       step.id <= currentStep ? STEP_COLOR : "transparent",
                     border:
-                      step.id <= currentStep ? "none" : "1.5px solid #CBA173",
+                      step.id <= currentStep ? "none" : "1.5px solid #7390CB",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
                     fontSize: "13px",
                     fontWeight: step.id === currentStep ? "700" : "400",
                     color:
-                      step.id <= currentStep ? "#FFFFFF" : "#CBA173",
+                      step.id <= currentStep ? "#FFFFFF" : "#7390CB",
                     transition: "all 0.3s ease",
                   }}
                 >
@@ -129,7 +124,7 @@ export default function TopNavBar({
                 <span
                   style={{
                     fontSize: "12px",
-                    color: step.id <= currentStep ? STEP_COLOR : "#CBA173",
+                    color: step.id <= currentStep ? STEP_COLOR : "#7390CB",
                     fontWeight: step.id === currentStep ? "600" : "400",
                     transition: "color 0.3s ease",
                   }}
@@ -145,7 +140,7 @@ export default function TopNavBar({
                     width: "36px",
                     height: "1.5px",
                     backgroundColor:
-                      step.id < currentStep ? STEP_COLOR : "#CBA173",
+                      step.id < currentStep ? STEP_COLOR : "#7390CB",
                     marginBottom: "18px",
                     opacity: step.id < currentStep ? 0.8 : 0.4,
                     transition: "all 0.3s ease",

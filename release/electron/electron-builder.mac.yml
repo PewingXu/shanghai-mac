@@ -1,0 +1,30 @@
+# macOS 打包配置（Windows 用 package.json 里的 build 字段；两套互不影响）
+# 用法：cd release/electron && npx electron-builder --mac --config electron-builder.mac.yml
+# 打包布局与 Windows 一致：resources/{python-rt, backend, public}，main.js 按平台找 Python。
+appId: com.juqiao.plantarpressure
+productName: 矩侨工业足底压力分析
+directories:
+  output: ../dist-mac
+asar: false
+files:
+  - main.js
+extraResources:
+  - from: ../dist-mac/python-rt
+    to: python-rt
+  - from: ../dist-mac/backend
+    to: backend
+  - from: ../../dist/public
+    to: public
+mac:
+  category: public.app-category.medical
+  icon: icon.png
+  target:
+    - target: dmg
+    - target: zip
+  # 不签名、不公证：本机构建的 app 不会被 Gatekeeper 隔离；拷到别的 Mac 首次右键“打开”即可
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  artifactName: 矩侨工业足底压力分析-${version}-mac-${arch}.${ext}
+dmg:
+  artifactName: 矩侨工业足底压力分析-${version}-mac-${arch}.${ext}

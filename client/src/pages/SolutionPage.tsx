@@ -14,28 +14,13 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { toast } from "sonner";
 import { useApp } from "@/contexts/AppContext";
+import { formatUserId } from "@/lib/utils";
 import { useDeviceConnectionStatus } from "@/hooks/useDeviceConnectionStatus";
-// 解决方案页采用左白右橙的分屏背景（见下方 SplitBackground），不复用全屏橙色 PageBackground
-import { StlInsoleViewer, type StlInsoleParams, type ShellView } from "@/components/StlInsoleViewer";
-import { STYLE_DEFS, STYLE_ORDER, productBaseHeightMm, personalDeform, ZERO_DEFORM, type InsoleStyle, type DeformMm } from "@/lib/insoleModel";
-import {
-  BUILTIN_SHELL,
-  DEFAULT_SHELL_ADJUST,
-  dbShellId,
-  dbShellSource,
-  type ShellSource,
-  type ShellAdjust,
-  type ShellPairInfo,
-} from "@/lib/shoeShell";
-import ShellPickerDrawer from "@/components/ShellPickerDrawer";
+// 解决方案页与报告页同一套浅色渐变背景（见下方 PageBg）
+import { StlInsoleViewer, type StlInsoleParams } from "@/components/StlInsoleViewer";
+import { STYLE_DEFS, productBaseHeightMm, personalDeform, ZERO_DEFORM, type InsoleStyle, type DeformMm } from "@/lib/insoleModel";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
-import {
-  apiListShells,
-  apiSaveRecordSolution,
-  apiUploadShell,
-  shellFileUrl,
-  shellThumbUrl,
-} from "@/lib/backendApi";
+import { apiSaveRecordSolution } from "@/lib/backendApi";
 import {
   buildSolutionSnapshot,
   localStamp,
@@ -55,57 +40,25 @@ import {
 } from "@/lib/solutionData";
 import { lookupInsoleSize } from "@/lib/insoleSize";
 import { exportStlInsoleSTL, exportStlInsoleGLTF } from "@/lib/stlInsoleExporter";
+import BrandLogo from "@/components/BrandLogo";
+import HistoryLink from "@/components/HistoryLink";
 
 // ─── 配色 ─────────────────────────────────────────────────────────────────────
 const C = {
-  primary: "#FF8400",
-  primaryDeep: "#F08614",
+  primary: "#00359F",
+  primaryDeep: "#0A3997",
   dark: "#17191C",
   sub: "#929EAB",
   panel: "rgba(255,255,255,0.82)",
-  border: "rgba(225,203,180,0.55)",
+  border: "rgba(180,195,225,0.55)",
   insoleColor: "#ECECEC", // 默认灰白色（取自晶格鞋垫材质色）
 };
 
+/** 展会版只保留「标准」鞋垫：样式与颜色不再可选，快照里的旧样式/颜色一律忽略 */
+const INSOLE_STYLE: InsoleStyle = "standard";
+
 type Side = "left" | "right";
 type Overlay = "main" | "drawer" | "download";
-
-// 可选鞋垫颜色（3D 预览 / STL 导出共用）
-const INSOLE_COLORS: { name: string; value: string }[] = [
-  { name: "灰白", value: "#ECECEC" },
-  { name: "暖橙", value: "#F0975A" },
-  { name: "天蓝", value: "#6AA6F0" },
-  { name: "薄荷", value: "#5FD0B0" },
-  { name: "石墨", value: "#5A5F66" },
-  { name: "米白", value: "#ECE7DF" },
-];
-
-// 鞋壳三态。默认 off —— 内置鞋壳 83MB，不主动切过去就不加载
-const SHELL_VIEWS: { value: ShellView; label: string }[] = [
-  { value: "off", label: "仅鞋垫" },
-  { value: "only", label: "仅鞋壳" },
-  { value: "assembly", label: "装配" },
-];
-
-// 鞋壳控件里的小胶囊按钮（三态切换以外的那些），与页面既有配色一致
-const shellChipBtn: React.CSSProperties = {
-  height: "24px",
-  padding: "0 8px",
-  borderRadius: "7px",
-  border: `1px solid ${C.border}`,
-  background: "#fff",
-  cursor: "pointer",
-  fontSize: "11px",
-  fontWeight: 600,
-  color: "#8A6A40",
-};
-
-const shellChipBtnOn: React.CSSProperties = {
-  ...shellChipBtn,
-  background: C.primary,
-  border: `1px solid ${C.primary}`,
-  color: "#fff",
-};
 
 /**
  * 手填鞋垫尺寸的合理区间(cm)。输入框是自由 number，边打字边渲染会出现「2cm 的鞋垫」，
@@ -161,64 +114,18 @@ function toDeform(cur: FootState, style: InsoleStyle): DeformMm {
   return personalDeform(cur.params, style);
 }
 
-// ─── 页面背景：左白右橙分屏（右橙内嵌自 background.svg，左白内嵌自 左侧白色背景.svg） ─
-// 分屏点 1278/1920 ≈ 66.56%（左白），右侧 ≈ 33.44%（橙色）
-const ORANGE_LEFT = "max(33.44%, 480px)"; // 橙色区宽度 / 白区右缘
-function SplitBackground() {
+// ─── 页面背景：顶部淡蓝 → 向下渐白，与报告页同一套 ─────────────────────────────
+function PageBg() {
   return (
-    <>
-      {/* 底：全屏橙色渐变 + 右侧流动色块（background.svg） */}
-      <svg
-        viewBox="0 0 1920 1080"
-        preserveAspectRatio="xMidYMid slice"
-        fill="none"
-        style={{ position: "fixed", inset: 0, width: "100%", height: "100%", zIndex: 0, pointerEvents: "none" }}
-      >
-        <defs>
-          <linearGradient x1="0.5" y1="0" x2="0.5" y2="1" id="bgGrad">
-            <stop offset="0%" stopColor="#FFF8ED" stopOpacity="1" />
-            <stop offset="100%" stopColor="#FFC283" stopOpacity="1" />
-          </linearGradient>
-          <mask id="bgMask" style={{ maskType: "alpha" }} maskUnits="userSpaceOnUse" x="1608" y="-65" width="4152" height="1330">
-            <rect x="3840" y="0" width="1920" height="1080" rx="0" fill="#FFFFFF" fillOpacity="1" transform="matrix(-1,0,0,1,7680,0)" />
-          </mask>
-        </defs>
-        <rect x="0" y="0" width="1920" height="1080" rx="0" fill="url(#bgGrad)" fillOpacity="1" />
-        <g transform="matrix(-1,0,0,1,3840,0)" mask="url(#bgMask)">
-          <path
-            d="M1860.83961,-58.9394259C1711.869431,-30.241562000000002,1609.931814,91.82542000000001,1633.3471925,214.09447999999998C1667.864685,393.9614,1884.65865,447.71942,1916.5520000000001,613.6416C1948.24356,779.36163,1766.57256,909.71466,1801.09006,1089.5815C1824.50542,1211.6484,1964.19019,1287.6372,2113.16037,1258.9396C2262.13055,1230.2413,2364.06805,1108.1746,2340.65283,985.9052999999999C2306.1352500000003,806.03845,2089.34128,752.2804,2057.44791,586.35822C2025.75647,420.63815,2207.42749,290.28522,2172.90991,110.41833C2149.69635,-11.648581999999998,2009.80975,-87.637291,1860.83961,-58.9394259Z"
-            fill="#FFE9C9"
-            fillOpacity="1"
-            style={{ mixBlendMode: "multiply" }}
-          />
-        </g>
-      </svg>
-      {/* 左侧白色渐变面板（左侧白色背景.svg：#FFFFFF → #FFF4EC，顶部约 42.5% 纯白后过渡） */}
-      <div
-        style={{
-          position: "fixed",
-          top: 0,
-          left: 0,
-          bottom: 0,
-          right: ORANGE_LEFT,
-          background: "linear-gradient(180deg, #FFFFFF 0%, #FFFFFF 42.5%, #FFF4EC 100%)",
-          zIndex: 0,
-        }}
-      />
-      {/* 分屏缝隙柔光 */}
-      <div
-        style={{
-          position: "fixed",
-          top: 0,
-          bottom: 0,
-          right: `calc(${ORANGE_LEFT})`,
-          width: "60px",
-          background: "linear-gradient(90deg, transparent, rgba(255,214,160,0.22))",
-          zIndex: 0,
-          pointerEvents: "none",
-        }}
-      />
-    </>
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "linear-gradient(180deg, #EEF4FF 0%, #FFFFFF 57.5%, #FFFFFF 100%)",
+        zIndex: 0,
+        pointerEvents: "none",
+      }}
+    />
   );
 }
 
@@ -229,7 +136,7 @@ function SectionTitle({ zh, en, right, tip }: { zh: string; en: string; right?: 
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
         <span style={{ fontSize: "16px", fontWeight: 800, color: "#17191C", letterSpacing: "0.02em" }}>{zh}</span>
-        <span style={{ fontSize: "12px", color: "#A4906C", fontWeight: 500 }}>{en}</span>
+        <span style={{ fontSize: "12px", color: "#6C7FA4", fontWeight: 500 }}>{en}</span>
         {tip && <InfoTip text={tip} />}
       </div>
       {right}
@@ -238,8 +145,18 @@ function SectionTitle({ zh, en, right, tip }: { zh: string; en: string; right?: 
 }
 
 function Card({ children }: { children: React.ReactNode }) {
+  // 纵向 flex：三卡等高后，卡内 flex:1 的正文区把标题以下的高度全部吃掉，不留空白
   return (
-    <div style={{ background: "#FFFFFF", borderRadius: "16px", padding: "14px 18px", boxShadow: "0 6px 22px rgba(190,120,40,0.10)" }}>
+    <div style={{ background: "#FFFFFF", borderRadius: "16px", padding: "14px 18px", boxShadow: "0 6px 22px rgba(26,58,122,0.10)", display: "flex", flexDirection: "column", minHeight: 0 }}>
+      {children}
+    </div>
+  );
+}
+
+/** 卡片正文：吃掉标题以下全部高度，子项按纵向 flex 排布 */
+function CardBody({ children, gap = 0, row = false }: { children: React.ReactNode; gap?: number; row?: boolean }) {
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: row ? "row" : "column", gap: `${gap}px` }}>
       {children}
     </div>
   );
@@ -249,9 +166,9 @@ function Card({ children }: { children: React.ReactNode }) {
 function InfoIcon({ size = 14 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, display: "block" }}>
-      <circle cx="8" cy="8" r="7" stroke="#9A8158" strokeWidth="1.2" />
-      <circle cx="8" cy="4.6" r="0.9" fill="#9A8158" />
-      <rect x="7.2" y="6.6" width="1.6" height="5" rx="0.8" fill="#9A8158" />
+      <circle cx="8" cy="8" r="7" stroke="#586E9A" strokeWidth="1.2" />
+      <circle cx="8" cy="4.6" r="0.9" fill="#586E9A" />
+      <rect x="7.2" y="6.6" width="1.6" height="5" rx="0.8" fill="#586E9A" />
     </svg>
   );
 }
@@ -352,7 +269,7 @@ const ARCH_LABELS = ["重度高弓", "中度高弓", "轻度高弓", "正常足"
 
 /**
  * 足弓状态卡的中性配色（对齐设计稿 image.png）。
- * 此前解读框/建议框走的是页面那套暖褐色（#F7F4EF / #FBEFDD + 褐字），
+ * 此前解读框/建议框走的是页面那套暖褐色（#EFF2F7 / #E1EAFB + 褐字），
  * 与光谱条的红黄绿放在一起互相抢；改成中性浅灰底 + 白底建议框 + 深灰正文，
  * 颜色只留给光谱条与等级本身。
  */
@@ -372,7 +289,7 @@ function ArchSpectrum({ params, sideLabel }: { params: InsoleParams; sideLabel: 
   const baseMm = (params.baseThickness * 10).toFixed(1);
 
   return (
-    <div>
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
       {/* 渐变光谱条 + 下三角标记。7 段紧挨、整条统一圆角（设计稿是一条连续色带，段间无白缝） */}
       <div style={{ position: "relative", marginTop: "14px", marginBottom: "6px" }}>
         {/* 三角标记 */}
@@ -391,13 +308,13 @@ function ArchSpectrum({ params, sideLabel }: { params: InsoleParams; sideLabel: 
           <span key={t} style={{ flex: 1, textAlign: "center", fontSize: "10px", color: getArchLevelColor(i + 1), fontWeight: i === level - 1 ? 700 : 500 }}>{t}</span>
         ))}
       </div>
-      {/* 解读框 */}
-      <div style={{ background: ARCH_C.readBg, border: `1px solid ${ARCH_C.readBorder}`, borderRadius: "10px", padding: "10px 14px" }}>
+      {/* 解读框：吃掉光谱条以下的剩余高度，三段内容在框内均匀铺开 */}
+      <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", justifyContent: "space-evenly", background: ARCH_C.readBg, border: `1px solid ${ARCH_C.readBorder}`, borderRadius: "10px", padding: "10px 14px" }}>
         <p style={{ margin: "0 0 5px", fontSize: "12px", color: ARCH_C.text, lineHeight: 1.6 }}>
           详细解读：{sideLabel}脚足弓状态处于足弓分级中的 L{level} 等级
           <span style={{ color: levelColor, fontWeight: 700 }}>{params.archType}</span>；
         </p>
-        <p style={{ margin: "0 0 9px", fontSize: "12px", color: ARCH_C.text, lineHeight: 1.6 }}>
+        <p style={{ margin: "0 0 5px", fontSize: "12px", color: ARCH_C.text, lineHeight: 1.6 }}>
           {getArchDesignLogic(level)}。
         </p>
         <div style={{ background: ARCH_C.sugBg, border: `1px solid ${ARCH_C.sugBorder}`, borderRadius: "8px", padding: "8px 12px", fontSize: "12px", color: ARCH_C.text, textAlign: "center", lineHeight: 1.5 }}>
@@ -417,22 +334,20 @@ function FootPair({ lengthCm, widthCm, side }: { lengthCm: number; widthCm: numb
   // 始终画一双脚：左位=左脚形，右位=右脚形（就地水平翻转）。聚焦的一只染橙并加标注。
   const flipRight = "matrix(-1,0,0,1,48,0)";
   const leftFocused = side === "left";
-  const ORANGE = "#FFB25E";
-  const FADED = "#EAD9C3";
+  const ORANGE = "#1C54C5";
+  const FADED = "#C3D0EA";
   // 宽度标注线覆盖聚焦（橙色）那只鞋垫的前掌
   const wx1 = leftFocused ? 26 : 78;
   const wx2 = leftFocused ? 69 : 121;
   const wmid = (wx1 + wx2) / 2;
   return (
     <div style={{ position: "relative", width: "100%", height: "100%", minHeight: "185px" }}>
-      {/* 网格底纹 */}
-      <div style={{ position: "absolute", inset: 0, backgroundImage: "linear-gradient(rgba(180,150,110,0.10) 1px,transparent 1px),linear-gradient(90deg,rgba(180,150,110,0.10) 1px,transparent 1px)", backgroundSize: "22px 22px", borderRadius: "10px" }} />
       <svg viewBox="0 0 135 152" style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} preserveAspectRatio="xMidYMid meet">
         {/* 长度标注线（左侧，贯穿全高） */}
-        <line x1="15" y1="16" x2="15" y2="140" stroke="#C9A06A" strokeWidth="1.1" />
-        <line x1="11.5" y1="16" x2="18.5" y2="16" stroke="#C9A06A" strokeWidth="1.1" />
-        <line x1="11.5" y1="140" x2="18.5" y2="140" stroke="#C9A06A" strokeWidth="1.1" />
-        <text x="7" y="78" textAnchor="middle" fontSize="8.5" fontWeight="600" fill="#7A5A28" transform="rotate(-90 7 78)">{lengthCm} cm</text>
+        <line x1="15" y1="16" x2="15" y2="140" stroke="#6A8AC9" strokeWidth="1.1" />
+        <line x1="11.5" y1="16" x2="18.5" y2="16" stroke="#6A8AC9" strokeWidth="1.1" />
+        <line x1="11.5" y1="140" x2="18.5" y2="140" stroke="#6A8AC9" strokeWidth="1.1" />
+        <text x="7" y="78" textAnchor="middle" fontSize="8.5" fontWeight="600" fill="#28437A" transform="rotate(-90 7 78)">{lengthCm} cm</text>
         {/* 左脚鞋垫（固定左位、左向） */}
         <g transform="translate(26,16) scale(0.9)">
           <path d={INSOLE_D} transform={INSOLE_TF} fill={leftFocused ? ORANGE : FADED} fillOpacity={leftFocused ? 1 : 0.7} />
@@ -444,10 +359,10 @@ function FootPair({ lengthCm, widthCm, side }: { lengthCm: number; widthCm: numb
           </g>
         </g>
         {/* 宽度标注线（聚焦鞋垫前掌，顶部） */}
-        <line x1={wx1} y1="11" x2={wx2} y2="11" stroke="#F08A2E" strokeWidth="1.1" />
-        <line x1={wx1} y1="7.5" x2={wx1} y2="14.5" stroke="#F08A2E" strokeWidth="1.1" />
-        <line x1={wx2} y1="7.5" x2={wx2} y2="14.5" stroke="#F08A2E" strokeWidth="1.1" />
-        <text x={wmid} y="6" textAnchor="middle" fontSize="8.5" fontWeight="600" fill="#7A5A28">{widthCm} cm</text>
+        <line x1={wx1} y1="11" x2={wx2} y2="11" stroke="#0C3EA1" strokeWidth="1.1" />
+        <line x1={wx1} y1="7.5" x2={wx1} y2="14.5" stroke="#0C3EA1" strokeWidth="1.1" />
+        <line x1={wx2} y1="7.5" x2={wx2} y2="14.5" stroke="#0C3EA1" strokeWidth="1.1" />
+        <text x={wmid} y="6" textAnchor="middle" fontSize="8.5" fontWeight="600" fill="#28437A">{widthCm} cm</text>
       </svg>
     </div>
   );
@@ -534,7 +449,7 @@ function StepperSliderRow({
         borderRadius: "13px",
         border: "none",
         cursor: "pointer",
-        background: "#F4ECE4",
+        background: "#E4E9F4",
         color: C.primaryDeep,
         fontSize: "17px",
         fontWeight: 700,
@@ -556,7 +471,7 @@ function StepperSliderRow({
           {label}
           {tip && <InfoTip text={tip} size={13} />}
         </span>
-        <span style={{ fontSize: "13px", fontWeight: 700, color: C.primaryDeep, fontFamily: "monospace", background: "rgba(245,166,35,0.12)", padding: "2px 8px", borderRadius: "6px" }}>
+        <span style={{ fontSize: "13px", fontWeight: 700, color: C.primaryDeep, fontFamily: "monospace", background: "rgba(7,59,163,0.12)", padding: "2px 8px", borderRadius: "6px" }}>
           {prefix}{fmtSigned(value)}{unit}
         </span>
       </div>
@@ -571,7 +486,7 @@ function StepperSliderRow({
         <StepBtn dir={-1} />
         <div style={{ flex: 1, position: "relative", height: "20px", display: "flex", alignItems: "center" }}>
           {/* 轨道底（浅褐胶囊） */}
-          <div style={{ position: "absolute", inset: 0, borderRadius: "10px", background: "rgba(219,194,168,0.30)" }} />
+          <div style={{ position: "absolute", inset: 0, borderRadius: "10px", background: "rgba(168,185,219,0.30)" }} />
           {/* 填充：以 0 为锚点，正值橙色向右、负值蓝色向左 */}
           <div style={{ position: "absolute", top: 0, bottom: 0, left: fillLeftCss, right: fillRightCss, borderRadius: "10px", background: fillColor }} />
           {/* 系统值刻度线 + 标签 */}
@@ -607,7 +522,7 @@ function StepperSliderRow({
             </>
           )}
           {/* 白色圆钮（内缩，落在橙色内部靠边） */}
-          <div style={{ position: "absolute", left: posX(valuePct), top: "50%", transform: "translate(-50%,-50%)", width: `${KN}px`, height: `${KN}px`, borderRadius: "50%", background: "#fff", boxShadow: "0 2px 5px rgba(150,100,30,0.28)", pointerEvents: "none" }} />
+          <div style={{ position: "absolute", left: posX(valuePct), top: "50%", transform: "translate(-50%,-50%)", width: `${KN}px`, height: `${KN}px`, borderRadius: "50%", background: "#fff", boxShadow: "0 2px 5px rgba(21,48,104,0.28)", pointerEvents: "none" }} />
           {/* 透明原生 range（负责交互） */}
           <input
             type="range"
@@ -642,7 +557,7 @@ function DeviceBadge() {
   const connected = useDeviceConnectionStatus();
   const color = connected ? "#3AD2A3" : "#FF5A2C";
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: "6px", background: "#fff", borderRadius: "16px", padding: "5px 12px", boxShadow: "0 1px 6px rgba(180,120,40,0.12)" }}>
+    <div style={{ display: "flex", alignItems: "center", gap: "6px", background: "#fff", borderRadius: "16px", padding: "5px 12px", boxShadow: "0 1px 6px rgba(26,56,117,0.12)" }}>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
         <path d="M9 12h6M8 9a3 3 0 0 0 0 6h2M16 9a3 3 0 0 1 0 6h-2" stroke={color} strokeWidth="2" strokeLinecap="round" />
       </svg>
@@ -651,23 +566,30 @@ function DeviceBadge() {
   );
 }
 
-// ─── 底部操作栏 ───────────────────────────────────────────────────────────────
+// ─── 底部操作栏（与报告页底栏同一套：高度 / 字重 / 配色 / 下划线 / 5 位 ID） ────────
 function BottomBar({ userName, userId, onBack, onRestart, onDownload, downloadReady }: {
   userName: string; userId: string; onBack?: () => void; onRestart: () => void; onDownload: () => void;
   /** 鞋垫长宽是否已填齐。未填齐时按钮置灰，但仍可点——点了给出「缺什么」的提示，比死按钮好懂 */
   downloadReady: boolean;
 }) {
-  const linkBtn: React.CSSProperties = { background: "none", border: "none", cursor: "pointer", fontSize: "14px", fontWeight: 600 };
+  const linkBtn: React.CSSProperties = {
+    background: "none", border: "none", cursor: "pointer",
+    fontSize: "14px", fontWeight: 700,
+    textDecoration: "underline", textUnderlineOffset: "4px",
+  };
   return (
-    <div style={{ position: "fixed", bottom: 0, left: 0, right: "max(33.44%, 480px)", height: "56px", padding: "0 40px", display: "flex", alignItems: "center", gap: "28px", borderTop: "1px solid rgba(200,160,110,0.25)", zIndex: 30 }}>
+    <div style={{ height: "56px", display: "flex", alignItems: "center", gap: "28px" }}>
       <DeviceBadge />
-      <span style={{ fontSize: "14px", color: "#5A4A30", marginLeft: "auto" }}>当前用户：{userName} （ID:{userId}）</span>
-      <button onClick={onBack} style={{ ...linkBtn, color: "#5A4A30" }}>重新测量</button>
-      <button onClick={onRestart} style={{ ...linkBtn, color: "#17191C", textDecoration: "underline", textUnderlineOffset: "3px" }}>结束体验</button>
+      <span style={{ fontSize: "14px", fontWeight: 700, color: "#3d3d3d", marginLeft: "auto" }}>当前用户：{userName}（ID:{userId}）</span>
+      <button onClick={onBack} style={{ ...linkBtn, color: "#3d3d3d" }}>重新测量</button>
+      <button onClick={onRestart} style={{ ...linkBtn, color: "#00359f" }}>结束体验</button>
+      {/* 未填齐尺寸时置灰、去下划线，与报告页的占位态同款；填齐后是品牌蓝可点链接 */}
       <button
         onClick={onDownload}
         title={downloadReady ? undefined : "请先填写左右脚鞋垫长度和宽度"}
-        style={{ ...linkBtn, color: downloadReady ? C.primaryDeep : "#B9AFA2", cursor: downloadReady ? "pointer" : "not-allowed" }}
+        style={downloadReady
+          ? { ...linkBtn, color: "#00359f" }
+          : { ...linkBtn, color: "#a6afc0", textDecoration: "none", cursor: "not-allowed" }}
       >
         下载文件
       </button>
@@ -736,8 +658,9 @@ function ThicknessSliders({ fs, sys, onParams, drawerMode, style }: { fs: FootSt
 
 // ─── 厚度胶囊行 ───────────────────────────────────────────────────────────────
 function ThickPillRow({ label, value, adjusted, tip }: { label: string; value: string; adjusted?: boolean; tip?: string }) {
+  // flex:1：三条胶囊平分卡片正文高度（行距由父级 gap 给），卡片多高胶囊就多高
   return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#FFF2E4", borderRadius: "12px", padding: "10px 16px", marginBottom: "8px" }}>
+    <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "space-between", background: "#E7EFFF", borderRadius: "12px", padding: "10px 16px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
         <span style={{ fontSize: "14px", fontWeight: 600, color: "#17191C" }}>{label}</span>
         {tip && <InfoTip text={tip} size={13} />}
@@ -753,9 +676,9 @@ function ThickPillRow({ label, value, adjusted, tip }: { label: string; value: s
 // ─── 输入框尺寸行（默认置空，由用户手填） ────────────────────────────────────
 function SizeInputRow({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-      <span style={{ fontSize: "14px", fontWeight: 600, color: "#17191C" }}>{label}</span>
-      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+      <span style={{ fontSize: "14px", fontWeight: 600, color: "#17191C", whiteSpace: "nowrap" }}>{label}</span>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
         <input
           type="number"
           step={0.5}
@@ -772,34 +695,13 @@ function SizeInputRow({ label, value, onChange }: { label: string; value: string
 // ─── 自定义顶栏（左白右橙 + 步骤） ────────────────────────────────────────────
 // 设备连接徽章只留底部操作栏那一枚：顶栏右上角原本还有一枚，同一页两处同样的标识，
 // 状态一致时纯属重复、不一致时更让人怀疑哪个是真的。
-const SOLUTION_STEPS = [
-  { id: 1, label: "创建" },
-  { id: 2, label: "测量" },
-  { id: 3, label: "揭晓" },
-  { id: 4, label: "方案" },
-];
-
-function SolutionTopBar() {
+/** 顶栏：左品牌标识 + 右「体验记录」入口（与采集/报告页一致），不再显示步骤导航。
+ *  absolute 而非 fixed：矮屏整页滚动时随内容滚走，不会透明地压在滚上来的标题/左右脚按钮上 */
+function SolutionTopBar({ onHistory }: { onHistory?: () => void }) {
   return (
-    <header style={{ position: "fixed", top: 0, left: 0, right: 0, height: "72px", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 40px", zIndex: 100 }}>
-      {/* 左侧 Logo */}
-      <img src="/assets/icons/home-page/top-left-logo.svg" alt="ACIKI 动态足底压力解析系统" style={{ height: "48px", objectFit: "contain" }} />
-      {/* 右侧 步骤 */}
-      <div style={{ display: "flex", alignItems: "center" }}>
-        <div style={{ display: "flex", alignItems: "center" }}>
-          {SOLUTION_STEPS.map((s, i) => (
-            <div key={s.id} style={{ display: "flex", alignItems: "center" }}>
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "3px" }}>
-                <div style={{ width: "26px", height: "26px", borderRadius: "50%", background: C.primary, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", fontWeight: 700 }}>{s.id}</div>
-                <span style={{ fontSize: "11px", color: C.primaryDeep, fontWeight: 500 }}>{s.label}</span>
-              </div>
-              {i < SOLUTION_STEPS.length - 1 && (
-                <div style={{ width: "28px", height: "1.5px", background: C.primary, marginBottom: "16px", opacity: 0.7 }} />
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
+    <header style={{ position: "absolute", top: 0, left: 0, right: 0, height: "var(--sol-topbar-h, 72px)", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 var(--sol-pad-x, 40px)", zIndex: 100 }}>
+      <BrandLogo size={52} />
+      <HistoryLink onClick={onHistory} />
     </header>
   );
 }
@@ -821,36 +723,7 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
 
   const [side, setSide] = useState<Side>("left");
   const [overlay, setOverlay] = useState<Overlay>("main");
-  // 当前鞋垫颜色（3D 预览 + STL 导出）；有快照就从快照 seed
-  const [insoleColor, setInsoleColor] = useState<string>(snapshotRef.current?.insoleColor ?? C.insoleColor);
-  // 当前鞋垫样式（整双统一：舒缓 / 运动 / 标准）
-  const [insoleStyle, setInsoleStyle] = useState<InsoleStyle>(snapshotRef.current?.insoleStyle ?? "comfort");
 
-  // ── 鞋壳（仅鞋垫 / 仅鞋壳 / 装配） ──
-  // 默认 'off'：内置鞋壳 83MB，不切过去就一个字节都不拉。
-  // 有快照就照当时的视图恢复（用户要求「鞋壳也要保存」）—— 代价是当时停在装配/仅鞋壳的话，
-  // 进页面就会去拉那几十 MB（带进度条），这是明确取舍过的。
-  const [shellView, setShellView] = useState<ShellView>(() => {
-    const snap = snapshotRef.current;
-    if (!snap?.shellView) return "off";
-    // 后端件先按 off 起，等下面那个 effect 确认它还在仓库里再切过去 ——
-    // 直接切会让 3D 抢在核对之前去拉 url，鞋壳早被删掉的话白报一个 404。
-    return dbShellId(snap.shellSourceId ?? "") != null ? "off" : snap.shellView;
-  });
-  const [shellSource, setShellSource] = useState<ShellSource>(() => {
-    // 快照里记着上次选的后端鞋壳 → 恢复选中；名字也存了一份，不必等 /shells 回来
-    const sid = dbShellId(snapshotRef.current?.shellSourceId ?? "");
-    return sid != null
-      ? dbShellSource(sid, snapshotRef.current?.shellLabel ?? "已保存的鞋壳", shellFileUrl(sid), undefined, shellThumbUrl(sid))
-      : BUILTIN_SHELL;
-  });
-  const [shellOpacity, setShellOpacity] = useState(snapshotRef.current?.shellOpacity ?? 0.35);
-  // 快照里的摆位优先于后端按鞋壳存的那份：历史记录要还原「这条记录当时长什么样」
-  const [shellAdjust, setShellAdjust] = useState<ShellAdjust>(snapshotRef.current?.shellAdjust ?? DEFAULT_SHELL_ADJUST);
-  const [shellPickerOpen, setShellPickerOpen] = useState(false);
-  // 上传成功后自增，让抽屉重列表 —— 新传的鞋壳立刻出现在卡片带里
-  const [shellRefreshKey, setShellRefreshKey] = useState(0);
-  const isUploadedShell = shellSource.id !== BUILTIN_SHELL.id;
 
   /**
    * 用户真的动过手（颜色 / 样式 / 尺寸 / 换鞋壳 / 抽屉保存）→ 此后任何状态变化都自动落盘。
@@ -861,104 +734,6 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
     solutionDirty.current = true;
   }, []);
 
-  /**
-   * 上传新鞋壳：本次立刻用内存 buffer 渲染（零等待），同时存进后端仓库供以后选用。
-   * 两者共用后端主键当 id —— 刷新后同一个 id 从 url 拉回来，几何缓存认得是同一件。
-   */
-  const handleShellFile = useCallback(async (file: File) => {
-    if (!/\.stl$/i.test(file.name)) {
-      toast.error("请选择 .stl 格式的鞋壳文件");
-      return;
-    }
-    markSolutionEdited(); // 换鞋壳也是方案的一部分（快照里记着 shellSourceId）
-    const label = file.name.replace(/\.stl$/i, "");
-    try {
-      toast.info(`正在解析 ${file.name}…`, { description: "大文件可能需要十几秒" });
-      const buffer = await file.arrayBuffer();
-      setShellAdjust(DEFAULT_SHELL_ADJUST);
-      try {
-        const saved = await apiUploadShell(file, label);
-        setShellSource(dbShellSource(saved.id, saved.label, shellFileUrl(saved.id), buffer, shellThumbUrl(saved.id)));
-        setShellRefreshKey((k) => k + 1); // 抽屉重列表，新卡片带形态图冒出来
-        toast.success(`「${saved.label}」已保存，下次可直接从「选择鞋壳形态」里选`);
-      } catch {
-        // 后端不可用：退回纯内存件，功能不减，只是刷新即失
-        setShellSource({ id: `mem:${file.name}:${file.size}`, label, buffer, preOriented: false });
-        toast.warning("鞋壳已载入，但未能存到服务器", { description: "本次可用，刷新后需重新上传" });
-      }
-      // 视图切换放在最后：先切会让 3D 拿着旧的（内置 83MB）鞋壳白拉一次
-      setShellView((v) => (v === "off" ? "assembly" : v));
-    } catch {
-      toast.error("读取文件失败，请重试");
-    }
-  }, [markSolutionEdited]);
-
-  /**
-   * 从抽屉挑一款：连带恢复该鞋壳上次校正过的摆位。
-   * 抽屉**不关**（用户要连着点几款对比），但视图若还停在「仅鞋垫」就得切过去，
-   * 否则点了一款主视图毫无反应，等于没选。
-   */
-  const handleShellPick = useCallback((source: ShellSource, adjust: ShellAdjust | null) => {
-    markSolutionEdited();
-    setShellSource(source);
-    setShellAdjust(adjust ?? DEFAULT_SHELL_ADJUST);
-    setShellView((v) => (v === "off" ? "assembly" : v));
-  }, [markSolutionEdited]);
-
-  /*
-   * 摆位现在是【只读】的：页面上没有手动微调按钮了（用户不要），
-   * 值只从三处来 —— 快照、抽屉给的那款鞋壳存过的、后端按鞋壳记的那份，
-   * 一律叠在 buildShellPair 的自动识别结果之上。所以这里没有写回后端的代码。
-   */
-
-  /**
-   * 核对快照里那款鞋壳还在不在（挂载后一次，只针对后端件）。三种结果：
-   *   在   → 用仓库里的真名校正 label（老快照没存名字，seed 出来是占位名）；
-   *          摆位以快照为准，快照没带才用后端按鞋壳记着的那份；
-   *   没了 → 回落内置鞋壳 + 仅鞋垫。快照现在会把视图一起恢复，不兜住的话 3D 会照着
-   *          一个已删除的 url 直接去拉，卡在加载失败上；
-   *   失败（后端没开）→ 什么都不动，快照里的名字与选择照旧可用。
-   * 全程不打 dirty 标 —— 这是还原，不是用户编辑。
-   */
-  useEffect(() => {
-    const snap = snapshotRef.current;
-    const sid = dbShellId(snap?.shellSourceId ?? "");
-    if (sid == null) return;
-    let alive = true;
-    apiListShells()
-      .then((list) => {
-        if (!alive) return;
-        const hit = list.find((s) => s.id === sid);
-        if (!hit) {
-          setShellSource(BUILTIN_SHELL);
-          setShellAdjust(DEFAULT_SHELL_ADJUST);
-          setShellView("off");
-          toast.info("这条记录当时用的鞋壳已被删除", { description: "已回到内置鞋壳" });
-          return;
-        }
-        setShellSource((prev) => (prev.label === hit.label ? prev : { ...prev, label: hit.label }));
-        if (!snap?.shellAdjust) setShellAdjust((hit.adjust as ShellAdjust | null) ?? DEFAULT_SHELL_ADJUST);
-        // 确认鞋壳还在，才把视图切回当时那个（上面 useState 里故意压成了 off）
-        if (snap?.shellView && snap.shellView !== "off") setShellView(snap.shellView);
-      })
-      .catch(() => { /* 后端不可用：保持快照里的名字 */ });
-    return () => { alive = false; };
-  }, []);
-
-  // 只对上传件提示自动识别结果——内置件摆位是已知的，没必要每次切换都弹
-  const handleShellInfo = useCallback(
-    (info: ShellPairInfo) => {
-      if (!isUploadedShell) return;
-      const parts = [
-        info.pair ? "识别为双脚合体" : "识别为单只，另一只由镜像生成",
-        `${(info.triangles / 10000).toFixed(1)} 万面`,
-      ];
-      // 手性判不准就不提示了：正常件的判据余量是门限的 4~5 倍（实测 ±0.124~0.151 对 0.03），
-      // 只有左右近似对称的怪文件才会翻，而手动微调按钮已按需求撤掉，提示了也没得修。
-      toast.success(`鞋壳已载入（${parts.join(" · ")}）`);
-    },
-    [isUploadedShell],
-  );
 
   // 已提交参数 / 加载默认值 / 编辑草稿
   const [committed, setCommitted] = useState<{ left: FootState; right: FootState } | null>(null);
@@ -1018,8 +793,8 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
   useEffect(() => {
     if (!analysisBase) return;
     const next = {
-      left: baseThicknessCmForSize(insoleStyle, effLenLeft, analysisBase.left.params.baseThickness),
-      right: baseThicknessCmForSize(insoleStyle, effLenRight, analysisBase.right.params.baseThickness),
+      left: baseThicknessCmForSize(INSOLE_STYLE, effLenLeft, analysisBase.left.params.baseThickness),
+      right: baseThicknessCmForSize(INSOLE_STYLE, effLenRight, analysisBase.right.params.baseThickness),
     };
     const prevBase = baselineRef.current;
     // 同一鞋码档内改足长（26.1→26.3 都是 42 码）基准不变，不必重设状态
@@ -1044,7 +819,7 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
     setCommitted(keepDelta);
     setDefaults(toBaseline);
     setDraft(keepDelta);
-  }, [insoleStyle, analysisBase, effLenLeft, effLenRight]);
+  }, [analysisBase, effLenLeft, effLenRight]);
 
   /**
    * 历史回看：把快照里的参数盖回 committed。
@@ -1104,18 +879,13 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
   const makeSnapshot = useCallback(
     (cm: { left: FootState; right: FootState }, df: { left: FootState; right: FootState }) =>
       buildSolutionSnapshot({
-        insoleStyle,
-        insoleColor,
+        insoleStyle: INSOLE_STYLE,
+        insoleColor: C.insoleColor,
         insoleSize,
-        shellSourceId: shellSource.id,
-        shellLabel: shellSource.label,
-        shellView,
-        shellOpacity,
-        shellAdjust,
         committed: cm,
         defaults: df,
       }),
-    [insoleStyle, insoleColor, insoleSize, shellSource.id, shellSource.label, shellView, shellOpacity, shellAdjust],
+    [insoleSize],
   );
 
   const persistSolution = useCallback(
@@ -1181,24 +951,24 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
       const sysBaseCm = defaults?.[s].params.baseThickness;
       const baseThickness =
         sysBaseCm != null
-          ? baseThicknessCmForSize(insoleStyle, len, fs.params.baseThickness) + (fs.params.baseThickness - sysBaseCm)
+          ? baseThicknessCmForSize(INSOLE_STYLE, len, fs.params.baseThickness) + (fs.params.baseThickness - sysBaseCm)
           : fs.params.baseThickness;
 
       return { ...fs, params: { ...fs.params, footLength: len, footWidth: wid, baseThickness } };
     },
-    [insoleSize, insoleStyle, defaults],
+    [insoleSize, defaults],
   );
 
   const stlLeft = useMemo<StlInsoleParams | null>(() => (viewState ? toStlParams(sizedFoot("left", viewState.left)) : null), [viewState, sizedFoot]);
   const stlRight = useMemo<StlInsoleParams | null>(() => (viewState ? toStlParams(sizedFoot("right", viewState.right)) : null), [viewState, sizedFoot]);
-  const deformLeft = useMemo<DeformMm>(() => (viewState ? toDeform(sizedFoot("left", viewState.left), insoleStyle) : ZERO_DEFORM), [viewState, insoleStyle, sizedFoot]);
-  const deformRight = useMemo<DeformMm>(() => (viewState ? toDeform(sizedFoot("right", viewState.right), insoleStyle) : ZERO_DEFORM), [viewState, insoleStyle, sizedFoot]);
+  const deformLeft = useMemo<DeformMm>(() => (viewState ? toDeform(sizedFoot("left", viewState.left), INSOLE_STYLE) : ZERO_DEFORM), [viewState, sizedFoot]);
+  const deformRight = useMemo<DeformMm>(() => (viewState ? toDeform(sizedFoot("right", viewState.right), INSOLE_STYLE) : ZERO_DEFORM), [viewState, sizedFoot]);
 
   if (!committed || !viewState || !stlLeft || !stlRight) {
     return (
-      <div style={{ minHeight: "100vh", position: "relative", overflow: "hidden" }}>
-        <SplitBackground />
-        <SolutionTopBar />
+      <div style={{ minHeight: "100vh", position: "relative", overflow: "hidden", fontFamily: '"PingFang SC","Microsoft YaHei","Helvetica Neue",Arial,sans-serif' }}>
+        <PageBg />
+        <SolutionTopBar onHistory={onHistory} />
         <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: C.sub, fontSize: "14px" }}>
           正在生成解决方案…
         </div>
@@ -1305,8 +1075,8 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
       for (const f of ["left", "right"] as const) {
         // 与 3D 预览同一条 sizedFoot 通道：手填尺寸必须进导出，否则所见非所打印
         const s = sizedFoot(f, committed[f]);
-        const d = toDeform(s, insoleStyle);
-        await exporter(insoleStyle, f, s.params.footLength, s.params.footWidth, s.params.archCorrection, s.params.baseThickness, s.params.heelThickness, insoleColor, name, d);
+        const d = toDeform(s, INSOLE_STYLE);
+        await exporter(INSOLE_STYLE, f, s.params.footLength, s.params.footWidth, s.params.archCorrection, s.params.baseThickness, s.params.heelThickness, C.insoleColor, name, d);
       }
       toast.success(`双脚鞋垫 ${fmt.toUpperCase()} 文件已开始下载`, { description: "可直接用于 3D 打印" });
       persistSolution(); // 导出过的参数一定要留痕，否则回头对不上手里那份打印件
@@ -1317,22 +1087,16 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
   };
 
   return (
-    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", position: "relative", overflow: "hidden", fontFamily: '"PingFang SC","Microsoft YaHei","Helvetica Neue",Arial,sans-serif' }}>
-      <SplitBackground />
-      <SolutionTopBar />
+    <div className="sol-shell">
+      <PageBg />
+      <SolutionTopBar onHistory={onHistory} />
 
-      <main style={{ flex: 1, display: "flex", gap: "28px", padding: "20px 40px 84px", position: "relative", zIndex: 1, marginTop: "72px", minHeight: 0 }}>
-        {/* 左侧：3D 鞋垫。
-            marginRight 把左栏右缘压回白区内：右栏 aside 只有 440px，比橙色区
-            （max(33.44%,480px)）窄，宽屏下 flex:1 的 Canvas 会延伸进橙区——
-            gridHelper 加大到无边界后网格就画到了右侧 dashboard 上。
-            508 = aside 440 + gap 28 + main 右 padding 40。 */}
-        <section style={{ flex: 1, position: "relative", minHeight: "440px", display: "flex", flexDirection: "column", marginRight: "max(calc(max(33.44vw, 480px) - 508px), 0px)" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
-            <h2 style={{ margin: 0, fontSize: "16px", fontWeight: 700, color: "#5A3A1A" }}>
-              {sideLabel}脚{shellView === "only" ? "鞋壳3D展示" : shellView === "assembly" ? "鞋垫装配3D展示" : "晶格体3D鞋垫展示"}
-            </h2>
-            <div style={{ display: "flex", gap: "6px", background: "rgba(255,255,255,0.6)", padding: "4px", borderRadius: "10px", marginRight: "clamp(32px, 6vw, 96px)" }}>
+      <main className="sol-main">
+        {/* 上：3D 晶格鞋垫（仅标准垫）。舞台高度与采集/报告页脚模区同一公式 */}
+        <section className="sol-stage">
+          <div className="sol-stage-head">
+            <h2 style={{ margin: 0, fontSize: "16px", fontWeight: 700, color: "#1A2F5A" }}>{sideLabel}脚鞋垫展示</h2>
+            <div style={{ display: "flex", gap: "6px", background: "rgba(255,255,255,0.6)", padding: "4px", borderRadius: "10px" }}>
               {(["left", "right"] as const).map((s) => (
                 <button
                   key={s}
@@ -1340,8 +1104,8 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
                   style={{
                     height: "30px", padding: "0 18px", borderRadius: "8px", border: "none", cursor: "pointer",
                     fontSize: "13px", fontWeight: 600,
-                    color: side === s ? "#fff" : "#B2A699",
-                    background: side === s ? C.primary : "#EDE5DC",
+                    color: side === s ? "#fff" : "#99A1B2",
+                    background: side === s ? C.primary : "#DCE2ED",
                     transition: "all 0.18s",
                   }}
                 >
@@ -1350,226 +1114,117 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
               ))}
             </div>
           </div>
-          <div style={{ flex: 1, minHeight: "440px", background: "transparent", position: "relative" }}>
+          <div className="sol-viewer">
             <StlInsoleViewer
               activeFoot={side}
-              style={insoleStyle}
-              color={insoleColor}
+              style={INSOLE_STYLE}
+              color={C.insoleColor}
               leftParams={stlLeft}
               rightParams={stlRight}
               leftDeform={deformLeft}
               rightDeform={deformRight}
-              shellSource={shellSource}
-              shellView={shellView}
-              shellOpacity={shellOpacity}
-              shellAdjust={shellAdjust}
-              onShellInfo={handleShellInfo}
-              onShellError={(m) => toast.error(`鞋壳加载失败：${m}`)}
+              defaultHeatmap
             />
-            {/* 左上悬浮控件：鞋垫颜色 + 其正下方的鞋垫样式 */}
-            <div style={{ position: "absolute", top: "12px", left: "12px", display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "10px", zIndex: 5 }}>
-              {/* 鞋垫颜色切换 */}
-              <div style={{ display: "flex", alignItems: "center", gap: "10px", background: "rgba(255,255,255,0.82)", backdropFilter: "blur(4px)", borderRadius: "14px", padding: "8px 14px", boxShadow: "0 2px 10px rgba(160,110,40,0.14)" }}>
-                <span style={{ fontSize: "12px", fontWeight: 600, color: "#5A3A1A" }}>鞋垫颜色</span>
-                <div style={{ display: "flex", gap: "8px" }}>
-                  {INSOLE_COLORS.map((c) => {
-                    const active = insoleColor === c.value;
-                    return (
-                      <button
-                        key={c.value}
-                        title={c.name}
-                        onClick={() => { markSolutionEdited(); setInsoleColor(c.value); }}
-                        style={{
-                          width: "22px",
-                          height: "22px",
-                          borderRadius: "50%",
-                          background: c.value,
-                          cursor: "pointer",
-                          border: active ? "2px solid #F08614" : "2px solid #fff",
-                          boxShadow: active ? "0 0 0 1.5px #F08614" : "0 1px 3px rgba(0,0,0,0.18)",
-                          padding: 0,
-                          transition: "all 0.15s",
-                        }}
-                      />
-                    );
-                  })}
-                </div>
-              </div>
-              {/* 鞋垫样式切换（整双统一）—— 位于鞋垫颜色正下方 */}
-              <div style={{ display: "flex", alignItems: "center", gap: "10px", background: "rgba(255,255,255,0.82)", backdropFilter: "blur(4px)", borderRadius: "14px", padding: "8px 12px", boxShadow: "0 2px 10px rgba(160,110,40,0.14)" }}>
-                <span style={{ fontSize: "12px", fontWeight: 600, color: "#5A3A1A" }}>鞋垫样式</span>
-                <div style={{ display: "flex", gap: "4px", background: "#EDE5DC", padding: "3px", borderRadius: "9px" }}>
-                  {STYLE_ORDER.map((st) => {
-                    const active = insoleStyle === st;
-                    return (
-                      <button
-                        key={st}
-                        onClick={() => { markSolutionEdited(); setInsoleStyle(st); }}
-                        style={{
-                          height: "26px", padding: "0 12px", borderRadius: "7px", border: "none", cursor: "pointer",
-                          fontSize: "12px", fontWeight: 600,
-                          color: active ? "#fff" : "#8A6A40",
-                          background: active ? C.primary : "transparent",
-                          transition: "all 0.16s",
-                        }}
-                      >
-                        {STYLE_DEFS[st].label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-              {/* 鞋壳：三态切换 + 透明度 + 上传，位于鞋垫样式正下方 */}
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px", background: "rgba(255,255,255,0.82)", backdropFilter: "blur(4px)", borderRadius: "14px", padding: "8px 12px", boxShadow: "0 2px 10px rgba(160,110,40,0.14)" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                  <span style={{ fontSize: "12px", fontWeight: 600, color: "#5A3A1A" }}>鞋壳</span>
-                  <div style={{ display: "flex", gap: "4px", background: "#EDE5DC", padding: "3px", borderRadius: "9px" }}>
-                    {SHELL_VIEWS.map((v) => {
-                      const active = shellView === v.value;
-                      return (
-                        <button
-                          key={v.value}
-                          onClick={() => { markSolutionEdited(); setShellView(v.value); }}
-                          style={{
-                            height: "26px", padding: "0 10px", borderRadius: "7px", border: "none", cursor: "pointer",
-                            fontSize: "12px", fontWeight: 600,
-                            color: active ? "#fff" : "#8A6A40",
-                            background: active ? C.primary : "transparent",
-                            transition: "all 0.16s",
-                          }}
-                        >
-                          {v.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "11px", color: "#8A6A40" }}>
-                  <span style={{ maxWidth: "150px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={shellSource.label}>
-                    当前：{shellSource.label}
-                  </span>
-                  {/* 内置件、历史上传件、上传新件三件事都在这个抽屉里 */}
-                  <button
-                    onClick={() => setShellPickerOpen((v) => !v)}
-                    style={shellPickerOpen ? shellChipBtnOn : shellChipBtn}
-                  >
-                    选择鞋壳形态
-                  </button>
-                </div>
-
-                {shellView === "assembly" && (
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <span style={{ fontSize: "11px", color: "#8A6A40", whiteSpace: "nowrap" }}>鞋壳透明度</span>
-                    <input
-                      type="range"
-                      min={0.1}
-                      max={0.9}
-                      step={0.05}
-                      value={shellOpacity}
-                      onChange={(e) => { markSolutionEdited(); setShellOpacity(Number(e.target.value)); }}
-                      style={{ width: "110px", accentColor: C.primary }}
-                    />
-                    <span style={{ fontSize: "11px", color: "#8A6A40", fontFamily: "monospace" }}>{Math.round(shellOpacity * 100)}%</span>
-                  </div>
-                )}
-
-              </div>
-            </div>
-
           </div>
         </section>
 
-        {/* 右侧：方案面板 */}
-        <aside style={{ width: "440px", minWidth: "420px", display: "flex", flexDirection: "column", gap: "12px", overflow: "hidden", maxHeight: "calc(100vh - 150px)", padding: "2px 8px 0 4px" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "2px" }}>
+        {/* 下：方案参数面板（三卡横排） */}
+        <section className="sol-panel">
+          <div className="sol-panel-head">
             <span style={{ fontSize: "18px", fontWeight: 800, color: "#17191C" }}>{sideLabel}脚解决方案</span>
             <button
               onClick={onViewReport}
-              style={{ height: "34px", padding: "0 16px", borderRadius: "10px", border: "none", cursor: "pointer", fontSize: "13px", fontWeight: 600, color: "#fff", background: C.primary, display: "inline-flex", alignItems: "center", gap: "6px", boxShadow: "0 3px 10px rgba(245,166,35,0.3)" }}
+              style={{ height: "34px", padding: "0 16px", borderRadius: "10px", border: "none", cursor: "pointer", fontSize: "13px", fontWeight: 600, color: "#fff", background: C.primary, display: "inline-flex", alignItems: "center", gap: "6px", boxShadow: "0 3px 10px rgba(7,59,163,0.3)" }}
             >
               返回分析报告 ›
             </button>
           </div>
 
-          {/* 足弓状态 */}
-          <Card>
-            <SectionTitle zh="足弓状态" en="Foot arch status" tip={TIP.arch} />
-            {/* 静默兜底曾被误当真实数据（报告页同款提示），演示值必须显式标注 */}
-            {isDemoData && (
-              <div
-                style={{
-                  marginBottom: "8px",
-                  padding: "6px 10px",
-                  borderRadius: "6px",
-                  background: "rgba(255,90,44,0.10)",
-                  color: "#FF5A2C",
-                  fontSize: "12px",
-                  fontWeight: 600,
-                }}
-              >
-                演示数据：未接入本次测量分析结果，以下参数不可用于生产
-              </div>
-            )}
-            <ArchSpectrum params={committed[side].params} sideLabel={sideLabel} />
-          </Card>
+          <div className="sol-grid">
+            {/* 足弓状态 */}
+            <Card>
+              <SectionTitle zh="足弓状态" en="Foot arch status" tip={TIP.arch} />
+              <CardBody>
+                {/* 静默兜底曾被误当真实数据（报告页同款提示），演示值必须显式标注 */}
+                {isDemoData && (
+                  <div
+                    style={{
+                      marginBottom: "8px",
+                      padding: "6px 10px",
+                      borderRadius: "6px",
+                      background: "rgba(255,90,44,0.10)",
+                      color: "#FF5A2C",
+                      fontSize: "12px",
+                      fontWeight: 600,
+                    }}
+                  >
+                    演示数据：未接入本次测量分析结果，以下参数不可用于生产
+                  </div>
+                )}
+                <ArchSpectrum params={committed[side].params} sideLabel={sideLabel} />
+              </CardBody>
+            </Card>
 
-          {/* 鞋垫尺寸 */}
-          <Card>
-            <SectionTitle zh="鞋垫尺寸" en="Foot dimensions" />
-            <div style={{ display: "flex", gap: "14px" }}>
-              {/* 脚型图 */}
-              <div style={{ flex: "0 0 150px" }}>
-                <FootPair lengthCm={dimFor(side).lengthCm} widthCm={dimFor(side).widthCm} side={side} />
-              </div>
-              {/* 输入区 */}
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "10px" }}>
-                <div style={{ background: "#FFF2E4", borderRadius: "12px", padding: "12px 14px", display: "flex", flexDirection: "column", gap: "10px" }}>
-                  <SizeInputRow label={`${sideLabel}鞋垫长度`} value={insoleSize[side].length} onChange={(v) => { markSolutionEdited(); setInsoleSize((s) => ({ ...s, [side]: { ...s[side], length: v } })); }} />
-                  <div style={{ height: "1px", background: "rgba(200,150,90,0.25)" }} />
-                  <SizeInputRow label={`${sideLabel}鞋垫宽度`} value={insoleSize[side].width} onChange={(v) => { markSolutionEdited(); setInsoleSize((s) => ({ ...s, [side]: { ...s[side], width: v } })); }} />
+            {/* 鞋垫尺寸 */}
+            <Card>
+              <SectionTitle zh="鞋垫尺寸" en="Foot dimensions" />
+              <CardBody row gap={14}>
+                {/* 脚型图：随正文高度撑满（SVG meet 等比缩放）；窄屏让位给右侧输入区，避免「左鞋垫长度」折行 */}
+                <div style={{ flex: "0 0 clamp(108px, 9.4vw, 150px)", display: "flex" }}>
+                  <FootPair lengthCm={dimFor(side).lengthCm} widthCm={dimFor(side).widthCm} side={side} />
                 </div>
-                <div style={{ background: "#FFF2E4", borderRadius: "12px", padding: "12px 14px", fontSize: "14px", fontWeight: 700, color: "#17191C" }}>
-                  匹配鞋码：中国{shoeSizeFor(side)}码
+                {/* 输入区：输入框盒子吃掉剩余高度，两行输入在盒内均匀铺开；鞋码盒贴底 */}
+                <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: "10px" }}>
+                  <div style={{ flex: 1, background: "#E7EFFF", borderRadius: "12px", padding: "12px 14px", display: "flex", flexDirection: "column", justifyContent: "space-evenly", gap: "10px" }}>
+                    <SizeInputRow label={`${sideLabel}鞋垫长度`} value={insoleSize[side].length} onChange={(v) => { markSolutionEdited(); setInsoleSize((s) => ({ ...s, [side]: { ...s[side], length: v } })); }} />
+                    <div style={{ height: "1px", background: "rgba(90,127,200,0.25)" }} />
+                    <SizeInputRow label={`${sideLabel}鞋垫宽度`} value={insoleSize[side].width} onChange={(v) => { markSolutionEdited(); setInsoleSize((s) => ({ ...s, [side]: { ...s[side], width: v } })); }} />
+                  </div>
+                  <div style={{ background: "#E7EFFF", borderRadius: "12px", padding: "12px 14px", fontSize: "14px", fontWeight: 700, color: "#17191C" }}>
+                    匹配鞋码：中国{shoeSizeFor(side)}码
+                  </div>
                 </div>
-              </div>
-            </div>
-          </Card>
+              </CardBody>
+            </Card>
 
-          {/* 鞋垫厚度 */}
-          <Card>
-            <SectionTitle
-              zh="鞋垫厚度" en="Insole thickness"
-              right={
-                <button onClick={() => openDraft("drawer")} style={{ background: "none", border: "none", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: "5px", color: C.primaryDeep, fontSize: "14px", fontWeight: 600, textDecoration: "underline", textUnderlineOffset: "3px" }}>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="7" cy="8" r="2.4" stroke={C.primaryDeep} strokeWidth="1.6" /><circle cx="16" cy="16" r="2.4" stroke={C.primaryDeep} strokeWidth="1.6" /><path d="M9.4 8H20M4 16h9.6" stroke={C.primaryDeep} strokeWidth="1.6" strokeLinecap="round" /></svg>
-                  调整参数
-                </button>
-              }
-            />
-            <ThickPillRow label="足弓矫正厚度" value={`+${committed[side].params.archCorrection}mm`} adjusted={adjusted.arch} tip={TIP.archCorrection} />
-            {/* 基础厚度按当前样式的高度模式选文案：成品垫随鞋码换算，标准垫走压力自适应 */}
-            <ThickPillRow label="基础厚度" value={`${(committed[side].params.baseThickness * 10).toFixed(1)}mm`} adjusted={adjusted.base} tip={STYLE_DEFS[insoleStyle].heightMode === "proportional" ? TIP.base : TIP.baseAdaptive} />
-            <ThickPillRow label="足跟缓冲厚度" value={`${committed[side].params.heelThickness}mm`} adjusted={adjusted.heel} tip={TIP.heel} />
-          </Card>
-        </aside>
+            {/* 鞋垫厚度 */}
+            <Card>
+              <SectionTitle
+                zh="鞋垫厚度" en="Insole thickness"
+                right={
+                  <button onClick={() => openDraft("drawer")} style={{ background: "none", border: "none", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: "5px", color: C.primaryDeep, fontSize: "14px", fontWeight: 600, textDecoration: "underline", textUnderlineOffset: "3px" }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="7" cy="8" r="2.4" stroke={C.primaryDeep} strokeWidth="1.6" /><circle cx="16" cy="16" r="2.4" stroke={C.primaryDeep} strokeWidth="1.6" /><path d="M9.4 8H20M4 16h9.6" stroke={C.primaryDeep} strokeWidth="1.6" strokeLinecap="round" /></svg>
+                    调整参数
+                  </button>
+                }
+              />
+              <CardBody gap={8}>
+                <ThickPillRow label="足弓矫正厚度" value={`+${committed[side].params.archCorrection}mm`} adjusted={adjusted.arch} tip={TIP.archCorrection} />
+                {/* 标准垫走压力自适应基础厚度 */}
+                <ThickPillRow label="基础厚度" value={`${(committed[side].params.baseThickness * 10).toFixed(1)}mm`} adjusted={adjusted.base} tip={STYLE_DEFS[INSOLE_STYLE].heightMode === "proportional" ? TIP.base : TIP.baseAdaptive} />
+                <ThickPillRow label="足跟缓冲厚度" value={`${committed[side].params.heelThickness}mm`} adjusted={adjusted.heel} tip={TIP.heel} />
+              </CardBody>
+            </Card>
+          </div>
+        </section>
+
+        {/* 底栏进 grid 第三行、随内容流动（与报告页一致）：矮屏滚动时不会浮在卡片上 */}
+        <BottomBar
+          userName={currentUser?.name ?? "—"}
+          userId={formatUserId(currentUser?.id)}
+          onBack={handleRemeasure}
+          onRestart={handleFinish}
+          onDownload={() => { if (guardSizes()) setOverlay("download"); }}
+          downloadReady={sizesFilled}
+        />
       </main>
-
-      <BottomBar
-        userName={currentUser?.name ?? "—"}
-        userId={String(currentUser?.id ?? "—")}
-        onBack={handleRemeasure}
-        onRestart={handleFinish}
-        onDownload={() => { if (guardSizes()) setOverlay("download"); }}
-        downloadReady={sizesFilled}
-      />
 
       {/* ── 鞋垫参数调节抽屉（厚度 + 软硬） ── */}
       {overlay === "drawer" && (
         <>
           <SidebarDim />
           <DrawerPanel title="鞋垫参数调节" onReset={resetDefaults}>
-            <ThicknessSliders fs={cur} sys={defaults?.[side]} onParams={editParams} drawerMode style={insoleStyle} />
+            <ThicknessSliders fs={cur} sys={defaults?.[side]} onParams={editParams} drawerMode style={INSOLE_STYLE} />
 
             {/* 软硬调节：Shore A 硬度 */}
             <DetailSectionHeader title="软硬调节" onReset={resetSoftness} style={{ marginTop: "8px" }} />
@@ -1591,30 +1246,15 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
           onDownload={handleDownload}
           stlLeft={toStlParams(sizedFoot("left", committed.left))}
           stlRight={toStlParams(sizedFoot("right", committed.right))}
-          deformLeft={toDeform(sizedFoot("left", committed.left), insoleStyle)}
-          deformRight={toDeform(sizedFoot("right", committed.right), insoleStyle)}
-          color={insoleColor}
-          style={insoleStyle}
+          deformLeft={toDeform(sizedFoot("left", committed.left), INSOLE_STYLE)}
+          deformRight={toDeform(sizedFoot("right", committed.right), INSOLE_STYLE)}
+          color={C.insoleColor}
+          style={INSOLE_STYLE}
           shoeSizeLeft={shoeSizeFor("left")}
           shoeSizeRight={shoeSizeFor("right")}
-          shellSource={shellSource}
-          shellView={shellView}
-          shellOpacity={shellOpacity}
-          shellAdjust={shellAdjust}
         />
       )}
 
-      {/* ── 鞋壳选择抽屉（内置件 + 历史上传件 + 上传新件，按形态图挑） ── */}
-      {shellPickerOpen && (
-        <ShellPickerDrawer
-          currentId={shellSource.id}
-          onPick={handleShellPick}
-          // 上传不关抽屉：图渲好后新卡片就出现在带子里，接着还能比
-          onUpload={(f) => void handleShellFile(f)}
-          refreshKey={shellRefreshKey}
-          onClose={() => setShellPickerOpen(false)}
-        />
-      )}
 
       {/* ── 保存成功提示（顶部居中绿色胶囊） ── */}
       {savedTip && <SaveSuccessToast />}
@@ -1660,6 +1300,68 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
       )}
 
       <style>{`
+        /* 常规屏一屏放完：顶栏 / 3D 舞台（弹性）/ 参数面板 / 固定底栏，舞台吃掉剩余高度。
+           矮屏放不下时舞台收到最小高度后整页纵向滚动——不能 overflow:hidden 把参数卡裁掉 */
+        .sol-shell {
+          --sol-pad-x: clamp(28px, 4.2vw, 78px);
+          --sol-topbar-h: clamp(72px, 9vh, 96px);
+          position: relative;
+          height: 100vh;
+          /* 两向都允许滚动：窄窗口 / 高倍缩放下内容真装不下时给横向滚动条，绝不裁掉 */
+          overflow: auto;
+          font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+        }
+        /*
+         * grid 而非 flex：两行 = 3D 舞台(minmax(260px,1fr)) / 参数面板(auto)。
+         * min-height 让内容超出一屏时随内容撑高、由 .sol-shell 滚动；
+         * flex 容器只有 min-height 时子项高度"不确定"，3D 画布的 height:100% 会塌成 150px，
+         * grid 的网格区域布局后一律视为确定尺寸——所以这里必须是 grid（报告页同理）。
+         */
+        .sol-main {
+          position: relative;
+          z-index: 1;
+          display: grid;
+          /* 列轨道必须显式 minmax(0,1fr)：默认的 auto 列会把 3D 画布的像素缓冲宽度（CSS 宽 × dpr）
+             当成最小内容宽度，浏览器放大到 150% 时整页被撑到 1.5 倍宽、鞋垫和卡片被推出视口 */
+          grid-template-columns: minmax(0, 1fr);
+          /* 舞台下限 340：含 46px 标题行，画布至少 ~294px——再矮鞋垫在宽扁画布里只剩一小块，
+             红蓝定制量看不清。矮屏宁可多滚几十像素 */
+          grid-template-rows: minmax(340px, 1fr) auto auto;
+          min-height: 100%;
+          padding: var(--sol-topbar-h) var(--sol-pad-x) 0;
+        }
+        .sol-stage {
+          position: relative;
+          display: flex;
+          flex-direction: column;
+          min-height: 0;
+          min-width: 0;
+        }
+        .sol-stage-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          margin-bottom: 8px;
+        }
+        .sol-viewer { flex: 1; min-height: 0; min-width: 0; position: relative; }
+        .sol-panel {
+          border-top: 1px solid rgba(0,53,155,0.1);
+          padding-top: 10px;
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+        }
+        .sol-panel-head { display: flex; align-items: center; justify-content: space-between; }
+        .sol-grid {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 14px;
+          /* 三卡等高：同一行统一拉到最高那张的高度 */
+          align-items: stretch;
+        }
+        @media (max-width: 1180px) {
+          .sol-grid { grid-template-columns: 1fr; }
+        }
         @keyframes drawerUp { from { opacity:0; transform: translateY(24px); } to { opacity:1; transform: translateY(0); } }
         @keyframes modalIn { from { opacity:0; transform: scale(0.97); } to { opacity:1; transform: scale(1); } }
         @keyframes slideDown { from { opacity:0; transform: translate(-50%,-12px); } to { opacity:1; transform: translate(-50%,0); } }
@@ -1668,18 +1370,15 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
   );
 }
 
-// ─── 右侧边栏弱化蒙版（抽屉/细节打开时铺在右侧信息区上，浮层之下） ───────────────
+// ─── 页面弱化蒙版（抽屉打开时铺满整页，浮层之下；3D 与参数卡都还隐约可见） ────────
 function SidebarDim() {
   return (
     <div
       style={{
         position: "fixed",
-        top: 0,
-        right: 0,
-        bottom: 0,
-        width: "max(33.44%, 480px)",
-        background: "#9E958C",
-        opacity: 0.8,
+        inset: 0,
+        background: "#8C929E",
+        opacity: 0.55,
         zIndex: 35,
       }}
     />
@@ -1689,7 +1388,7 @@ function SidebarDim() {
 // ─── 抽屉容器（白底、放大，对齐设计稿第二页） ──────────────────────────────────
 function DrawerPanel({ title, onReset, children }: { title: string; onReset: () => void; children: React.ReactNode }) {
   return (
-    <div style={{ position: "fixed", right: "16px", bottom: "16px", width: "min(500px, 40vw)", minWidth: "440px", maxHeight: "calc(100vh - 120px)", overflowY: "auto", background: "#FFFFFF", borderRadius: "18px", boxShadow: "0 16px 56px rgba(150,90,20,0.24)", padding: "22px 24px", zIndex: 40, animation: "drawerUp 0.25s cubic-bezier(0.23,1,0.32,1)", border: `1px solid ${C.border}` }}>
+    <div style={{ position: "fixed", right: "16px", bottom: "16px", width: "min(500px, 40vw)", minWidth: "440px", maxHeight: "calc(100vh - 120px)", overflowY: "auto", background: "#FFFFFF", borderRadius: "18px", boxShadow: "0 16px 56px rgba(14,45,106,0.24)", padding: "22px 24px", zIndex: 40, animation: "drawerUp 0.25s cubic-bezier(0.23,1,0.32,1)", border: `1px solid ${C.border}` }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "18px" }}>
         <span style={{ fontSize: "16px", fontWeight: 700, color: C.dark }}>{title}</span>
         <button onClick={onReset} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "13px", color: C.primaryDeep, fontWeight: 600 }}>↺ 默认参数</button>
@@ -1708,7 +1407,7 @@ function DrawerFooter({ leftBtn, onCancel, onSave, saveLabel = "保存" }: { lef
         </button>
       )}
       <div style={{ marginLeft: "auto", display: "flex", gap: "10px" }}>
-        <button onClick={onCancel} style={{ background: "rgba(255,220,150,0.15)", border: `1.5px solid #F0C080`, borderRadius: "8px", height: "38px", padding: "0 22px", cursor: "pointer", fontSize: "13px", fontWeight: 600, color: C.primaryDeep }}>取消</button>
+        <button onClick={onCancel} style={{ background: "rgba(92,138,232,0.15)", border: `1.5px solid #3768CC`, borderRadius: "8px", height: "38px", padding: "0 22px", cursor: "pointer", fontSize: "13px", fontWeight: 600, color: C.primaryDeep }}>取消</button>
         <button onClick={onSave} style={{ background: C.primary, border: "none", borderRadius: "8px", height: "38px", padding: "0 26px", cursor: "pointer", fontSize: "13px", fontWeight: 700, color: "#fff" }}>{saveLabel}</button>
       </div>
     </div>
@@ -1763,8 +1462,8 @@ function ConfirmModal({ title, body, confirmLabel, onCancel, onConfirm }: {
   title: string; body: string; confirmLabel: string; onCancel: () => void; onConfirm: () => void;
 }) {
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(40,28,12,0.35)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 70 }}>
-      <div style={{ width: "480px", maxWidth: "92vw", background: "linear-gradient(180deg, #FFF8EF 0%, #FFF1E2 100%)", borderRadius: "18px", border: "1.5px solid #E1C2AD", boxShadow: "0 18px 60px rgba(150,95,25,0.22)", overflow: "hidden", animation: "modalIn 0.2s ease" }}>
+    <div style={{ position: "fixed", inset: 0, background: "rgba(12,21,40,0.35)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 70 }}>
+      <div style={{ width: "480px", maxWidth: "92vw", background: "linear-gradient(180deg, #F1F6FF 0%, #E5EEFF 100%)", borderRadius: "18px", border: "1.5px solid #ADBEE1", boxShadow: "0 18px 60px rgba(17,47,105,0.22)", overflow: "hidden", animation: "modalIn 0.2s ease" }}>
         {/* 头 */}
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", padding: "22px 26px 0" }}>
           <span style={{ fontSize: "20px", fontWeight: 700, color: "#17191C", letterSpacing: "0.08em" }}>{title}</span>
@@ -1773,10 +1472,10 @@ function ConfirmModal({ title, body, confirmLabel, onCancel, onConfirm }: {
         {/* 正文 */}
         <p style={{ margin: "18px 26px 26px", fontSize: "16px", lineHeight: 1.75, color: "#17191C", fontWeight: 500 }}>{body}</p>
         {/* 底部两枚按钮 + 竖分隔 */}
-        <div style={{ display: "flex", alignItems: "stretch", borderTop: "1px solid #E1C2AD" }}>
+        <div style={{ display: "flex", alignItems: "stretch", borderTop: "1px solid #ADBEE1" }}>
           <button onClick={onCancel} style={{ flex: 1, background: "none", border: "none", cursor: "pointer", fontSize: "16px", fontWeight: 600, color: "#929292", padding: "16px 0" }}>取消</button>
-          <div style={{ width: "1px", background: "#E1C2AD" }} />
-          <button onClick={onConfirm} style={{ flex: 1, background: "none", border: "none", cursor: "pointer", fontSize: "16px", fontWeight: 700, color: "#FF8400", padding: "16px 0" }}>{confirmLabel}</button>
+          <div style={{ width: "1px", background: "#ADBEE1" }} />
+          <button onClick={onConfirm} style={{ flex: 1, background: "none", border: "none", cursor: "pointer", fontSize: "16px", fontWeight: 700, color: "#00359F", padding: "16px 0" }}>{confirmLabel}</button>
         </div>
       </div>
     </div>
@@ -1784,7 +1483,7 @@ function ConfirmModal({ title, body, confirmLabel, onCancel, onConfirm }: {
 }
 
 // ─── 双脚下载弹窗 ─────────────────────────────────────────────────────────────
-function DualFootModal({ committed, onClose, onDownload, stlLeft, stlRight, deformLeft, deformRight, color, style, shoeSizeLeft, shoeSizeRight, shellSource, shellView, shellOpacity, shellAdjust }: {
+function DualFootModal({ committed, onClose, onDownload, stlLeft, stlRight, deformLeft, deformRight, color, style, shoeSizeLeft, shoeSizeRight }: {
   committed: { left: FootState; right: FootState };
   onClose: () => void;
   onDownload: (fmt: "stl" | "glb") => void;
@@ -1796,11 +1495,6 @@ function DualFootModal({ committed, onClose, onDownload, stlLeft, stlRight, defo
   style: InsoleStyle;
   shoeSizeLeft: number;
   shoeSizeRight: number;
-  /** 与主视图同一套鞋壳设置：下载确认时看到的就是刚才确认的装配效果 */
-  shellSource: ShellSource;
-  shellView: ShellView;
-  shellOpacity: number;
-  shellAdjust: ShellAdjust;
 }) {
   const tableRows: { label: string; left: string; right: string }[] = [
     { label: "鞋垫样式", left: STYLE_DEFS[style].label, right: STYLE_DEFS[style].label },
@@ -1811,14 +1505,13 @@ function DualFootModal({ committed, onClose, onDownload, stlLeft, stlRight, defo
     { label: "鞋垫软硬", left: `${committed.left.hardness} Shore A`, right: `${committed.right.hardness} Shore A` },
   ];
 
-  const cellBorder = "1px solid rgba(200,160,110,0.35)";
+  const cellBorder = "1px solid rgba(110,140,200,0.35)";
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(40,28,12,0.35)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}>
-      <div style={{ width: "960px", maxWidth: "94vw", height: "580px", maxHeight: "90vh", background: "#FFFFFF", borderRadius: "18px", boxShadow: "0 16px 60px rgba(120,70,10,0.28)", display: "flex", overflow: "hidden", animation: "modalIn 0.22s ease" }}>
-        {/* 左：3D 预览（浅色底 + 淡网格）。overflow:hidden 兜住画布，任何情况都不越过弹窗圆角边框 */}
-        <div style={{ flex: 1, position: "relative", minWidth: 0, background: "#FCFAF6", overflow: "hidden" }}>
-          <div style={{ position: "absolute", inset: 0, backgroundImage: "linear-gradient(rgba(180,150,110,0.06) 1px,transparent 1px),linear-gradient(90deg,rgba(180,150,110,0.06) 1px,transparent 1px)", backgroundSize: "28px 28px", pointerEvents: "none" }} />
+    <div style={{ position: "fixed", inset: 0, background: "rgba(12,21,40,0.35)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}>
+      <div style={{ width: "960px", maxWidth: "94vw", height: "580px", maxHeight: "90vh", background: "#FFFFFF", borderRadius: "18px", boxShadow: "0 16px 60px rgba(10,47,120,0.28)", display: "flex", overflow: "hidden", animation: "modalIn 0.22s ease" }}>
+        {/* 左：3D 预览（浅色底）。overflow:hidden 兜住画布，任何情况都不越过弹窗圆角边框 */}
+        <div style={{ flex: 1, position: "relative", minWidth: 0, background: "#F6F8FC", overflow: "hidden" }}>
           <div style={{ position: "absolute", top: "20px", left: "24px", display: "flex", alignItems: "baseline", gap: "10px", zIndex: 2 }}>
             <span style={{ fontSize: "18px", fontWeight: 700, color: C.dark }}>双脚3D鞋垫展示</span>
             <span style={{ fontSize: "12px", color: C.sub }}>3D Dual-Foot Insole View</span>
@@ -1831,10 +1524,6 @@ function DualFootModal({ committed, onClose, onDownload, stlLeft, stlRight, defo
             rightParams={stlRight}
             leftDeform={deformLeft}
             rightDeform={deformRight}
-            shellSource={shellSource}
-            shellView={shellView}
-            shellOpacity={shellOpacity}
-            shellAdjust={shellAdjust}
           />
         </div>
 
@@ -1849,7 +1538,7 @@ function DualFootModal({ committed, onClose, onDownload, stlLeft, stlRight, defo
               <thead>
                 <tr>
                   {["类型", "左脚", "右脚"].map((h) => (
-                    <th key={h} style={{ textAlign: "center", padding: "10px 6px", border: cellBorder, background: "rgba(245,166,35,0.1)", color: C.dark, fontWeight: 700 }}>{h}</th>
+                    <th key={h} style={{ textAlign: "center", padding: "10px 6px", border: cellBorder, background: "rgba(7,59,163,0.1)", color: C.dark, fontWeight: 700 }}>{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -1867,7 +1556,7 @@ function DualFootModal({ committed, onClose, onDownload, stlLeft, stlRight, defo
           {/* 底部：取消 + 下载文件 */}
           <div style={{ display: "flex", alignItems: "center", gap: "12px", padding: "16px 24px", borderTop: `1px solid ${C.border}` }}>
             <button onClick={onClose} style={{ background: "#fff", border: `1.5px solid ${C.primary}`, borderRadius: "8px", height: "44px", padding: "0 26px", cursor: "pointer", fontSize: "15px", fontWeight: 600, color: C.primaryDeep }}>取消</button>
-            <button onClick={() => onDownload("stl")} style={{ flex: 1, background: C.primary, border: "none", borderRadius: "8px", height: "44px", cursor: "pointer", fontSize: "15px", fontWeight: 700, color: "#fff", boxShadow: "0 3px 10px rgba(245,166,35,0.3)" }}>下载文件</button>
+            <button onClick={() => onDownload("stl")} style={{ flex: 1, background: C.primary, border: "none", borderRadius: "8px", height: "44px", cursor: "pointer", fontSize: "15px", fontWeight: 700, color: "#fff", boxShadow: "0 3px 10px rgba(7,59,163,0.3)" }}>下载文件</button>
           </div>
         </div>
       </div>

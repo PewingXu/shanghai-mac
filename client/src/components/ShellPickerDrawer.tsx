@@ -78,9 +78,9 @@ function ShellCard({
           borderRadius: "12px",
           overflow: "hidden",
           cursor: "pointer",
-          border: active ? "2px solid #FF8400" : "2px solid rgba(225,194,173,0.75)",
-          background: active ? "rgba(255,240,222,0.95)" : "rgba(255,255,255,0.82)",
-          boxShadow: active ? "0 4px 14px rgba(255,132,0,0.22)" : "0 2px 8px rgba(160,110,40,0.10)",
+          border: active ? "2px solid #00359F" : "2px solid rgba(173,190,225,0.75)",
+          background: active ? "rgba(226,235,255,0.95)" : "rgba(255,255,255,0.82)",
+          boxShadow: active ? "0 4px 14px rgba(0,53,159,0.22)" : "0 2px 8px rgba(27,53,107,0.10)",
           transition: "all 0.16s",
           display: "block",
           textAlign: "left",
@@ -90,13 +90,13 @@ function ShellCard({
         <div
           style={{
             height: `${THUMB_H}px`,
-            background: "#F4EEE6",
+            background: "#E6EBF4",
             display: "flex", alignItems: "center", justifyContent: "center",
             position: "relative",
           }}
         >
           {state !== "ok" && (
-            <span style={{ fontSize: "11px", color: "#A79279", padding: "0 8px", textAlign: "center", lineHeight: 1.5 }}>
+            <span style={{ fontSize: "11px", color: "#7988A7", padding: "0 8px", textAlign: "center", lineHeight: 1.5 }}>
               {state === "loading" ? "形态图生成中…" : "暂无形态图"}
             </span>
           )}
@@ -117,7 +117,7 @@ function ShellCard({
           )}
         </div>
         {/* 名字 + 体积 */}
-        <div style={{ padding: "6px 8px 7px", borderTop: "1px solid rgba(225,194,173,0.5)" }}>
+        <div style={{ padding: "6px 8px 7px", borderTop: "1px solid rgba(173,190,225,0.5)" }}>
           <div
             style={{
               fontSize: "12px", fontWeight: 700, color: "#17191C",
@@ -126,7 +126,7 @@ function ShellCard({
           >
             {label}
           </div>
-          <div style={{ fontSize: "11px", color: "#9A8672", marginTop: "1px" }}>{sub}</div>
+          <div style={{ fontSize: "11px", color: "#727F9A", marginTop: "1px" }}>{sub}</div>
         </div>
       </button>
 
@@ -136,10 +136,10 @@ function ShellCard({
           style={{
             position: "absolute", top: "5px", right: "5px",
             width: "20px", height: "20px", borderRadius: "50%",
-            background: "#FF8400", color: "#fff",
+            background: "#00359F", color: "#fff",
             fontSize: "12px", fontWeight: 700,
             display: "flex", alignItems: "center", justifyContent: "center",
-            boxShadow: "0 2px 6px rgba(255,132,0,0.4)",
+            boxShadow: "0 2px 6px rgba(0,53,159,0.4)",
           }}
         >
           ✓
@@ -156,7 +156,7 @@ function ShellCard({
             width: "22px", height: "22px", borderRadius: "7px",
             border: "none", cursor: "pointer",
             background: "rgba(255,255,255,0.94)",
-            boxShadow: "0 1px 5px rgba(90,60,20,0.25)",
+            boxShadow: "0 1px 5px rgba(20,43,90,0.25)",
             display: "flex", alignItems: "center", justifyContent: "center",
           }}
         >
@@ -171,7 +171,7 @@ function ShellCard({
           style={{
             position: "absolute", top: `${THUMB_H - 24}px`, left: "50%", transform: "translateX(-50%)",
             border: "none", background: "rgba(255,255,255,0.9)", cursor: "pointer",
-            fontSize: "11px", color: "#FF8400", fontWeight: 600,
+            fontSize: "11px", color: "#00359F", fontWeight: 600,
             borderRadius: "6px", padding: "2px 8px",
           }}
         >
@@ -231,10 +231,10 @@ export default function ShellPickerDrawer({
     <div
       style={{
         position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 80,
-        background: "linear-gradient(180deg, #FFF8EF 0%, #FFF1E2 100%)",
-        borderTop: "1.5px solid #E1C2AD",
+        background: "linear-gradient(180deg, #F1F6FF 0%, #E5EEFF 100%)",
+        borderTop: "1.5px solid #ADBEE1",
         borderTopLeftRadius: "18px", borderTopRightRadius: "18px",
-        boxShadow: "0 -14px 40px rgba(150,95,25,0.20)",
+        boxShadow: "0 -14px 40px rgba(17,47,105,0.20)",
         animation: "drawerUp 0.22s ease",
         padding: "12px 20px 14px",
       }}
@@ -242,14 +242,14 @@ export default function ShellPickerDrawer({
       {/* 头 */}
       <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "10px" }}>
         <span style={{ fontSize: "15px", fontWeight: 700, color: "#17191C", letterSpacing: "0.04em" }}>选择鞋壳形态</span>
-        <span style={{ fontSize: "12px", color: "#9A8672" }}>点一款即换，可连着点几款对比</span>
+        <span style={{ fontSize: "12px", color: "#727F9A" }}>点一款即换，可连着点几款对比</span>
         <div style={{ flex: 1 }} />
         <button
           onClick={onClose}
           style={{
             height: "28px", padding: "0 14px", borderRadius: "8px",
-            border: "1.5px solid #E1C2AD", background: "rgba(255,255,255,0.8)",
-            cursor: "pointer", fontSize: "13px", fontWeight: 600, color: "#8A6A40",
+            border: "1.5px solid #ADBEE1", background: "rgba(255,255,255,0.8)",
+            cursor: "pointer", fontSize: "13px", fontWeight: 600, color: "#40598A",
           }}
         >
           完成
@@ -286,24 +286,24 @@ export default function ShellPickerDrawer({
           onClick={() => fileRef.current?.click()}
           style={{
             flexShrink: 0, width: `${CARD_W}px`, height: `${THUMB_H + 40}px`,
-            borderRadius: "12px", border: "2px dashed #D9BCA4",
+            borderRadius: "12px", border: "2px dashed #A4B6D9",
             background: "rgba(255,255,255,0.55)", cursor: "pointer",
             display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "4px",
-            color: "#FF8400",
+            color: "#00359F",
           }}
         >
           <span style={{ fontSize: "24px", lineHeight: 1 }}>＋</span>
           <span style={{ fontSize: "13px", fontWeight: 700 }}>上传新鞋壳</span>
-          <span style={{ fontSize: "11px", color: "#9A8672" }}>.stl</span>
+          <span style={{ fontSize: "11px", color: "#727F9A" }}>.stl</span>
         </button>
 
         {loading && (
-          <span style={{ fontSize: "12px", color: "#9A8672", alignSelf: "center", whiteSpace: "nowrap" }}>
+          <span style={{ fontSize: "12px", color: "#727F9A", alignSelf: "center", whiteSpace: "nowrap" }}>
             正在读取鞋壳列表…
           </span>
         )}
         {!loading && offline && (
-          <span style={{ fontSize: "12px", color: "#9A8672", alignSelf: "center", maxWidth: "280px", lineHeight: 1.6 }}>
+          <span style={{ fontSize: "12px", color: "#727F9A", alignSelf: "center", maxWidth: "280px", lineHeight: 1.6 }}>
             读取不到已保存的鞋壳（后端服务未运行）。仍可上传新鞋壳，但只在本次会话有效。
           </span>
         )}

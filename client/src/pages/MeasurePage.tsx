@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { formatUserId } from "@/lib/utils";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { useApp } from "@/contexts/AppContext";
 import FeetModel3D from "@/components/FeetModel3D";
 import Pressure2DHeatmap from "@/components/Pressure2DHeatmap";
-import TopNavBar from "@/components/TopNavBar";
+import BrandLogo from "@/components/BrandLogo";
+import HistoryLink from "@/components/HistoryLink";
+import PortPickerModal from "@/components/PortPickerModal";
+import { toast } from "sonner";
 import { deviceManager } from "@/lib/deviceManager";
-import UserFormModal, { type UserFormData } from "@/components/UserFormModal";
-import UserPicker from "@/components/UserPicker";
+import { parseCollectionFile, reshapeFrame } from "@/lib/collectionData";
 import { broadcastException, classifySerialError } from "@/components/ExceptionModal";
 import { analyzePython, type PythonAnalysisResult } from "@/lib/pythonApi";
 import { computeMliLine } from "@/lib/mli";
@@ -102,34 +103,19 @@ type CollectState = "idle" | "collecting" | "done";
 
 const TOTAL_DURATION_MS = 30000; // 实采固定 30s
 const TOTAL_DURATION_SECONDS = 30;
-const COUNTDOWN_RADIUS = 34;
-const COUNTDOWN_CIRCUMFERENCE = 2 * Math.PI * COUNTDOWN_RADIUS;
-/**
- * 轨道与进度弧都占整圈的 75%（顶部留缺口）。
- * 轨道曾在 CSS 里写死 `169.65 56.55`（按 r=36 算的），与这里 r=34 的 160.22 不一致，
- * 导致进度走到 100% 仍比轨道短一截 —— 视觉上"倒计时归零了但环没读完"。
- * 现在两者共用此常量，勿再硬编码。
- */
-const COUNTDOWN_ARC_RATIO = 0.75;
-const COUNTDOWN_ARC_LENGTH = COUNTDOWN_CIRCUMFERENCE * COUNTDOWN_ARC_RATIO;
-const COUNTDOWN_TRACK_DASH = `${COUNTDOWN_ARC_LENGTH} ${COUNTDOWN_CIRCUMFERENCE - COUNTDOWN_ARC_LENGTH}`;
-const COUNTDOWN_DASH_OFFSET = 0;
-const MODEL_SCALE_DEFAULT = 2.4;
-const MODEL_SCALE_STEP = 0.14;
-const MODEL_SCALE_MIN = 1.7;
-const MODEL_SCALE_MAX = 3.66;
+/** 导入回放：按足垫实采帧率逐帧送入同一条管线（≈42fps），30s 的数据回放也是 30s；
+ *  文件更长只取前 30s，与实采口径一致（分析/落盘体积也可控） */
+const REPLAY_FRAME_MS = 24;
+const MAX_REPLAY_FRAMES = Math.round(TOTAL_DURATION_MS / REPLAY_FRAME_MS);
+// 舞台整幅宽度、脚模居中，默认再放大一档
+const MODEL_SCALE_DEFAULT = 3.5;
+const MODEL_SCALE_STEP = 0.18;
+const MODEL_SCALE_MIN = 2.0;
+const MODEL_SCALE_MAX = 4.8;
 
 const HOME_ASSETS = {
   deviceConnected: "/assets/icons/home-page/device-connected.svg",
   deviceDisconnected: "/assets/icons/home-page/device-disconnected.svg",
-};
-
-const MEASURE_ASSETS = {
-  mode3d: "/assets/icons/realtime-pressure-page/view-2d-3d.svg",
-  plus: "/assets/icons/realtime-pressure-page/zoom-in.svg",
-  reset: "/assets/icons/realtime-pressure-page/group-1724.svg",
-  settings: "/assets/icons/realtime-pressure-page/adjust-params.svg",
-  zoomOut: "/assets/icons/realtime-pressure-page/zoom-out.svg",
 };
 
 type SerialNavigator = Navigator & {
@@ -192,14 +178,6 @@ function DeviceStatusBadge({ connected }: { connected?: boolean }) {
   );
 }
 
-function PressureScale() {
-  return (
-    <div className="measure-scale-wrap" aria-label="压力颜色刻度">
-      <div className="measure-color-bar" />
-    </div>
-  );
-}
-
 function ParamSlider({
   label,
   hint,
@@ -231,7 +209,7 @@ function ParamSlider({
         value={value}
         onChange={(event) => onChange(Number(event.target.value))}
         style={{
-          background: `linear-gradient(to right, #ff8400 0 ${pct}%, #efe3d6 ${pct}% 100%)`,
+          background: `linear-gradient(to right, #00359f 0 ${pct}%, #d6deef ${pct}% 100%)`,
         }}
       />
       <div className="measure-param-scale">
@@ -242,106 +220,45 @@ function ParamSlider({
   );
 }
 
-function WaveCard({
-  title,
-  value,
-  unit,
-  large = false,
-  history,
-}: {
-  title: string;
-  value: number;
-  unit: string;
-  large?: boolean;
-  history?: number[];
-}) {
-  // 由历史数据生成实时折线路径（无数据时退回一条平缓静态波形）
-  const paths = useMemo(() => {
-    const W = 320;
-    const H = 70;
-    const pts = history && history.length > 1 ? history : null;
-    if (!pts) {
-      return {
-        area: "M0 36 C58 12 92 68 150 38 C209 7 245 64 320 14 L320 70 L0 70 Z",
-        line: "",
-      };
-    }
-    const n = pts.length;
-    const max = Math.max(...pts, 1);
-    const coords = pts.map((v, i) => {
-      const x = (i / (n - 1)) * W;
-      const y = H - 6 - Math.max(0, Math.min(1, v / max)) * (H - 14);
-      return `${x.toFixed(1)} ${y.toFixed(1)}`;
-    });
-    const line = "M" + coords.join(" L ");
-    const area = `${line} L ${W} ${H} L 0 ${H} Z`;
-    return { area, line };
-  }, [history]);
-
-  return (
-    <div className={large ? "measure-card measure-card-large" : "measure-card"}>
-      <div className="measure-card-top">
-        <span>{title}</span>
-        <strong>
-          {value} <small>{unit}</small>
-        </strong>
-      </div>
-      {large && (
-        <svg className="measure-card-wave" viewBox="0 0 320 70" preserveAspectRatio="none">
-          <defs>
-            <linearGradient id="measureWaveGradient" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#ffd177" stopOpacity="0.95" />
-              <stop offset="100%" stopColor="#fff1d4" stopOpacity="0.9" />
-            </linearGradient>
-          </defs>
-          <path d={paths.area} fill="url(#measureWaveGradient)" />
-          {paths.line && (
-            <path
-              d={paths.line}
-              fill="none"
-              stroke="#ff9422"
-              strokeWidth={2}
-              strokeLinejoin="round"
-              strokeLinecap="round"
-              vectorEffect="non-scaling-stroke"
-            />
-          )}
-        </svg>
-      )}
-    </div>
-  );
-}
-
-function MetricPanel({
+/** 悬浮 HUD 里的一组读数：标题 / 实时大数字 / 平均 · 峰值 */
+function HudGroup({
   heading,
   english,
-  realtimeLabel,
-  values,
   unit,
-  history,
+  values,
 }: {
   heading: string;
   english: string;
-  realtimeLabel: string;
-  values: {
-    realtime: number;
-    average: number;
-    peak: number;
-    total: number;
-  };
   unit: string;
-  history?: number[];
+  values: { realtime: number; average: number; peak: number; total: number };
 }) {
   return (
-    <section className="measure-panel">
-      <h2>
-        <span>{heading}</span>
-        <small>{english}</small>
-      </h2>
-      <WaveCard large title={realtimeLabel} value={values.realtime} unit={unit} history={history} />
-      <div className="measure-card-row">
-        <WaveCard title={heading === "受压面积" ? "平均面积" : "平均压力"} value={values.average} unit={unit} />
-        <WaveCard title={heading === "受压面积" ? "峰值面积" : "峰值压力"} value={values.peak} unit={unit} />
+    <section className="hud-group">
+      <header className="hud-head">
+        <span className="hud-title">{heading}</span>
+        <span className="hud-en">{english}</span>
+      </header>
+      <div className="hud-main">
+        <div className="hud-main-value">
+          <strong>{values.realtime}</strong>
+          <small>{unit}</small>
+        </div>
+      </div>
+      <div className="hud-sub">
+        <div className="hud-sub-item">
+          <span>平均</span>
+          <b>
+            {values.average}
+            <i>{unit}</i>
+          </b>
+        </div>
+        <div className="hud-sub-item">
+          <span>峰值</span>
+          <b>
+            {values.peak}
+            <i>{unit}</i>
+          </b>
+        </div>
       </div>
     </section>
   );
@@ -356,79 +273,96 @@ function ControlButton({
   active?: boolean;
   onClick?: () => void;
 }) {
-  const assetByType: Partial<Record<typeof type, string>> = {
-    mode: MEASURE_ASSETS.mode3d,
-    plus: MEASURE_ASSETS.plus,
-    minus: MEASURE_ASSETS.zoomOut,
-    focus: MEASURE_ASSETS.reset,
-    sliders: MEASURE_ASSETS.settings,
+  const titles: Record<typeof type, string> = {
+    mode: "切换 2D / 3D",
+    plus: "放大",
+    minus: "缩小",
+    focus: "复位视图",
+    sliders: "调整参数",
   };
-  const asset = assetByType[type];
+  // 内联线条图标（无底色）：工具条直接浮在舞台上，不带白底板
+  const icon = (() => {
+    const s = { fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" } as const;
+    switch (type) {
+      case "mode":
+        return (
+          <svg viewBox="0 0 24 24" {...s}>
+            <path d="M12 3 4 7.5v9L12 21l8-4.5v-9L12 3Z" />
+            <path d="M4 7.5 12 12l8-4.5M12 12v9" />
+          </svg>
+        );
+      case "plus":
+        return (
+          <svg viewBox="0 0 24 24" {...s}>
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+        );
+      case "minus":
+        return (
+          <svg viewBox="0 0 24 24" {...s}>
+            <path d="M5 12h14" />
+          </svg>
+        );
+      case "focus":
+        return (
+          <svg viewBox="0 0 24 24" {...s}>
+            <path d="M4 12a8 8 0 1 0 2.5-5.8" />
+            <path d="M4 4v5h5" />
+          </svg>
+        );
+      case "sliders":
+        return (
+          <svg viewBox="0 0 24 24" {...s}>
+            <path d="M6 4v16M12 4v16M18 4v16" />
+            <circle cx="6" cy="9" r="2.2" fill="#fff" />
+            <circle cx="12" cy="15" r="2.2" fill="#fff" />
+            <circle cx="18" cy="8" r="2.2" fill="#fff" />
+          </svg>
+        );
+    }
+  })();
 
   return (
-    <button className={active ? "measure-control active" : "measure-control"} type="button" onClick={onClick}>
-      {asset && <img src={asset} alt="" aria-hidden="true" />}
+    <button
+      className={active ? "measure-control active" : "measure-control"}
+      type="button"
+      onClick={onClick}
+      title={titles[type]}
+      aria-label={titles[type]}
+      aria-pressed={active}
+    >
+      {icon}
     </button>
   );
 }
 
+/** 采集按钮：一枚按钮 + 倒数秒数（进度效果由舞台上的扫描线承担，这里不画圆弧） */
 function CountdownButton({
   state,
   seconds,
-  progress,
-  progressArcRef,
   labelRef,
+  countRef,
   onClick,
 }: {
   state: CollectState;
   seconds: number;
-  progress: number;
-  progressArcRef: RefObject<SVGCircleElement | null>;
   labelRef: RefObject<HTMLSpanElement | null>;
+  countRef: RefObject<HTMLSpanElement | null>;
   onClick?: () => void;
 }) {
-  const normalizedProgress = state === "idle" ? 0 : state === "done" ? 1 : Math.max(0.04, progress);
   const displaySeconds = state === "idle" ? TOTAL_DURATION_SECONDS : state === "done" ? 0 : seconds;
-  const label =
-    state === "done"
-      ? "测量完成"
-      : state === "collecting"
-      ? "停止测量"
-      : "开始测量";
-  const buttonLabel = state === "idle" ? label : `${label} ${String(displaySeconds).padStart(2, "0")}s`;
+  const label = state === "done" ? "测量完成" : state === "collecting" ? "停止测量" : "开始测量";
 
   return (
-    <button
-      className={`measure-countdown-button ${state}`}
-      type="button"
-      onClick={onClick}
-      aria-label={buttonLabel}
-    >
-      <span className="measure-countdown-ring">
-        <svg viewBox="0 0 88 88" aria-hidden="true">
-        <defs>
-          <linearGradient id="measureCountdownGradient" x1="0" y1="88" x2="88" y2="0">
-            <stop offset="0%" stopColor="#ffe8a7" />
-            <stop offset="50%" stopColor="#ffb152" />
-            <stop offset="100%" stopColor="#ff8500" />
-          </linearGradient>
-        </defs>
-        <circle className="countdown-track" cx="44" cy="44" r={COUNTDOWN_RADIUS} />
-        <circle
-          ref={progressArcRef}
-          className={state === "done" ? "countdown-progress done" : "countdown-progress"}
-          cx="44"
-          cy="44"
-          r={COUNTDOWN_RADIUS}
-          strokeDasharray={`${COUNTDOWN_ARC_LENGTH * normalizedProgress} ${COUNTDOWN_CIRCUMFERENCE - COUNTDOWN_ARC_LENGTH * normalizedProgress}`}
-          strokeDashoffset={COUNTDOWN_DASH_OFFSET}
-        />
-        </svg>
-        <span className="countdown-core">
-          <i />
-        </span>
+    <button className={`measure-countdown-button ${state}`} type="button" onClick={onClick} aria-label={label}>
+      <span className="countdown-core">
+        <i />
       </span>
-      <strong ref={labelRef}>{buttonLabel}</strong>
+      <strong ref={labelRef}>{label}</strong>
+      <span className="dock-count">
+        <span ref={countRef}>{String(displaySeconds).padStart(2, "0")}</span>
+        <small>s</small>
+      </span>
     </button>
   );
 }
@@ -436,26 +370,30 @@ function CountdownButton({
 export default function MeasurePage({
   onNext,
   onEnd,
-  onStepBack,
+  onHistory,
 }: {
   onNext: () => void;
   /** 结束体验：清当前用户并直接回首页（不是流程下一步） */
   onEnd: () => void;
+  /** 右上角常驻「体验记录」入口 */
+  onHistory?: () => void;
+  /** 测量页已去掉步骤导航条，保留该 prop 仅为兼容调用方 */
   onStepBack?: (step: number) => void;
 }) {
-  const { currentUser, setAnalysis, createUser, setCurrentUser, historyUsers } = useApp();
+  const { setAnalysis } = useApp();
   const [collectState, setCollectState] = useState<CollectState>("idle");
-  // 本次采集/回放总时长：实采固定 30s；导入回放 = CSV 帧数 × REPLAY_FRAME_MS（跟数据走）
+  // 本次采集/回放总时长：实采固定 30s；导入回放 = 帧数 × REPLAY_FRAME_MS（跟数据走）
   const [durationMs, setDurationMs] = useState(TOTAL_DURATION_MS);
   const durationMsRef = useRef(TOTAL_DURATION_MS);
   const setDuration = (ms: number) => {
     durationMsRef.current = ms;
     setDurationMs(ms);
   };
-  // 体验模式点"开始测量" → 必须先有用户：
-  // 库里有用户 → 弹"选择体验用户"（历史用户搜索选择 / 创建）；没有 → 直接弹创建表单
-  const [showRegister, setShowRegister] = useState(false);
-  const [showPicker, setShowPicker] = useState(false);
+  // 导入回放：当前回放的文件名（null = 实采）；回放期间忽略足垫实时帧
+  const [replayFile, setReplayFile] = useState<string | null>(null);
+  const replayingRef = useRef(false);
+  const replayTimerRef = useRef<number | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [modelScale, setModelScale] = useState(MODEL_SCALE_DEFAULT);
   // 视图模式：3d 脚模 / 2d 压力矩阵网格（由 2D/3D 按钮切换）
@@ -467,8 +405,10 @@ export default function MeasurePage({
   // 参数面板：过滤 ADC 噪声(0-25，后续接 SerialService.filterThreshold) / 颜色显示饱和度(0-255)
   const [noiseFilter, setNoiseFilter] = useState(14);
   const [colorLevel, setColorLevel] = useState(128);
-  const progressArcRef = useRef<SVGCircleElement | null>(null);
   const labelRef = useRef<HTMLSpanElement | null>(null);
+  const countRef = useRef<HTMLSpanElement | null>(null);
+  // 舞台扫描线：采集期间从脚模底部扫到顶部（30s 一遍），进度直接改 style 不走 setState
+  const scanRef = useRef<HTMLDivElement | null>(null);
   const rafRef = useRef<number | null>(null);
   const startedAtRef = useRef<number | null>(null);
   const elapsedBeforeStartRef = useRef(0);
@@ -481,9 +421,6 @@ export default function MeasurePage({
   const [connecting, setConnecting] = useState(false);
   const [areaData, setAreaData] = useState(EMPTY_METRICS);
   const [pressureData, setPressureData] = useState(EMPTY_METRICS);
-  // 实时折线的历史缓冲（最近 ~80 个采样点）
-  const [areaHistory, setAreaHistory] = useState<number[]>([]);
-  const [pressureHistory, setPressureHistory] = useState<number[]>([]);
   const noiseFilterRef = useRef(noiseFilter);
   const metricAccRef = useRef({ frames: 0, areaSum: 0, areaPeak: 0, pressSum: 0, pressPeak: 0 });
   const lastMetricUiRef = useRef(0);
@@ -532,8 +469,9 @@ export default function MeasurePage({
     const area = active * CELL_AREA_CM2; // cm²
     const pressure = sum; // ADC 总和（压力代理值，后续可标定为 pa）
 
-    // 采集/回放中记录帧（供完成后送 Python 分析），上限 900 帧防内存膨胀
-    if (collectingRef.current && framesRef.current.length < 900) {
+    // 采集期间逐帧记录（供完成后送分析），上限 900 帧防内存膨胀；
+    // 回放不在这里记录——它自己持有全量帧，播完直接写 framesRef
+    if (collectingRef.current && !replayingRef.current && framesRef.current.length < 900) {
       framesRef.current.push(frame.flat());
     }
 
@@ -562,8 +500,6 @@ export default function MeasurePage({
       peak: Math.round(acc.pressPeak),
       total: Math.round(acc.pressSum),
     });
-    setAreaHistory((h) => [...(h.length >= 80 ? h.slice(-79) : h), Math.round(area)]);
-    setPressureHistory((h) => [...(h.length >= 80 ? h.slice(-79) : h), Math.round(pressure)]);
   };
 
   const resetMetrics = () => {
@@ -572,8 +508,6 @@ export default function MeasurePage({
     framesRef.current = [];
     setAreaData(EMPTY_METRICS);
     setPressureData(EMPTY_METRICS);
-    setAreaHistory([]);
-    setPressureHistory([]);
   };
 
   // 订阅全局设备帧（串口桥 WebSocket 或 Web Serial，deviceManager 统一分发）+ 连接状态。
@@ -582,7 +516,10 @@ export default function MeasurePage({
   // （handleFrameRef 在下方"订阅后台 job"处声明，两条管线共用）
   useEffect(() => {
     deviceManager.setFilterThreshold(noiseFilterRef.current);
-    deviceManager.setOnData((frame) => handleFrameRef.current(frame));
+    // 回放导入数据期间忽略足垫实时帧，避免两路数据混进同一条指标管线
+    deviceManager.setOnData((frame) => {
+      if (!replayingRef.current) handleFrameRef.current(frame);
+    });
     setDeviceConnected(deviceManager.isConnected());
     const onStatus = (e: Event) => {
       const detail = (e as CustomEvent<{ connected?: boolean }>).detail;
@@ -595,6 +532,9 @@ export default function MeasurePage({
     };
   }, []);
 
+  // 手动选 COM 口兜底弹窗（串口桥在跑、但自动扫描没匹配到已登记足垫时打开）
+  const [showPortPicker, setShowPortPicker] = useState(false);
+
   const connectDevice = async () => {
     if (connecting) return;
     if (deviceConnected) {
@@ -603,11 +543,16 @@ export default function MeasurePage({
     }
     setConnecting(true);
     try {
-      // 先自动匹配已授权的足垫（校验设备码），没有再弹浏览器授权框
+      // 桥模式：桥自动扫描；兜底模式：先自动匹配已授权的足垫（校验设备码），没有再弹浏览器授权框
       await deviceManager.connectWithPrompt();
     } catch (err) {
-      // 连接失败：按错误类型弹出对应异常弹窗
-      broadcastException(classifySerialError(err));
+      if (deviceManager.bridgeAvailable) {
+        // 桥在跑却没找到已登记足垫：换了垫子 / 固件不回身份 / 口被占——让用户直接指定 COM 口
+        setShowPortPicker(true);
+      } else {
+        // 浏览器直连路径失败：按错误类型弹出对应异常弹窗
+        broadcastException(classifySerialError(err));
+      }
     } finally {
       setConnecting(false);
     }
@@ -649,27 +594,24 @@ export default function MeasurePage({
     };
   }, []);
 
-  const progress = collectState === "done" ? 1 : Math.min(elapsedMs / durationMs, 1);
   const remaining = Math.max(0, Math.ceil((durationMs - elapsedMs) / 1000));
 
   const syncCountdownVisual = (elapsed: number, state: CollectState) => {
     const p = state === "done" ? 1 : Math.min(Math.max(elapsed / durationMsRef.current, 0), 1);
-    const visibleLength = COUNTDOWN_ARC_LENGTH * p;
-    progressArcRef.current?.setAttribute(
-      "stroke-dasharray",
-      `${visibleLength} ${COUNTDOWN_CIRCUMFERENCE - visibleLength}`,
-    );
+    if (scanRef.current) {
+      scanRef.current.style.setProperty("--scan-p", p.toFixed(4));
+      scanRef.current.dataset.state = state;
+    }
 
+    const seconds =
+      state === "idle"
+        ? TOTAL_DURATION_SECONDS
+        : Math.max(0, Math.ceil((durationMsRef.current - elapsed) / 1000));
     if (labelRef.current) {
-      const seconds = Math.max(0, Math.ceil((durationMsRef.current - elapsed) / 1000));
-      const prefix =
-        state === "done"
-          ? "测量完成"
-          : state === "collecting"
-          ? "停止测量"
-          : "开始测量";
-      labelRef.current.textContent =
-        state === "idle" ? prefix : `${prefix} ${String(seconds).padStart(2, "0")}s`;
+      labelRef.current.textContent = state === "done" ? "测量完成" : state === "collecting" ? "停止测量" : "开始测量";
+    }
+    if (countRef.current) {
+      countRef.current.textContent = String(seconds).padStart(2, "0");
     }
   };
 
@@ -717,11 +659,13 @@ export default function MeasurePage({
 
   // 空闲 → 开始一次正式采集（实采需要设备在线）
   const beginCollect = () => {
-    // 设备未连接就开始只会空转倒数（选完用户直接倒数的 bug 即此）：拦下并提示
+    // 设备未连接就开始只会空转倒数：拦下并提示
     if (!deviceManager.isConnected()) {
       broadcastException("disconnected");
       return;
     }
+    stopReplay();
+    setReplayFile(null);
     setDuration(TOTAL_DURATION_MS); // 实采固定 30s（回放可能改过时长，这里恢复）
     elapsedBeforeStartRef.current = 0;
     elapsedRef.current = 0;
@@ -732,27 +676,7 @@ export default function MeasurePage({
     startCollectTimer();
   };
 
-  // 需要用户时的统一入口：库里有用户 → 选择界面；没有 → 直接创建表单
-  const requireUser = () => {
-    if (historyUsers.length > 0) setShowPicker(true);
-    else setShowRegister(true);
-  };
-
-  // 创建完成：入库设为当前用户（ID 服务端自增分配）→ 关弹窗。
-  // 不自动开始采集——填完信息就立刻倒数体验太突兀，由用户再点"开始测量"。
-  const handleRegister = async (data: UserFormData) => {
-    const user = await createUser(data);
-    setCurrentUser(user);
-    setShowRegister(false);
-  };
-
-  // 选择历史用户完成（点"开始体验"）：设为当前用户 → 关选择界面。
-  // 同上：不自动开始采集，等用户再点"开始测量"。
-  const handlePickUser = (user: (typeof historyUsers)[number]) => {
-    setCurrentUser(user);
-    setShowPicker(false);
-  };
-
+  // 体验模式不登记人名：点"开始测量"直接采集（记录入库时挂到匿名「体验」用户）
   const handleCollectClick = () => {
     if (collectState === "done") {
       onNext();
@@ -765,21 +689,13 @@ export default function MeasurePage({
       return;
     }
 
-    // 实采需要设备在线：先查设备再选用户（免得选完用户才提示设备没连）
-    if (!deviceManager.isConnected()) {
-      broadcastException("disconnected");
-      return;
-    }
-    // 体验模式（未选定用户）→ 正式采集前先选择/创建用户；完成后需再点"开始测量"
-    if (!currentUser) {
-      requireUser();
-      return;
-    }
     beginCollect();
   };
 
   const resetCollecting = () => {
     stopRaf();
+    stopReplay();
+    setReplayFile(null);
     startedAtRef.current = null;
     elapsedBeforeStartRef.current = 0;
     elapsedRef.current = 0;
@@ -805,6 +721,72 @@ export default function MeasurePage({
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ===== 导入数据回放（csv/json）：逐帧送入同一条指标/热力管线，扫描线随进度走，播完自动分析 =====
+  const startReplay = (frames: number[][], fileName: string) => {
+    stopRaf();
+    stopReplay();
+    resetMetrics();
+    const n = frames.length;
+    const total = n * REPLAY_FRAME_MS;
+    setDuration(total);
+    elapsedBeforeStartRef.current = 0;
+    elapsedRef.current = 0;
+    setElapsedMs(0);
+    setReplayFile(fileName);
+    setCollectState("collecting");
+    replayingRef.current = true;
+
+    const startAt = performance.now();
+    let last = -1;
+    // 时间戳追帧：后台标签页 interval 被节流时按真实耗时跳到应播帧，总时长不变
+    replayTimerRef.current = window.setInterval(() => {
+      const now = performance.now();
+      const idx = Math.min(n - 1, Math.floor((now - startAt) / REPLAY_FRAME_MS));
+      if (idx > last) {
+        last = idx;
+        handleFrameRef.current(reshapeFrame(frames[idx]));
+        const elapsed = Math.min((idx + 1) * REPLAY_FRAME_MS, total);
+        elapsedRef.current = elapsed;
+        syncCountdownVisual(elapsed, "collecting");
+        if (now - lastStateSyncRef.current > 120) {
+          lastStateSyncRef.current = now;
+          setElapsedMs(elapsed);
+        }
+      }
+      if (idx >= n - 1) {
+        stopReplay();
+        framesRef.current = frames; // 全量送分析（不受 handleFrame 的 900 帧上限影响）
+        setElapsedMs(total);
+        setCollectState("done");
+      }
+    }, REPLAY_FRAME_MS);
+  };
+
+  // ===== 导入数据回放（csv/json）：逐帧送入同一条指标/热力管线，扫描线随进度走，播完自动分析 =====
+  const stopReplay = () => {
+    if (replayTimerRef.current !== null) {
+      window.clearInterval(replayTimerRef.current);
+      replayTimerRef.current = null;
+    }
+    replayingRef.current = false;
+  };
+
+  const handleImportFile = async (file: File) => {
+    try {
+      let frames = await parseCollectionFile(file);
+      if (frames.length === 0) {
+        window.alert("未在文件中找到有效的压力帧数据（需含 data 列，每帧 4096 个值）");
+        return;
+      }
+      if (frames.length > MAX_REPLAY_FRAMES) frames = frames.slice(0, MAX_REPLAY_FRAMES);
+      startReplay(frames, file.name);
+    } catch (err) {
+      window.alert(`导入失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  useEffect(() => () => stopReplay(), []);
 
   // 分析完成（可能发生在本页或后台）：入库并跳报告页
   const onNextRef = useRef(onNext);
@@ -836,112 +818,18 @@ export default function MeasurePage({
 
   return (
     <div className="measure-shell">
-      {/* 测量页不放"历史用户"入口（设计要求）；步骤条保留可回退 */}
-      <TopNavBar currentStep={2} transparent showHistory={false} onStepClick={onStepBack} />
-
-      <main className="measure-main">
-        <section className="measure-stage">
-          <header className="measure-title">
-            <div>
-              <h1>实时压力展示</h1>
-              <span>Real-time Pressure Monitoring</span>
-            </div>
-          </header>
-
-          <div className="measure-visual">
-            <PressureScale />
-
-            <div
-              className="measure-model"
-              style={{ pointerEvents: viewMode === "2d" ? "auto" : "none" }}
-            >
-              {viewMode === "3d" ? (
-                <FeetModel3D
-                  width="100%"
-                  height="100%"
-                  modelScale={modelScale}
-                  lockedView
-                  pressureData={latestFrame}
-                  heatVmax={colorLevel}
-                />
-              ) : (
-                <Pressure2DHeatmap realtimeData={latestFrame} vmax={colorLevel} />
-              )}
-            </div>
-
-            {showParams && (
-              <div className="measure-control-panel">
-                <ParamSlider
-                  label="过滤ADC噪声"
-                  hint="信号平滑程度"
-                  min={0}
-                  max={50}
-                  value={noiseFilter}
-                  onChange={setNoiseFilter}
-                />
-                <div className="measure-param-divider" />
-                <ParamSlider
-                  label="颜色显示"
-                  hint="颜色饱和程度"
-                  min={0}
-                  max={255}
-                  value={colorLevel}
-                  onChange={setColorLevel}
-                />
-              </div>
-            )}
-
-            <div className="measure-controls">
-              <ControlButton
-                type="mode"
-                active={viewMode === "2d"}
-                onClick={() => setViewMode((v) => (v === "3d" ? "2d" : "3d"))}
-              />
-              <ControlButton type="plus" onClick={() => zoomModel(1)} />
-              <ControlButton type="minus" onClick={() => zoomModel(-1)} />
-              <ControlButton type="focus" onClick={resetModelView} />
-              <ControlButton
-                type="sliders"
-                active={showParams}
-                onClick={() => setShowParams((v) => !v)}
-              />
-            </div>
-          </div>
-
-          <div className="measure-countdown-row">
-            <CountdownButton
-              state={collectState}
-              seconds={remaining}
-              progress={progress}
-              progressArcRef={progressArcRef}
-              labelRef={labelRef}
-              onClick={handleCollectClick}
-            />
-          </div>
-        </section>
-
-        <aside className="measure-sidebar">
-          <MetricPanel
-            heading="受压面积"
-            english="Pressure Contact Area"
-            realtimeLabel="实时面积"
-            values={areaData}
-            unit="cm²"
-            history={areaHistory}
-          />
-          <MetricPanel
-            heading="压力"
-            english="Pressure"
-            realtimeLabel="实时压力"
-            values={pressureData}
-            unit="pa"
-            history={pressureHistory}
-          />
-        </aside>
-      </main>
-
-      <footer className="measure-footer">
-        <div className="measure-footer-left">
+      {showPortPicker && (
+        <PortPickerModal
+          onClose={() => setShowPortPicker(false)}
+          onConnected={() => toast.success("足垫已连接", { description: "可以开始测量了" })}
+        />
+      )}
+      {/* 顶栏：左 Logo；右 设备状态/连接/导入 + 常驻「体验记录」入口。不放标题与步骤导航条 */}
+      <header className="measure-topbar">
+        <div className="measure-topbar-left">
+          <BrandLogo size={44} />
+        </div>
+        <div className="measure-topbar-right">
           <DeviceStatusBadge connected={deviceConnected} />
           <button
             className="measure-connect-btn"
@@ -951,33 +839,122 @@ export default function MeasurePage({
           >
             {connecting ? "连接中…" : deviceConnected ? "断开设备" : "连接设备"}
           </button>
+          {/* 导入设备软件导出的 sit*.csv（或本系统落盘的原始帧 CSV）回放并分析，不需要连足垫 */}
+          <button
+            className="measure-connect-btn measure-import-btn"
+            type="button"
+            onClick={() => {
+              if (collectState === "collecting") {
+                resetCollecting();
+                return;
+              }
+              fileInputRef.current?.click();
+            }}
+          >
+            {collectState === "collecting" && replayFile ? "停止回放" : "导入数据"}
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv,.json"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void handleImportFile(f);
+              e.target.value = ""; // 允许重复选择同一文件
+            }}
+          />
+          <HistoryLink onClick={onHistory} />
         </div>
-        <div className="measure-footer-right">
-          <span className="measure-current-user">
-            {currentUser ? `当前用户：${currentUser.name}（ID:${formatUserId(currentUser.id)}）` : "体验模式：未登记用户"}
+      </header>
+
+      {/* 舞台：铺满顶栏与底部控制坞之间；脚模居中放大，读数 HUD / 工具条 / 色阶全部悬浮其上 */}
+      <section className="measure-stage">
+        <div className="measure-model" style={{ pointerEvents: viewMode === "2d" ? "auto" : "none" }}>
+          {viewMode === "3d" ? (
+            <FeetModel3D
+              width="100%"
+              height="100%"
+              modelScale={modelScale}
+              lockedView
+              pressureData={latestFrame}
+              heatVmax={colorLevel}
+            />
+          ) : (
+            <Pressure2DHeatmap realtimeData={latestFrame} vmax={colorLevel} />
+          )}
+          {/* 采集扫描线：从下往上扫过脚模，带向下拖影；位置由 --scan-p 驱动 */}
+          <div ref={scanRef} className="measure-scan" data-state={collectState} aria-hidden="true">
+            <span className="measure-scan-trail" />
+            <span className="measure-scan-line" />
+          </div>
+        </div>
+
+        {/* 左：玻璃质感读数 HUD */}
+        <aside className="measure-hud">
+          <HudGroup heading="受压面积" english="Contact Area" unit="cm²" values={areaData} />
+          <div className="hud-divider" />
+          <HudGroup heading="压力" english="Pressure" unit="pa" values={pressureData} />
+        </aside>
+
+        {/* 右：竖排工具条 */}
+        <div className="measure-controls">
+          <ControlButton
+            type="mode"
+            active={viewMode === "2d"}
+            onClick={() => setViewMode((v) => (v === "3d" ? "2d" : "3d"))}
+          />
+          <ControlButton type="plus" onClick={() => zoomModel(1)} />
+          <ControlButton type="minus" onClick={() => zoomModel(-1)} />
+          <ControlButton type="focus" onClick={resetModelView} />
+          <ControlButton type="sliders" active={showParams} onClick={() => setShowParams((v) => !v)} />
+        </div>
+
+        {showParams && (
+          <div className="measure-control-panel">
+            <ParamSlider label="过滤ADC噪声" hint="信号平滑程度" min={0} max={50} value={noiseFilter} onChange={setNoiseFilter} />
+            <div className="measure-param-divider" />
+            <ParamSlider label="颜色显示" hint="颜色饱和程度" min={0} max={255} value={colorLevel} onChange={setColorLevel} />
+          </div>
+        )}
+      </section>
+
+      {/* 底部控制坞：深蓝胶囊，采集按钮 + 采集状态 + 当前用户 + 操作 */}
+      <footer className="measure-dock">
+        <CountdownButton
+          state={collectState}
+          seconds={remaining}
+          labelRef={labelRef}
+          countRef={countRef}
+          onClick={handleCollectClick}
+        />
+        <div className="dock-status">
+          <span className="dock-status-label">
+            {collectState === "collecting" ? "采集中" : collectState === "done" ? "已完成" : "就绪"}
           </span>
-          <button onClick={resetCollecting}>重新测量</button>
-          <button className="primary-link" onClick={onEnd}>
+          <span className="dock-status-sub">
+            {collectState === "collecting"
+              ? replayFile
+                ? `回放 ${Math.round(durationMs / 1000)}s 导入数据`
+                : "请保持自然站立"
+              : collectState === "done"
+              ? "正在生成分析报告"
+              : `单次采集 ${TOTAL_DURATION_SECONDS}s`}
+          </span>
+        </div>
+        <div className="dock-divider" />
+        <span className="dock-user" title={replayFile ?? undefined}>
+          {replayFile ? `导入：${replayFile}` : "实时采集"}
+        </span>
+        <div className="dock-actions">
+          <button type="button" onClick={resetCollecting}>
+            重新测量
+          </button>
+          <button type="button" className="dock-end" onClick={onEnd}>
             结束体验
           </button>
         </div>
       </footer>
-
-      {/* 选择体验用户（库里有用户时）：历史用户搜索选择 / 转创建 */}
-      {showPicker && (
-        <UserPicker
-          onConfirm={handlePickUser}
-          onCreateNew={() => {
-            setShowPicker(false);
-            setShowRegister(true);
-          }}
-          onClose={() => setShowPicker(false)}
-        />
-      )}
-
-      {showRegister && (
-        <UserFormModal mode="create" onSubmit={(d) => void handleRegister(d)} onCancel={() => setShowRegister(false)} />
-      )}
 
       {generating && (
         <div className="measure-loading-overlay">
@@ -1001,24 +978,20 @@ export default function MeasurePage({
 const measureStyles = `
   .measure-shell {
     --measure-pad-x: clamp(28px, 4.2vw, 78px);
-    --measure-pad-top: clamp(82px, 9.4vh, 112px);
-    --measure-footer-h: clamp(60px, 7vh, 76px);
-    --measure-gap: clamp(26px, 3vw, 54px);
-    --measure-sidebar-w: clamp(386px, 28.5vw, 540px);
+    --measure-topbar-h: clamp(72px, 9vh, 96px);
+    --measure-dock-h: clamp(104px, 13vh, 132px);
+    --measure-control-size: clamp(38px, 2.4vw, 46px);
+    --brand: #00359b;
     position: relative;
     width: 100vw;
     height: 100vh;
     min-height: 0;
     overflow: hidden;
-    /* 顶部淡橙 → 向下渐白的背景 + 透视地面网格（静态 SVG，向上渐浅已内置）。
-       网格必须做成元素背景图而不是独立 DOM 层：fixed + 3D transform + mask
-       的网格 div 会触发 Chromium 合成层排序 bug，被画到页面内容之上
-       （卡片看起来"透明"）。背景图物理上永远在内容之下，杜绝此问题。 */
-    background:
-      url("/assets/icons/perspective-grid.svg") center bottom / 100% 100% no-repeat,
-      linear-gradient(180deg, #FFF4EC 0%, #FFFFFF 57.5%, #FFFFFF 100%);
+    /* 顶部淡蓝 → 向下渐白的干净背景（透视网格已取消） */
+    background: linear-gradient(180deg, #EEF4FF 0%, #FFFFFF 57.5%, #FFFFFF 100%);
     isolation: isolate;
-    font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+    /* 数字用本地 Inter（index.html 已内置），中文回落到系统黑体 */
+    font-family: "Inter", "HarmonyOS Sans SC", "MiSans", "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
     color: #1f1f1f;
   }
 
@@ -1030,96 +1003,298 @@ const measureStyles = `
     overflow: hidden;
   }
 
-  /* 网格已并入 .measure-shell 的 background（perspective-grid.svg），
-     不再使用独立网格 DOM 层（合成层 bug，见 shell 注释） */
-
-  .measure-main {
-    position: relative;
-    z-index: 1;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) var(--measure-sidebar-w);
-    gap: var(--measure-gap);
-    width: 100%;
-    max-width: 1760px;
-    height: 100vh;
-    min-height: 0;
-    max-height: 100vh;
-    margin: 0 auto;
-    padding: var(--measure-pad-top) var(--measure-pad-x) var(--measure-footer-h);
-    box-sizing: border-box;
-    overflow: hidden;
-  }
-
-  .measure-stage {
-    position: relative;
-    min-width: 0;
-    height: 100%;
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  .measure-title {
+  /* ── 顶栏：左 Logo+标题，右 设备状态+连接 ── */
+  .measure-topbar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 12;
+    height: var(--measure-topbar-h);
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
-    gap: clamp(16px, 1.7vw, 28px);
-    margin-bottom: clamp(8px, 1vh, 12px);
-    min-height: 0;
-  }
-
-  .measure-title h1 {
-    margin: 0;
-    font-size: clamp(21px, 1.36vw, 26px);
-    line-height: 1.2;
-    font-weight: 800;
-    letter-spacing: 0;
-  }
-
-  .measure-title span {
-    display: block;
-    margin-top: 4px;
-    font-size: clamp(13px, 0.85vw, 16px);
-    font-weight: 700;
-  }
-
-  .measure-visual {
-    --measure-panel-w: clamp(232px, 17vw, 299px);
-    --measure-panel-h: clamp(180px, 21vh, 208px);
-    --measure-panel-right: clamp(4px, 1vw, 18px);
-    --measure-panel-bottom: clamp(24px, 4.5vh, 60px);
-    --measure-control-size: clamp(38px, 2.4vw, 46.3px);
-    position: relative;
-    height: 100%;
-    min-height: 0;
-    /* 允许参数面板向下探出到倒计时行右侧空白处（模型已用 top/bottom 自限，不会溢出） */
-    overflow: visible;
-  }
-
-  .measure-control-panel {
-    position: absolute;
-    right: var(--measure-panel-right);
-    bottom: var(--measure-panel-bottom);
-    width: var(--measure-panel-w);
-    height: var(--measure-panel-h);
-    border-radius: 10px;
-    background: #ffffff;
-    border: 1px solid #f79831;
+    padding: 0 var(--measure-pad-x);
     box-sizing: border-box;
-    z-index: 2;
+  }
+
+  .measure-topbar-left {
+    display: flex;
+    align-items: center;
+    gap: clamp(18px, 1.8vw, 32px);
+  }
+
+  .measure-topbar-right {
+    display: flex;
+    align-items: center;
+    gap: clamp(12px, 1.15vw, 22px);
+  }
+
+  .measure-device-status {
+    width: clamp(96px, 6.6vw, 128px);
+    height: auto;
+    display: block;
+  }
+
+  .measure-connect-btn {
+    border: 1px solid var(--brand);
+    background: #ffffff;
+    color: var(--brand);
+    border-radius: 999px;
+    padding: clamp(7px, 0.7vh, 10px) clamp(14px, 1.1vw, 20px);
+    font-size: clamp(12px, 0.83vw, 15px);
+    font-weight: 700;
+    white-space: nowrap;
+    transition: background 160ms ease, transform 160ms ease;
+  }
+
+  .measure-connect-btn:hover { background: #eaf1ff; }
+  .measure-import-btn {
+    background: var(--brand);
+    color: #ffffff;
+  }
+  .measure-import-btn:hover { background: #0a44b8; }
+  .measure-connect-btn:active { transform: scale(0.97); }
+  .measure-connect-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+  /* ── 舞台：铺满顶栏与控制坞之间 ── */
+  .measure-stage {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: var(--measure-topbar-h);
+    bottom: var(--measure-dock-h);
+    z-index: 1;
+  }
+
+  .measure-model {
+    position: absolute;
+    /* 左右对称 → 脚模中心 = 视口中心，与底部控制坞对齐；HUD / 工具条浮在两侧留白上 */
+    left: calc(var(--measure-pad-x) + clamp(150px, 11vw, 200px));
+    right: calc(var(--measure-pad-x) + clamp(150px, 11vw, 200px));
+    top: 0;
+    bottom: 0;
+    pointer-events: none;
+  }
+
+  /* ── 采集扫描线：脚模区域内从下往上扫，向下拖影 ── */
+  .measure-scan {
+    --scan-p: 0;
+    position: absolute;
+    /* 线宽贴着脚模宽度走（比脚模略宽一点），不横扫整屏 */
+    left: 18%;
+    right: 18%;
+    /* 扫描行程要盖过整只脚：脚模在舞台里从底部约 5%（脚跟）伸到约 93%（脚趾尖），
+       原来的 10%→90% 在大拇指中段就停了；改成 4%→97%，收尾时线已越过趾尖 */
+    bottom: calc(4% + var(--scan-p) * 93%);
+    height: 0;
+    opacity: 0;
+    pointer-events: none;
+    z-index: 3;
+    transition: bottom 120ms linear, opacity 240ms ease;
+  }
+
+  .measure-scan[data-state="collecting"] { opacity: 1; }
+  .measure-scan[data-state="done"] { opacity: 0; transition-delay: 0ms, 400ms; }
+
+  .measure-scan-line {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 2px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, rgba(0,53,155,0) 0%, #2f6bff 12%, #9fc3ff 50%, #2f6bff 88%, rgba(0,53,155,0) 100%);
+    box-shadow:
+      0 0 6px rgba(63, 120, 255, 0.9),
+      0 0 18px rgba(63, 120, 255, 0.55),
+      0 0 40px rgba(63, 120, 255, 0.3);
+  }
+
+  .measure-scan-trail {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    height: clamp(70px, 11vh, 120px);
+    background: linear-gradient(180deg, rgba(63, 120, 255, 0.34) 0%, rgba(63, 120, 255, 0.12) 45%, rgba(63, 120, 255, 0) 100%);
+    mask-image: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent);
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent);
+  }
+
+  /* ── 左：无框读数（直接浮在舞台上） ── */
+  .measure-hud {
+    position: absolute;
+    left: var(--measure-pad-x);
+    top: 50%;
+    transform: translateY(-50%);
+    width: clamp(230px, 17vw, 300px);
+    display: grid;
+    gap: clamp(22px, 3.4vh, 40px);
+    z-index: 4;
+  }
+
+  .hud-group {
+    display: grid;
+    gap: clamp(8px, 1.2vh, 14px);
+    padding-left: clamp(12px, 1vw, 18px);
+    border-left: 3px solid var(--brand);
+  }
+
+  .hud-head {
     display: flex;
     flex-direction: column;
-    justify-content: center;
-    gap: clamp(10px, 1.4vh, 14px);
-    padding: clamp(14px, 1.8vh, 18px) clamp(16px, 1.3vw, 22px);
-    box-shadow: 0 6px 18px rgba(220, 150, 80, 0.12);
+    gap: 2px;
   }
 
-  .measure-param {
-    display: grid;
-    gap: clamp(5px, 0.7vh, 8px);
+  .hud-title {
+    font-size: clamp(13px, 0.9vw, 16px);
+    font-weight: 600;
+    letter-spacing: 0.22em;
+    color: #2a3550;
   }
+
+  .hud-en {
+    font-size: clamp(9px, 0.62vw, 11px);
+    font-weight: 500;
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+    color: #8d98b3;
+  }
+
+  .hud-main {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .hud-main-value {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .hud-main-value strong {
+    font-family: "Inter", "Helvetica Neue", Arial, sans-serif;
+    font-size: clamp(44px, 3.6vw, 66px);
+    font-weight: 700;
+    line-height: 0.95;
+    color: var(--brand);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.04em;
+  }
+
+  .hud-main-value small {
+    font-family: "Inter", "Helvetica Neue", Arial, sans-serif;
+    font-size: clamp(12px, 0.85vw, 15px);
+    font-weight: 500;
+    color: #8d98b3;
+  }
+
+  .hud-sub {
+    display: flex;
+    gap: clamp(18px, 1.6vw, 30px);
+  }
+
+  .hud-sub-item {
+    display: grid;
+    gap: 3px;
+  }
+
+  .hud-sub-item span {
+    font-size: clamp(10px, 0.68vw, 12px);
+    font-weight: 500;
+    letter-spacing: 0.18em;
+    color: #8d98b3;
+  }
+
+  .hud-sub-item b {
+    font-family: "Inter", "Helvetica Neue", Arial, sans-serif;
+    font-size: clamp(17px, 1.2vw, 22px);
+    font-weight: 600;
+    color: #1f2a44;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+
+  .hud-sub-item i {
+    margin-left: 3px;
+    font-style: normal;
+    font-size: clamp(9px, 0.62vw, 11px);
+    font-weight: 500;
+    color: #8d98b3;
+  }
+
+  .hud-divider { display: none; }
+
+  /* ── 右：竖排工具条（贴右边缘） ── */
+  .measure-controls {
+    position: absolute;
+    right: var(--measure-pad-x);
+    top: 50%;
+    transform: translateY(-50%);
+    display: grid;
+    gap: clamp(10px, 1.4vh, 16px);
+    z-index: 5;
+  }
+
+  /* 无底工具按钮：细描边圆形 + 线条图标，悬停/激活时填充品牌蓝 */
+  .measure-control {
+    width: var(--measure-control-size);
+    height: var(--measure-control-size);
+    border: 1.5px solid rgba(0, 53, 155, 0.35);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--brand);
+    padding: 0;
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    transition: background 140ms ease, color 140ms ease, border-color 140ms ease, transform 140ms ease;
+  }
+
+  .measure-control svg {
+    width: 52%;
+    height: 52%;
+    display: block;
+  }
+
+  .measure-control:hover {
+    border-color: var(--brand);
+    transform: translateY(-1px);
+  }
+  .measure-control:active { transform: scale(0.94); }
+
+  .measure-control.active {
+    background: var(--brand);
+    border-color: var(--brand);
+    color: #ffffff;
+  }
+  .measure-control.active svg circle { fill: var(--brand); }
+
+  /* 参数浮层：贴在工具条左侧 */
+  .measure-control-panel {
+    position: absolute;
+    right: calc(var(--measure-pad-x) + var(--measure-control-size) + clamp(20px, 1.6vw, 28px));
+    top: 50%;
+    transform: translateY(-50%);
+    width: clamp(232px, 17vw, 299px);
+    box-sizing: border-box;
+    padding: clamp(14px, 1.8vh, 18px) clamp(16px, 1.3vw, 22px);
+    border-radius: 18px;
+    background: rgba(255, 255, 255, 0.8);
+    border: 1px solid rgba(255, 255, 255, 0.9);
+    box-shadow: 0 20px 50px rgba(0, 53, 155, 0.16);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    display: grid;
+    gap: clamp(10px, 1.4vh, 14px);
+    z-index: 6;
+  }
+
+  .measure-param { display: grid; gap: clamp(5px, 0.7vh, 8px); }
 
   .measure-param-head {
     display: flex;
@@ -1129,7 +1304,7 @@ const measureStyles = `
   }
 
   .measure-param-title {
-    font-size: clamp(14px, 0.95vw, 17px);
+    font-size: clamp(13px, 0.9vw, 16px);
     font-weight: 800;
     color: #17191c;
     white-space: nowrap;
@@ -1138,7 +1313,7 @@ const measureStyles = `
   .measure-param-hint {
     font-size: clamp(10px, 0.66vw, 12px);
     font-weight: 500;
-    color: #b3a392;
+    color: #7c89a6;
     white-space: nowrap;
   }
 
@@ -1146,7 +1321,7 @@ const measureStyles = `
     -webkit-appearance: none;
     appearance: none;
     width: 100%;
-    height: clamp(14px, 1vw, 18px);
+    height: clamp(10px, 0.8vw, 14px);
     border-radius: 999px;
     outline: none;
     cursor: pointer;
@@ -1159,7 +1334,7 @@ const measureStyles = `
     height: clamp(16px, 1.2vw, 20px);
     border-radius: 50%;
     background: #ffffff;
-    box-shadow: 0 1px 4px rgba(160, 91, 28, 0.35);
+    box-shadow: 0 1px 4px rgba(19,49,109,0.35);
     cursor: pointer;
   }
 
@@ -1169,7 +1344,7 @@ const measureStyles = `
     border: none;
     border-radius: 50%;
     background: #ffffff;
-    box-shadow: 0 1px 4px rgba(160, 91, 28, 0.35);
+    box-shadow: 0 1px 4px rgba(19,49,109,0.35);
     cursor: pointer;
   }
 
@@ -1178,375 +1353,191 @@ const measureStyles = `
     justify-content: space-between;
     font-size: clamp(11px, 0.72vw, 13px);
     font-weight: 600;
-    color: #6b6256;
+    color: #565d6b;
   }
 
   .measure-param-divider {
     height: 1px;
-    background: rgba(203, 161, 115, 0.3);
+    background: rgba(0, 53, 155, 0.14);
   }
 
-  .measure-scale-wrap {
-    position: absolute;
-    left: 0;
-    top: clamp(72px, 12vh, 132px);
-    width: clamp(22px, 1.6vw, 30px);
-    height: clamp(285px, 41vh, 430px);
-  }
-
-  .measure-color-bar {
-    position: absolute;
-    inset: 0 auto 0 0;
-    width: clamp(13px, 0.95vw, 18px);
-    height: 100%;
-    border-radius: 999px;
-    background: linear-gradient(180deg, #ff8282 0%, #ff8400 19%, #ffc758 39%, #d1ffa4 61%, #6bcbff 100%);
-    box-shadow: 0 10px 24px rgba(255, 132, 0, 0.14);
-  }
-
-  .measure-model {
-    position: absolute;
-    left: clamp(40px, 4.8vw, 92px);
-    right: clamp(40px, 4.8vw, 92px);
-    top: 0px;
-    /* 用 bottom 而非定高：模型始终被限制在可视区内，小屏也不会溢出 */
-    bottom: clamp(8px, 1.4vh, 20px);
-    pointer-events: none;
-  }
-
-  .measure-controls {
-    position: absolute;
-    right: calc(var(--measure-panel-right) + clamp(46px, 3.9vw, 76px));
-    /* 落在参数面板正上方：面板底 + 面板高 + 间距 */
-    bottom: calc(var(--measure-panel-bottom) + var(--measure-panel-h) + clamp(10px, 1.4vh, 18px));
-    display: grid;
-    gap: clamp(7px, 0.55vw, 10px);
-    z-index: 5;
-  }
-
-  .measure-control {
-    width: var(--measure-control-size);
-    height: var(--measure-control-size);
-    border: 1px solid #f79831;
-    border-radius: 6px;
-    background: #fff4e8;
-    color: #f79831;
-    font-size: 15px;
-    font-weight: 800;
-    line-height: 1;
-    box-shadow: none;
-    overflow: hidden;
-    display: grid;
-    place-items: center;
-    padding: 0;
-  }
-
-  .measure-control.active {
-    color: #f79831;
-    background: #fff4e8;
-    box-shadow: none;
-  }
-
-  .measure-control img {
-    display: block;
-    width: calc(100% + 2px);
-    height: calc(100% + 2px);
-    margin: -1px;
-    object-fit: cover;
-  }
-
-  .measure-plus-icon,
-  .measure-minus-icon {
-    position: relative;
-    width: 27px;
-    height: 27px;
-    display: block;
-  }
-
-  .measure-plus-icon::before,
-  .measure-plus-icon::after,
-  .measure-minus-icon::before {
-    content: "";
-    position: absolute;
+  /* ── 底部控制坞：深蓝胶囊 ── */
+  .measure-dock {
+    position: fixed;
     left: 50%;
-    top: 50%;
-    width: 27px;
-    height: 5px;
-    border-radius: 999px;
-    background: #ff9828;
-    transform: translate(-50%, -50%);
-  }
-
-  .measure-plus-icon::after {
-    width: 5px;
-    height: 27px;
-  }
-
-  .measure-focus-icon {
-    width: 30px;
-    height: 30px;
-    border: 5px solid #ded1c3;
-    border-radius: 999px;
-    box-sizing: border-box;
-    box-shadow: 0 0 0 7px rgba(222, 209, 195, 0.4);
-  }
-
-  .measure-sliders-icon {
-    position: relative;
-    width: 30px;
-    height: 28px;
-    display: flex;
-    justify-content: space-between;
-    align-items: stretch;
-  }
-
-  .measure-sliders-icon::before,
-  .measure-sliders-icon::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background:
-      linear-gradient(#ff9828, #ff9828) 4px 0 / 4px 100% no-repeat,
-      linear-gradient(#ff9828, #ff9828) 13px 0 / 4px 100% no-repeat,
-      linear-gradient(#ff9828, #ff9828) 22px 0 / 4px 100% no-repeat;
-  }
-
-  .measure-sliders-icon::after {
-    background:
-      radial-gradient(circle, #fff4e8 0 5px, #ff9828 5px 8px, transparent 8px) 4px 8px / 16px 16px no-repeat,
-      radial-gradient(circle, #fff4e8 0 5px, #ff9828 5px 8px, transparent 8px) 13px 16px / 16px 16px no-repeat,
-      radial-gradient(circle, #fff4e8 0 5px, #ff9828 5px 8px, transparent 8px) 22px 7px / 16px 16px no-repeat;
-  }
-
-  .measure-countdown-row {
-    position: absolute;
-    left: 50%;
-    bottom: clamp(4px, 1.2vh, 16px);
+    bottom: clamp(18px, 2.8vh, 30px);
     transform: translateX(-50%);
-    z-index: 6;
+    z-index: 12;
+    display: flex;
+    align-items: center;
+    gap: clamp(12px, 1.2vw, 20px);
+    max-width: calc(100vw - var(--measure-pad-x) * 2);
+    box-sizing: border-box;
+    padding: 7px clamp(12px, 1vw, 18px) 7px 7px;
+    border-radius: 999px;
+    background: linear-gradient(120deg, #0d47c0 0%, #00359b 55%, #062c80 100%);
+    color: #ffffff;
+    box-shadow:
+      0 22px 54px rgba(0, 53, 155, 0.38),
+      inset 0 1px 0 rgba(255, 255, 255, 0.18);
   }
 
+  /* 采集按钮：白色胶囊 = 图标 + 文案 + 倒数秒数（无圆弧） */
   .measure-countdown-button {
-    position: relative;
-    width: clamp(128px, 9vw, 174px);
-    min-height: clamp(96px, 12vh, 150px);
+    display: flex;
+    align-items: center;
+    gap: clamp(10px, 0.9vw, 14px);
+    padding: 6px clamp(10px, 0.9vw, 14px) 6px 6px;
     border: 0;
-    background: transparent;
-    display: grid;
-    place-items: center;
-    gap: 8px;
-    color: #5a3a1a;
-    padding: 0;
+    border-radius: 999px;
+    background: #ffffff;
+    color: var(--brand);
     cursor: pointer;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+    transition: transform 160ms ease, box-shadow 160ms ease;
   }
 
-  .measure-countdown-ring {
-    position: relative;
-    width: clamp(88px, 6.15vw, 118px);
-    height: clamp(88px, 6.15vw, 118px);
-    display: grid;
-    place-items: center;
-  }
-
-  .measure-countdown-button svg {
-    position: absolute;
-    inset: 0;
-    z-index: 1;
-    width: 100%;
-    height: 100%;
-    transform: rotate(135deg);
-    transform-origin: 50% 50%;
-  }
-
-  .measure-countdown-button.collecting svg {
-    animation: measure-pulse-glow 1.6s ease-in-out infinite;
-  }
-
-  .countdown-track,
-  .countdown-progress {
-    fill: none;
-    stroke-width: clamp(6px, 0.42vw, 8px);
-  }
-
-  .countdown-track {
-    stroke: rgba(180, 160, 130, 0.35);
-    stroke-linecap: round;
-    stroke-dasharray: 169.65 56.55;
-  }
-
-  .countdown-progress {
-    stroke: url(#measureCountdownGradient);
-    stroke-linecap: round;
-    transition: stroke-dasharray 260ms ease;
-  }
-
-  .countdown-progress.done {
-    stroke: #ff8a00;
-  }
+  .measure-countdown-button:hover { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.26); }
+  .measure-countdown-button:active { transform: scale(0.97); }
 
   .countdown-core {
-    position: relative;
-    z-index: 2;
-    width: clamp(50px, 3.55vw, 68px);
-    height: clamp(50px, 3.55vw, 68px);
+    width: clamp(36px, 2.6vw, 44px);
+    height: clamp(36px, 2.6vw, 44px);
     border-radius: 999px;
     display: grid;
     place-items: center;
-    background: rgba(200, 180, 150, 0.52);
-    transition: background 180ms ease, box-shadow 180ms ease;
+    background: var(--brand);
+    flex: 0 0 auto;
+    transition: background 180ms ease;
   }
 
-  .measure-countdown-button.collecting .countdown-core,
-  .measure-countdown-button.paused .countdown-core,
-  .measure-countdown-button.done .countdown-core {
-    background: #f5a623;
-    box-shadow: 0 4px 14px rgba(245, 166, 35, 0.28);
-  }
-
+  /* 待测量：播放三角；采集中：停止方块；完成：对勾感的圆点 */
   .countdown-core i {
-    width: clamp(18px, 1.25vw, 24px);
-    height: clamp(18px, 1.25vw, 24px);
-    border-radius: clamp(3px, 0.22vw, 4px);
-    background: rgba(150, 120, 80, 0.82);
     display: block;
+    width: 34%;
+    height: 34%;
+    margin-left: 10%;
+    background: #ffffff;
+    clip-path: polygon(0 0, 100% 50%, 0 100%);
   }
 
-  .measure-countdown-button.collecting .countdown-core i,
-  .measure-countdown-button.paused .countdown-core i,
+  .measure-countdown-button.collecting .countdown-core { background: #e5484d; }
+  .measure-countdown-button.collecting .countdown-core i {
+    margin-left: 0;
+    width: 32%;
+    height: 32%;
+    border-radius: 2px;
+    clip-path: none;
+  }
+
+  .measure-countdown-button.done .countdown-core { background: #1aa36b; }
   .measure-countdown-button.done .countdown-core i {
-    background: #ffffff;
+    margin-left: 0;
+    width: 30%;
+    height: 30%;
+    border-radius: 999px;
+    clip-path: none;
   }
 
   .measure-countdown-button strong {
-    position: relative;
-    z-index: 2;
-    font-size: clamp(14px, 0.94vw, 18px);
-    font-weight: 800;
+    font-size: clamp(14px, 0.95vw, 17px);
+    font-weight: 700;
+    letter-spacing: 0.08em;
     white-space: nowrap;
-    line-height: 1.3;
-    color: #5a3a1a;
+    line-height: 1.2;
   }
 
-  @keyframes measure-pulse-glow {
-    0% { filter: drop-shadow(0 0 0 rgba(245, 166, 35, 0.6)); }
-    50% { filter: drop-shadow(0 0 8px rgba(245, 166, 35, 0.82)); }
-    100% { filter: drop-shadow(0 0 0 rgba(245, 166, 35, 0.6)); }
-  }
-
-  .measure-sidebar {
-    display: grid;
-    align-content: start;
-    gap: clamp(22px, 4.2vh, 62px);
-    padding-top: clamp(38px, 7vh, 98px);
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  .measure-panel h2 {
+  .dock-count {
     display: flex;
     align-items: baseline;
-    gap: clamp(12px, 1.18vw, 22px);
-    margin: 0 0 clamp(12px, 1.5vh, 18px);
+    gap: 2px;
+    padding-left: clamp(10px, 0.9vw, 14px);
+    border-left: 1px solid rgba(0, 53, 155, 0.18);
+    font-family: "Inter", "Helvetica Neue", Arial, sans-serif;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
   }
 
-  .measure-panel h2 span {
-    font-size: clamp(22px, 1.46vw, 28px);
+  .dock-count > span {
+    font-size: clamp(22px, 1.7vw, 30px);
     font-weight: 700;
-    color: #17191c;
+    letter-spacing: -0.04em;
   }
 
-  .measure-panel h2 small {
-    font-size: clamp(12px, 0.83vw, 16px);
-    font-weight: 600;
-    color: #6b6256;
-  }
-
-  .measure-card {
-    min-height: clamp(84px, 9.63vh, 104px);
-    border: 1px solid #ffbf7b;
-    border-radius: 12px;
-    background: linear-gradient(180deg, #ffffff 50%, #fff3de 100%);
-    box-shadow: 0 2px 6px rgba(220, 185, 146, 0.4);
-    overflow: hidden;
-    box-sizing: border-box;
-  }
-
-  .measure-card:not(.measure-card-large) {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .measure-card-large {
-    height: clamp(136px, 15.74vh, 170px);
-    margin-bottom: clamp(8px, 1.1vh, 12px);
-    background: #ffffff; /* 实色：设计图卡片不透背景网格 */
-  }
-
-  .measure-card-top {
-    position: relative;
-    z-index: 1;
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: clamp(12px, 1.05vw, 20px);
-    padding: clamp(24px, 3.1vh, 34px) clamp(20px, 1.67vw, 32px) 0;
-  }
-
-  .measure-card:not(.measure-card-large) .measure-card-top {
-    flex: 1;
-    display: grid;
-    place-content: center;
-    justify-items: center;
-    text-align: center;
-    gap: clamp(3px, 0.5vh, 6px);
-    padding: 0 8px;
-  }
-
-  .measure-card-top span {
-    color: #17191c;
-    font-size: clamp(18px, 1.25vw, 24px);
-    font-weight: 700;
-  }
-
-  .measure-card:not(.measure-card-large) .measure-card-top span {
-    order: 2;
-    margin-top: 0;
-    color: #6b6256;
-    font-size: clamp(12px, 0.78vw, 15px);
+  .dock-count small {
+    font-size: clamp(11px, 0.8vw, 14px);
     font-weight: 500;
+    color: #8d98b3;
   }
 
-  .measure-card-top strong {
-    color: #17191c;
-    font-size: clamp(20px, 1.25vw, 24px);
-    font-weight: 800;
-  }
-
-  .measure-card-top small {
-    font-size: clamp(13px, 0.83vw, 16px);
-    font-weight: 600;
-    color: #8a8275;
-  }
-
-  .measure-card:not(.measure-card-large) .measure-card-top strong {
-    font-size: clamp(18px, 1.04vw, 20px);
-  }
-
-  .measure-card-wave {
-    width: 100%;
-    height: clamp(58px, 7.4vh, 80px);
-    margin-top: clamp(10px, 1.5vh, 16px);
-    display: block;
-  }
-
-  .measure-card-row {
+  .dock-status {
     display: grid;
-    /* 两张卡（平均/峰值）平分整行，与上方实时卡片同宽（原三列是"总值"卡时代的遗留） */
-    grid-template-columns: repeat(2, 1fr);
-    gap: clamp(7px, 0.48vw, 9px);
+    gap: 2px;
+    min-width: 0;
   }
 
+  .dock-status-label {
+    font-size: clamp(13px, 0.9vw, 15px);
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    white-space: nowrap;
+  }
+
+  .dock-status-sub {
+    font-size: clamp(10px, 0.7vw, 12px);
+    font-weight: 500;
+    color: rgba(255, 255, 255, 0.72);
+    white-space: nowrap;
+  }
+
+  .dock-divider {
+    width: 1px;
+    height: clamp(28px, 3.4vh, 38px);
+    background: rgba(255, 255, 255, 0.22);
+    flex: 0 0 auto;
+  }
+
+  .dock-user {
+    font-size: clamp(12px, 0.83vw, 14px);
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.86);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: clamp(160px, 16vw, 280px);
+  }
+
+  .dock-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .dock-actions button {
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    background: transparent;
+    color: #ffffff;
+    border-radius: 999px;
+    padding: clamp(7px, 0.7vh, 9px) clamp(12px, 1vw, 16px);
+    font-size: clamp(12px, 0.8vw, 14px);
+    font-weight: 700;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background 140ms ease, transform 140ms ease;
+  }
+
+  .dock-actions button:hover { background: rgba(255, 255, 255, 0.14); }
+  .dock-actions button:active { transform: scale(0.96); }
+
+  .dock-actions .dock-end {
+    background: #ffffff;
+    border-color: #ffffff;
+    color: var(--brand);
+  }
+
+  .dock-actions .dock-end:hover { background: #eaf1ff; }
+
+  /* ── 生成报告遮罩 ── */
   .measure-loading-overlay {
     position: fixed;
     inset: 0;
@@ -1554,7 +1545,7 @@ const measureStyles = `
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(90, 65, 35, 0.32);
+    background: rgba(35,53,90,0.32);
     backdrop-filter: blur(2px);
     animation: measure-loading-fade 180ms ease-out;
   }
@@ -1565,10 +1556,10 @@ const measureStyles = `
     gap: clamp(16px, 2.4vh, 26px);
     width: min(420px, calc(100vw - 64px));
     padding: clamp(30px, 4.5vh, 44px) clamp(28px, 2.6vw, 40px);
-    border-radius: 14px;
-    background: linear-gradient(180deg, #fff8ec 0%, #fdeed8 100%);
-    border: 1px solid #f6a44c;
-    box-shadow: 0 24px 70px rgba(160, 100, 40, 0.3);
+    border-radius: 18px;
+    background: #ffffff;
+    border: 1px solid rgba(0, 53, 155, 0.2);
+    box-shadow: 0 24px 70px rgba(27,53,107,0.3);
     animation: measure-loading-pop 200ms cubic-bezier(0.23, 1, 0.32, 1);
   }
 
@@ -1580,307 +1571,38 @@ const measureStyles = `
 
   .measure-loading-card p {
     margin: 0;
-    color: #3a2d1c;
+    color: #1c263a;
     font-size: clamp(15px, 1vw, 18px);
     font-weight: 700;
   }
 
-  @keyframes measure-loading-spin {
-    to { transform: rotate(360deg); }
-  }
-
-  @keyframes measure-loading-fade {
-    from { opacity: 0; }
-    to { opacity: 1; }
-  }
-
+  @keyframes measure-loading-spin { to { transform: rotate(360deg); } }
+  @keyframes measure-loading-fade { from { opacity: 0; } to { opacity: 1; } }
   @keyframes measure-loading-pop {
     from { opacity: 0; transform: translateY(8px) scale(0.96); }
     to { opacity: 1; transform: translateY(0) scale(1); }
   }
 
-  .measure-footer {
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 12;
-    height: var(--measure-footer-h);
-    display: grid;
-    grid-template-columns: minmax(150px, 260px) minmax(0, auto);
-    justify-content: space-between;
-    align-items: center;
-    padding: 0 var(--measure-pad-x);
-    box-sizing: border-box;
-    background: transparent;
-  }
-
-  .measure-footer-left,
-  .measure-footer-right {
-    display: flex;
-    align-items: center;
-    gap: clamp(12px, 1.15vw, 22px);
-  }
-
-  .measure-device-status {
-    width: clamp(104px, 7.1vw, 136px);
-    height: auto;
-    display: block;
-  }
-
-  .measure-connect-btn {
-    border: 1px solid #f79831;
-    background: #fff4e8;
-    color: #f08614;
-    border-radius: 8px;
-    padding: clamp(6px, 0.6vh, 9px) clamp(12px, 1vw, 18px);
-    font-size: clamp(12px, 0.83vw, 15px);
-    font-weight: 700;
-    white-space: nowrap;
-    transition: background 160ms ease, transform 160ms ease;
-  }
-
-  .measure-connect-btn:hover {
-    background: #ffe9d2;
-  }
-
-  .measure-connect-btn:active {
-    transform: scale(0.97);
-  }
-
-  .measure-connect-btn:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .measure-footer-right span {
-    font-size: clamp(12px, 0.83vw, 16px);
-    font-weight: 800;
-    color: #3d3d3d;
-    white-space: nowrap;
-  }
-
-  .measure-footer-right button {
-    border: 0;
-    background: transparent;
-    color: #3d3d3d;
-    text-decoration: underline;
-    text-underline-offset: 4px;
-    font-size: clamp(12px, 0.83vw, 16px);
-    font-weight: 800;
-    white-space: nowrap;
-  }
-
-  .measure-footer-right .primary-link {
-    color: #ff8400;
-  }
-
+  /* ── 响应式 ── */
   @media (max-width: 1400px) {
     .measure-shell {
-      --measure-pad-x: clamp(24px, 3.2vw, 44px);
-      --measure-sidebar-w: clamp(330px, 31vw, 410px);
-      --measure-gap: clamp(18px, 2.2vw, 30px);
-    }
-
-    .measure-main {
-      grid-template-columns: minmax(0, 1fr) var(--measure-sidebar-w);
-    }
-
-    .measure-visual {
-      --measure-panel-w: clamp(216px, 18vw, 252px);
-      --measure-panel-h: clamp(174px, 20vh, 198px);
-      --measure-panel-right: clamp(2px, 0.7vw, 12px);
-    }
-
-    .measure-model {
-      left: clamp(34px, 4vw, 70px);
-      right: clamp(34px, 4vw, 70px);
-      bottom: clamp(8px, 1.4vh, 20px);
+      --measure-pad-x: clamp(22px, 3vw, 40px);
     }
   }
 
   @media (max-width: 1120px) {
     .measure-shell {
-      --measure-pad-x: clamp(18px, 2.2vw, 26px);
-      --measure-pad-top: clamp(78px, 8.6vh, 94px);
-      --measure-sidebar-w: clamp(270px, 29vw, 320px);
-      --measure-gap: clamp(12px, 1.6vw, 18px);
-      --measure-footer-h: clamp(54px, 6.4vh, 66px);
-    }
-
-    .measure-main {
-      grid-template-columns: minmax(0, 1fr) var(--measure-sidebar-w);
-    }
-
-    .measure-stage {
-      grid-template-rows: auto minmax(0, 1fr);
-    }
-
-    .measure-title {
-      gap: 10px;
-    }
-
-    .measure-title h1 {
-      font-size: clamp(18px, 1.9vw, 21px);
-    }
-
-    .measure-title span {
-      font-size: clamp(11px, 1.2vw, 13px);
-    }
-
-    .measure-visual {
-      --measure-panel-w: clamp(180px, 19vw, 220px);
-      --measure-panel-h: clamp(168px, 22vh, 186px);
-      --measure-panel-right: clamp(2px, 0.6vw, 10px);
+      --measure-pad-x: clamp(16px, 2.2vw, 24px);
+      --measure-topbar-h: clamp(64px, 8vh, 80px);
+      --measure-dock-h: clamp(96px, 12vh, 116px);
       --measure-control-size: clamp(34px, 3.2vw, 38px);
     }
 
+    .measure-hud { width: clamp(200px, 24vw, 240px); }
     .measure-model {
-      left: clamp(26px, 3.4vw, 52px);
-      right: clamp(26px, 3.4vw, 52px);
-      bottom: clamp(6px, 1.2vh, 16px);
+      left: calc(var(--measure-pad-x) + clamp(200px, 24vw, 240px));
+      right: calc(var(--measure-pad-x) + clamp(60px, 7vw, 80px));
     }
-
-    .measure-countdown-row {
-      transform: translateX(-50%);
-    }
-
-    .measure-sidebar {
-      grid-template-columns: 1fr;
-      gap: clamp(12px, 2.4vh, 22px);
-      padding-top: clamp(28px, 5vh, 48px);
-    }
-
-    .measure-panel h2 {
-      margin-bottom: 8px;
-    }
-
-    .measure-card-large {
-      height: clamp(110px, 14vh, 136px);
-    }
-
-    .measure-card {
-      min-height: clamp(70px, 8.6vh, 86px);
-    }
-
-    .measure-card-wave {
-      height: clamp(44px, 6vh, 62px);
-      margin-top: 6px;
-    }
-
-    .measure-card-top {
-      padding: clamp(16px, 2vh, 22px) clamp(12px, 1.4vw, 18px) 0;
-    }
-
-    .measure-card:not(.measure-card-large) .measure-card-top {
-      padding-top: clamp(14px, 1.9vh, 20px);
-    }
-
-    .measure-footer {
-      grid-template-columns: minmax(120px, auto) minmax(0, 1fr);
-    }
-
-    .measure-footer-right {
-      justify-content: flex-end;
-      gap: 12px;
-      min-width: 0;
-    }
-
-    .measure-footer-right span {
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-  }
-
-  @media (max-width: 760px) {
-    .measure-shell {
-      --measure-pad-x: 12px;
-      --measure-pad-top: 74px;
-      --measure-sidebar-w: 220px;
-      --measure-gap: 10px;
-      --measure-footer-h: 54px;
-    }
-
-    .measure-main {
-      grid-template-columns: minmax(0, 1fr) var(--measure-sidebar-w);
-    }
-
-    .measure-visual {
-      --measure-panel-w: 168px;
-      --measure-panel-h: 170px;
-      --measure-panel-right: 4px;
-      --measure-panel-bottom: 40px;
-    }
-
-    .measure-model {
-      left: 40px;
-      right: 40px;
-      top: 6px;
-      bottom: clamp(6px, 1vh, 14px);
-    }
-
-    .measure-controls {
-      right: 22px;
-      bottom: 42px;
-      gap: 5px;
-    }
-
-    .measure-scale-wrap {
-      top: 36px;
-      height: clamp(210px, 38vh, 250px);
-    }
-
-    .measure-sidebar {
-      gap: 10px;
-      padding-top: 20px;
-    }
-
-    .measure-card-row {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 5px;
-    }
-
-    .measure-panel h2 {
-      gap: 7px;
-    }
-
-    .measure-panel h2 span {
-      font-size: 17px;
-    }
-
-    .measure-panel h2 small {
-      font-size: 10px;
-    }
-
-    .measure-card-top span {
-      font-size: 14px;
-    }
-
-    .measure-card-top strong {
-      font-size: 16px;
-    }
-
-    .measure-card:not(.measure-card-large) .measure-card-top span {
-      font-size: 10px;
-    }
-
-    .measure-card:not(.measure-card-large) .measure-card-top strong {
-      font-size: 15px;
-    }
-
-    .measure-footer {
-      height: var(--measure-footer-h);
-      grid-template-columns: 104px minmax(0, 1fr);
-    }
-
-    .measure-footer-left,
-    .measure-footer-right {
-      flex-wrap: nowrap;
-      gap: 8px;
-    }
-
-    .measure-footer-right button {
-      display: none;
-    }
+    .dock-user { display: none; }
   }
 `;

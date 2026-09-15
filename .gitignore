@@ -125,3 +125,9 @@ __pycache__/
 # 设计稿源文件，不纳入仓库
 UI/
 .aciki-python-lock.json
+
+# 安装包构建产物（release/electron 壳源码要入库，产物与工具链不入）
+release/dist/
+release/dist-mac/
+release/_work/
+release/electron/node_modules/

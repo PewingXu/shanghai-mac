@@ -12,7 +12,7 @@ export default function PageBackground() {
           inset: 0,
           zIndex: 0,
           background:
-            "linear-gradient(180deg, rgba(255, 219, 181, 0.86) 0%, rgba(255, 249, 237, 0.96) 48%, #eee7d4 100%), linear-gradient(180deg, #f3ebdd 0%, #eee7d4 100%)",
+            "linear-gradient(180deg, rgba(189,211,255,0.86) 0%, rgba(239,244,255,0.96) 48%, #d4ddee 100%), linear-gradient(180deg, #dde4f3 0%, #d4ddee 100%)",
         }}
       />
       {/* 左侧曲线（同 home-hourglass-left） */}
@@ -47,7 +47,7 @@ export default function PageBackground() {
           minWidth: "720px",
           height: "auto",
           transform: "rotate(180deg)",
-          filter: "drop-shadow(0 6px 50px rgba(252, 236, 222, 0.16))",
+          filter: "drop-shadow(0 6px 50px rgba(226,235,252,0.16))",
           mixBlendMode: "multiply",
           pointerEvents: "none",
           userSelect: "none",

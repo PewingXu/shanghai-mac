@@ -49,8 +49,18 @@ export function broadcastDeviceStatus(connected: boolean) {
 }
 
 // 串口桥地址：与 backendApi 同一个 Python 服务（8766）。WS 不走 Vite 代理，直连最稳。
-const BRIDGE_HTTP = "http://127.0.0.1:8766";
-const BRIDGE_WS = "ws://127.0.0.1:8766/device/stream";
+// 调试/多实例可在 localStorage 写 aciki-bridge-base（如 http://127.0.0.1:8777）覆盖，同 aciki-device-code 的做法。
+function bridgeBase(): string {
+  try {
+    const o = window.localStorage.getItem("aciki-bridge-base")?.trim();
+    if (o && /^https?:\/\//i.test(o)) return o.replace(/\/+$/, "");
+  } catch {
+    /* localStorage 不可用 */
+  }
+  return "http://127.0.0.1:8766";
+}
+const BRIDGE_HTTP = bridgeBase();
+const BRIDGE_WS = `${BRIDGE_HTTP.replace(/^http/i, "ws")}/device/stream`;
 /** 桥状态探测超时：Python 未启动时 fetch 会快速失败，这里只是兜底 */
 const BRIDGE_PROBE_TIMEOUT_MS = 2500;
 /** autoConnect 等待桥出结果的最长时间（扫描若干 COM 口 × 4s 身份超时） */
@@ -65,6 +75,30 @@ const BRIDGE_SCAN_ROUNDS = 2;
 const IDENTITY_TIMEOUT_MS = 4000;
 
 type BridgeState = "unavailable" | "disconnected" | "scanning" | "connected";
+
+/** 后端枚举到的一个 COM 口（手动选口弹窗用） */
+export interface BridgePort {
+  device: string;
+  description: string;
+  hwid: string;
+  usb: boolean;
+  bluetooth: boolean;
+  /** 上次手动连接成功的口 */
+  preferred: boolean;
+  /** 桥当前正连着的口 */
+  current: boolean;
+}
+
+/** 手动连接结果：ok 时附带读到的设备码与是否匹配登记码，前端据此决定是否提示登记 */
+export interface ManualConnectResult {
+  ok: boolean;
+  error?: string;
+  state?: string;
+  port?: string | null;
+  deviceCode?: string;
+  identity?: string | null;
+  identityMatch?: boolean;
+}
 
 class DeviceManager {
   /** Web Serial 兜底路径的串口服务（桥不可用时启用）；帧回调经本管理器统一分发 */
@@ -109,6 +143,62 @@ class DeviceManager {
   isConnected(): boolean {
     if (this.bridgeEnabled) return this.bridgeState === "connected";
     return this.webSerialConnected && this.service.getIsConnected();
+  }
+
+  /** 串口桥是否可用（Python 后端在跑）。可用时"连接设备"失败走手动选口弹窗，而不是浏览器授权框 */
+  get bridgeAvailable(): boolean {
+    return this.bridgeEnabled;
+  }
+
+  // ── 手动选口兜底（桥模式专用） ──────────────────────────────────────────
+  /** 列出电脑上全部 COM 口；桥不可用返回空数组 */
+  async listPorts(): Promise<BridgePort[]> {
+    const res = await fetch(`${BRIDGE_HTTP}/device/ports`, { signal: AbortSignal.timeout(4000) });
+    if (!res.ok) throw new Error(`list ports failed: ${res.status}`);
+    const data = (await res.json()) as { available?: boolean; ports?: BridgePort[] };
+    return data.available ? data.ports ?? [] : [];
+  }
+
+  /**
+   * 只连用户指定的口（后端不校验设备码，但要求收到完整帧才算成功）。
+   * 后端最长阻塞约 12s，这里给 20s 超时兜底。成功后帧流已经在 WebSocket 上，无需额外动作。
+   */
+  async connectManual(port: string): Promise<ManualConnectResult> {
+    const res = await fetch(`${BRIDGE_HTTP}/device/connect`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ port }),
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!res.ok) throw new Error(`manual connect failed: ${res.status}`);
+    const data = (await res.json()) as ManualConnectResult;
+    if (data.ok) {
+      this.bridgeEnabled = true;
+      this.openStream();
+      this.applyBridgeState("connected");
+    }
+    return data;
+  }
+
+  /** 把设备码登记为默认（不传则登记当前连着的口读到的码）；返回登记后的码 */
+  async registerDeviceCode(code?: string): Promise<string> {
+    const res = await fetch(`${BRIDGE_HTTP}/device/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: code ?? null }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      throw new Error(detail || `register failed: ${res.status}`);
+    }
+    const data = (await res.json()) as { deviceCode: string };
+    return data.deviceCode;
+  }
+
+  /** 放弃手动指定，让桥回到自动扫描 */
+  async resumeAutoScan(): Promise<void> {
+    await fetch(`${BRIDGE_HTTP}/device/auto`, { method: "POST", signal: AbortSignal.timeout(5000) }).catch(() => {});
   }
 
   /**

@@ -1,5 +1,5 @@
 /**
- * ConfirmModal — 删除确认弹窗（设计稿：634px 暖橙渐变卡 / #9E958C 80% 遮罩 /
+ * ConfirmModal — 删除确认弹窗（设计稿：634px 暖橙渐变卡 / #8C929E 80% 遮罩 /
  * 右上 × / 底部"取消 | 确认"双文字按钮带竖分隔线）。
  * 用于删除用户 / 删除测量记录等危险操作确认，替代 window.confirm。
  */
@@ -52,18 +52,18 @@ const styles = `
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(158, 149, 140, 0.8);
+    background: rgba(140,146,158,0.8);
     animation: confirm-modal-fade 160ms ease-out;
   }
 
-  /* 设计稿精确标注：卡片 634×356 / 圆角 16 / 1.5px #F08614 边 / 内容左缘 47px；
+  /* 设计稿精确标注：卡片 634×356 / 圆角 16 / 1.5px #0A3997 边 / 内容左缘 47px；
      纵向布局闭合：40(顶) + 34(标题) + 50(隔) + 80(正文) + 66(隔) + 86(按钮区) = 356 */
   .confirm-modal-card {
     width: min(634px, calc(100vw - 48px));
     border-radius: 16px;
-    background: linear-gradient(180deg, #fff1e2 69%, #fff8ef 99%);
-    border: 1.5px solid #F08614;
-    box-shadow: 0 4px 6px #b59f88;
+    background: linear-gradient(180deg, #e5eeff 69%, #f1f6ff 99%);
+    border: 1.5px solid #0A3997;
+    box-shadow: 0 4px 6px #8897b5;
     box-sizing: border-box;
     padding: 40px 47px 0;
     font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
@@ -114,7 +114,7 @@ const styles = `
   .confirm-modal-actions {
     display: flex;
     align-items: stretch;
-    border-top: 1px solid rgba(200, 170, 130, 0.55);
+    border-top: 1px solid rgba(130,153,200,0.55);
     margin-top: 66px; /* 设计稿：正文底(204) → 分隔线(270) */
     height: 86px;     /* 设计稿：分隔线(270) → 卡底(356) */
   }
@@ -135,14 +135,14 @@ const styles = `
   }
 
   .confirm-modal-confirm {
-    color: #F08614;
+    color: #0A3997;
   }
 
   .confirm-modal-divider {
     width: 1px;
     align-self: center;
     height: 56%;
-    background: rgba(200, 170, 130, 0.55);
+    background: rgba(130,153,200,0.55);
   }
 
   @keyframes confirm-modal-fade {

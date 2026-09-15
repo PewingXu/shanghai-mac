@@ -236,6 +236,19 @@ def _remove_record_file(rel_path: Optional[str]) -> None:
         pass
 
 
+def list_all_records() -> list[dict]:
+    """体验记录页：跨用户列出全部采集记录（仅元数据 + 方案时间戳），按时间倒序。"""
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, user_id, date, time, created_at, solution_created_at, solution_updated_at "
+            "FROM records ORDER BY date DESC, time DESC, id DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 def list_records(user_id: int) -> list[dict]:
     """列表只带元数据 + 方案时间戳，不带 solution_json（避免 1KB×N 的无用负载）。"""
     conn = _connect()

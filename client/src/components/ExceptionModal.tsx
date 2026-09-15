@@ -91,7 +91,7 @@ export default function ExceptionModal({
           display: flex;
           align-items: center;
           justify-content: center;
-          background: rgba(60, 40, 20, 0.18);
+          background: rgba(20,33,60,0.18);
           backdrop-filter: blur(1px);
           animation: aciki-exc-fade 160ms ease-out;
         }
@@ -101,9 +101,9 @@ export default function ExceptionModal({
           box-sizing: border-box;
           padding: 28px 30px 26px;
           border-radius: 16px;
-          background: linear-gradient(180deg, #fff3e2 0%, #fde6cf 100%);
-          border: 1px solid #f6c98a;
-          box-shadow: 0 20px 60px rgba(180, 120, 50, 0.28);
+          background: linear-gradient(180deg, #e5eeff 0%, #d4e2fd 100%);
+          border: 1px solid #4777d7;
+          box-shadow: 0 20px 60px rgba(50,93,180,0.28);
           font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
           animation: aciki-exc-pop 180ms cubic-bezier(0.23, 1, 0.32, 1);
         }
@@ -113,14 +113,14 @@ export default function ExceptionModal({
           right: 20px;
           border: 0;
           background: transparent;
-          color: #9a8a76;
+          color: #76829a;
           font-size: 24px;
           line-height: 1;
           cursor: pointer;
           padding: 2px 6px;
           transition: color 150ms ease;
         }
-        .aciki-exc-close:hover { color: #5a4a36; }
+        .aciki-exc-close:hover { color: #36425a; }
         .aciki-exc-title {
           display: flex;
           align-items: center;
@@ -144,7 +144,7 @@ export default function ExceptionModal({
         }
         .aciki-exc-msg {
           margin: 26px 0 0;
-          color: #3a352e;
+          color: #2e323a;
           font-size: 18px;
           font-weight: 700;
           line-height: 1.7;
@@ -154,7 +154,7 @@ export default function ExceptionModal({
           margin: 34px 0 0 auto;
           border: 0;
           background: transparent;
-          color: #ff8400;
+          color: #00359f;
           font-size: 18px;
           font-weight: 700;
           text-decoration: underline;

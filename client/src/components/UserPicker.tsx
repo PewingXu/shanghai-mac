@@ -203,9 +203,9 @@ const styles = `
   /* 历史用户：默认高亮（设计稿橙色主按钮） */
   .user-picker-primary {
     border: none;
-    background: #F98207;
+    background: #04369C;
     color: #ffffff;
-    box-shadow: 0 8px 20px rgba(249, 130, 7, 0.28);
+    box-shadow: 0 8px 20px rgba(4,54,156,0.28);
   }
 
   .user-picker-primary:hover {
@@ -214,13 +214,13 @@ const styles = `
   }
 
   .user-picker-secondary {
-    border: 1.5px solid #F98207;
+    border: 1.5px solid #04369C;
     background: #ffffff;
-    color: #F98207;
+    color: #04369C;
   }
 
   .user-picker-secondary:hover {
-    background: #fff6ea;
+    background: #ecf3ff;
     transform: translateY(-1px);
   }
 
@@ -235,7 +235,7 @@ const styles = `
     display: flex;
     align-items: center;
     background: #ffffff;
-    border: 1.5px solid #F98207;
+    border: 1.5px solid #04369C;
     border-radius: 12px;
     padding: 20px 26px;
   }
@@ -244,7 +244,7 @@ const styles = `
     flex: 1;
     min-width: 0;
     border: none;
-    border-bottom: 1.5px solid #d8cfc2;
+    border-bottom: 1.5px solid #c2c9d8;
     background: transparent;
     outline: none;
     font-size: 20px;
@@ -253,7 +253,7 @@ const styles = `
   }
 
   .user-picker-search-box input:focus {
-    border-bottom-color: #F98207;
+    border-bottom-color: #04369C;
   }
 
   .user-picker-clear {
@@ -263,7 +263,7 @@ const styles = `
     height: 24px;
     border: none;
     border-radius: 50%;
-    background: #d9d2c7;
+    background: #c7cdd9;
     color: #ffffff;
     font-size: 16px;
     line-height: 1;
@@ -274,7 +274,7 @@ const styles = `
     margin-top: 10px;
     background: #ffffff;
     border-radius: 12px;
-    box-shadow: 0 10px 30px rgba(180, 130, 60, 0.18);
+    box-shadow: 0 10px 30px rgba(60,100,180,0.18);
     max-height: 300px;
     overflow-y: auto;
     padding: 6px 0;
@@ -287,10 +287,10 @@ const styles = `
     background: none;
     padding: 15px 34px;
     font-size: 17px;
-    color: #3a3630;
+    color: #30333a;
     text-align: center;
     cursor: pointer;
-    border-bottom: 1px solid #f3ede3;
+    border-bottom: 1px solid #e3e8f3;
   }
 
   .user-picker-option:last-child {
@@ -298,15 +298,15 @@ const styles = `
   }
 
   .user-picker-option:hover {
-    background: #fff6ea;
-    color: #F98207;
+    background: #ecf3ff;
+    color: #04369C;
   }
 
   .user-picker-empty {
     padding: 22px 0;
     text-align: center;
     font-size: 15px;
-    color: #b0a494;
+    color: #949db0;
   }
 
   /* 确认卡：单条用户信息（白底橙边） */
@@ -315,9 +315,9 @@ const styles = `
     box-sizing: border-box;
     padding: 24px 30px;
     border-radius: 12px;
-    border: 1.5px solid #F98207;
+    border: 1.5px solid #04369C;
     background: #ffffff;
-    box-shadow: 0 6px 18px rgba(249, 130, 7, 0.12);
+    box-shadow: 0 6px 18px rgba(4,54,156,0.12);
     font-size: 20px;
     font-weight: 600;
     color: #17191c;
@@ -339,7 +339,7 @@ const styles = `
     cursor: pointer;
     font-size: 16px;
     font-weight: 600;
-    color: #FF8400;
+    color: #00359F;
     text-decoration: underline;
     text-underline-offset: 4px;
   }
@@ -350,7 +350,7 @@ const styles = `
     cursor: pointer;
     font-size: 20px;
     font-weight: 700;
-    color: #FF8400;
+    color: #00359F;
     display: flex;
     align-items: center;
     gap: 6px;

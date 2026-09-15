@@ -460,7 +460,7 @@ function calcFirmness(params: StlInsoleParams): number {
 function HeatLegend() {
   return (
     <div className="absolute bottom-2" style={{ right: '72px' }}>
-      <div style={{ fontSize: '11px', color: '#5A4A30', fontWeight: 600, marginBottom: '6px' }}>
+      <div style={{ fontSize: '11px', color: '#303E5A', fontWeight: 600, marginBottom: '6px' }}>
         定制量
       </div>
       {/* 竖排色标：上红(加厚) → 中性 → 下蓝(减薄) */}
@@ -479,7 +479,7 @@ function HeatLegend() {
             flexDirection: 'column',
             justifyContent: 'space-between',
             fontSize: '10px',
-            color: '#8a8275',
+            color: '#757c8a',
             whiteSpace: 'nowrap',
           }}
         >
@@ -545,7 +545,10 @@ function InsoleScene({
    */
   const { size } = useThree();
   const camPos = useMemo<[number, number, number]>(() => {
-    const BASE: [number, number, number] = [0, 3.0, 3.5];
+    // 单只鞋垫时相机拉近 15%：方案页舞台是宽扁画布，按双脚距离取景一只垫子只占中间一小块；
+    // 双脚（下载弹窗）保持原距离，两只并排本来就贴边
+    const near = activeFoot === 'both' ? 1 : 0.85;
+    const BASE: [number, number, number] = [0, 3.0 * near, 3.5 * near];
     const baseDist = Math.hypot(BASE[1], BASE[2]);
     const aspect = size.width > 0 && size.height > 0 ? size.width / size.height : 16 / 9;
     // 需覆盖的横向半宽（场景单位）。含鞋壳时整只鞋比垫子宽，留更多余量
@@ -646,9 +649,7 @@ function InsoleScene({
         <ContactShadows position={[0, -0.01, 0]} opacity={0.3} scale={8} blur={2} far={3} />
       </Suspense>
 
-      {/* 地面网格：与页面背景网格同暖色调（rgba(180,150,110,.3) 在白底上的等效色）；
-          尺寸加大到常规视角内看不到边界（格距保持 0.3 单位不变） */}
-      <gridHelper args={[40, 132, '#dfd2be', '#e8dfd3']} position={[0, -0.02, 0]} />
+      {/* 地面网格已统一取消，仅保留接触阴影 */}
     </>
   );
 }
@@ -692,6 +693,8 @@ interface StlInsoleViewerProps {
   /** 鞋壳解析完成后回传（双脚/单只、手性置信度、面数），供页面提示 */
   onShellInfo?: (info: ShellPairInfo) => void;
   onShellError?: (error: string) => void;
+  /** 「定制对比」热力图是否默认打开（仅决定初始值，用户仍可用右上角按钮切换） */
+  defaultHeatmap?: boolean;
 }
 
 // ============ 主组件 ============
@@ -712,6 +715,7 @@ export function StlInsoleViewer({
   shellAdjust = DEFAULT_SHELL_ADJUST,
   onShellInfo,
   onShellError,
+  defaultHeatmap = false,
 }: StlInsoleViewerProps) {
   const [leftGeo, setLeftGeo] = useState<LoadedGeo | null>(null);
   const [rightGeo, setRightGeo] = useState<LoadedGeo | null>(null);
@@ -719,8 +723,8 @@ export function StlInsoleViewer({
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [retryCount, setRetryCount] = useState(0);
-  // 定制形变热力图：默认关，默认仍显示客户选的鞋垫颜色
-  const [heatmap, setHeatmap] = useState(false);
+  // 定制形变热力图：初始值由父组件决定（方案页默认开，下载弹窗默认关显示鞋垫本色）
+  const [heatmap, setHeatmap] = useState(defaultHeatmap);
 
   // 鞋壳状态独立于鞋垫：加载中/失败都不能顶掉已经画好的鞋垫
   const [shellLeft, setShellLeft] = useState<LoadedShell | null>(null);
@@ -878,7 +882,7 @@ export function StlInsoleViewer({
       {shellOn && shellLoading && (
         <div
           className="absolute top-2 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs font-medium"
-          style={{ background: 'rgba(255,255,255,0.92)', color: '#5A4A30', border: '1px solid rgba(225,203,180,0.55)' }}
+          style={{ background: 'rgba(255,255,255,0.92)', color: '#303E5A', border: '1px solid rgba(180,195,225,0.55)' }}
         >
           <Loader2 className="w-3.5 h-3.5 animate-spin" />
           正在加载鞋壳… {shellProgress}%
@@ -910,9 +914,9 @@ export function StlInsoleViewer({
           aria-pressed={heatOn}
           className="absolute top-2 right-2 flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-semibold transition-colors"
           style={{
-            background: heatOn ? '#FF8400' : 'rgba(255,255,255,0.92)',
-            color: heatOn ? '#fff' : '#5A4A30',
-            border: '1px solid rgba(225,203,180,0.55)',
+            background: heatOn ? '#00359F' : 'rgba(255,255,255,0.92)',
+            color: heatOn ? '#fff' : '#303E5A',
+            border: '1px solid rgba(180,195,225,0.55)',
           }}
         >
           <Layers className="w-3.5 h-3.5" />

@@ -10,7 +10,7 @@
       <rect x="0" y="0" width="1920" height="1080" fill="url(#fade)"/>
     </mask>
   </defs>
-  <g stroke="#B4966E" stroke-width="1.2" opacity="0.3" mask="url(#fadeMask)">
+  <g stroke="#6E85B4" stroke-width="1.2" opacity="0.3" mask="url(#fadeMask)">
         <line x1="0" y1="1080.0" x2="1920" y2="1080.0"/>
     <line x1="0" y1="978.0" x2="1920" y2="978.0"/>
     <line x1="0" y1="894.5" x2="1920" y2="894.5"/>

@@ -37,15 +37,15 @@ const MAX_SCALE = 5;
 
 // ==== 暖色主题 ====
 const THEME = {
-  canvasBg: "#fffdf8",
-  emptyCell: "#fdf3e6", // 空格（无压力）浅奶油
-  gridLine: "rgba(203, 161, 115, 0.18)",
-  panelBorder: "#f79831",
-  panelTitle: "#c8682a",
-  mliText: "#c8682a",
-  mliRangeDash: "rgba(203, 161, 115, 0.55)",
-  mliMidline: "rgba(240, 134, 20, 0.95)",
-  mliDot: "#f08614",
+  canvasBg: "#f9fbff",
+  emptyCell: "#e9f0fd", // 空格（无压力）浅奶油
+  gridLine: "rgba(115,144,203,0.18)",
+  panelBorder: "#073dab",
+  panelTitle: "#1b3c7e",
+  mliText: "#1b3c7e",
+  mliRangeDash: "rgba(115,144,203,0.55)",
+  mliMidline: "rgba(10,57,151,0.95)",
+  mliDot: "#0a3997",
   chipBg: "rgba(255, 255, 255, 0.92)",
   lateralLabel: "#5b9bd5", // 外侧
   medialLabel: "#e0592c", // 内侧
@@ -177,7 +177,7 @@ export default function Pressure2DHeatmap({ realtimeData, showValues = true, vma
     ctx.fillRect(0, 0, totalW, totalH);
 
     if (!displayData) {
-      ctx.fillStyle = "#b3a392";
+      ctx.fillStyle = "#929db3";
       ctx.font = '14px "PingFang SC", sans-serif';
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
@@ -467,32 +467,32 @@ export default function Pressure2DHeatmap({ realtimeData, showValues = true, vma
   }, [handleMouseUp]);
 
   return (
-    <div className="w-full h-full flex flex-col rounded-xl overflow-hidden" style={{ background: "linear-gradient(180deg,#fffdf8,#fff7ea)" }}>
+    <div className="w-full h-full flex flex-col rounded-xl overflow-hidden" style={{ background: "linear-gradient(180deg,#f9fbff,#ecf3ff)" }}>
       {/* 顶部统计 */}
-      <div className="flex items-center justify-between px-4 py-2 shrink-0" style={{ borderBottom: "1px solid #f0d9bd", background: "rgba(255,255,255,0.6)" }}>
+      <div className="flex items-center justify-between px-4 py-2 shrink-0" style={{ borderBottom: "1px solid #c4d3f2", background: "rgba(255,255,255,0.6)" }}>
         <div className="flex items-center gap-4 text-xs">
           <div>
-            <span style={{ color: "#8a8275" }}>最大ADC </span>
-            <span className="font-mono font-semibold" style={{ color: "#e0592c" }}>{stats.max}</span>
+            <span style={{ color: "#757c8a" }}>最大ADC </span>
+            <span className="font-mono font-semibold" style={{ color: "#d6336c" }}>{stats.max}</span>
           </div>
           <div>
-            <span style={{ color: "#8a8275" }}>活动点 </span>
+            <span style={{ color: "#757c8a" }}>活动点 </span>
             <span className="font-mono font-semibold" style={{ color: "#3d3d3d" }}>{stats.activeCells}</span>
           </div>
           <div>
-            <span style={{ color: "#8a8275" }}>总压 </span>
+            <span style={{ color: "#757c8a" }}>总压 </span>
             <span className="font-mono font-semibold" style={{ color: "#3d3d3d" }}>{stats.totalPressure}</span>
           </div>
         </div>
         <div className="flex items-center gap-3 text-xs">
           <div className="flex items-center gap-1">
-            <span className="w-2 h-2 rounded-full" style={{ background: "#f79831" }} />
-            <span style={{ color: "#8a8275" }}>L</span>
+            <span className="w-2 h-2 rounded-full" style={{ background: "#073dab" }} />
+            <span style={{ color: "#757c8a" }}>L</span>
             <span className="font-mono" style={{ color: "#3d3d3d" }}>{stats.leftPressure}</span>
           </div>
           <div className="flex items-center gap-1">
-            <span className="w-2 h-2 rounded-full" style={{ background: "#e8944a" }} />
-            <span style={{ color: "#8a8275" }}>R</span>
+            <span className="w-2 h-2 rounded-full" style={{ background: "#1544a2" }} />
+            <span style={{ color: "#757c8a" }}>R</span>
             <span className="font-mono" style={{ color: "#3d3d3d" }}>{stats.rightPressure}</span>
           </div>
         </div>
@@ -525,20 +525,20 @@ export default function Pressure2DHeatmap({ realtimeData, showValues = true, vma
             className="absolute pointer-events-none z-20 rounded-md px-2.5 py-1.5 text-xs"
             style={{
               background: "rgba(255,255,255,0.96)",
-              border: "1px solid #f0d9bd",
-              boxShadow: "0 6px 18px rgba(180,120,50,0.18)",
+              border: "1px solid #c4d3f2",
+              boxShadow: "0 6px 18px rgba(50,93,180,0.18)",
               color: "#3d3d3d",
               left: Math.min(tooltip.x + 14, (containerRef.current?.clientWidth ?? 400) - 140),
               top: Math.max(0, tooltip.y - 60),
             }}
           >
             <div className="font-semibold mb-0.5">
-              <span style={{ color: tooltip.side === "left" ? "#f79831" : "#e8944a" }}>
+              <span style={{ color: tooltip.side === "left" ? "#073dab" : "#1544a2" }}>
                 {tooltip.side === "left" ? "左脚" : "右脚"}
               </span>
-              <span className="ml-2" style={{ color: "#8a8275" }}>[{tooltip.row}, {tooltip.col}]</span>
+              <span className="ml-2" style={{ color: "#757c8a" }}>[{tooltip.row}, {tooltip.col}]</span>
             </div>
-            <div className="font-mono" style={{ color: "#e0592c" }}>ADC: {tooltip.value}</div>
+            <div className="font-mono" style={{ color: "#d6336c" }}>ADC: {tooltip.value}</div>
           </div>
         )}
 
@@ -546,14 +546,14 @@ export default function Pressure2DHeatmap({ realtimeData, showValues = true, vma
         <div className="absolute bottom-3 left-3 flex flex-col gap-1.5 z-10 pointer-events-none">
           <div
             className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-mono"
-            style={{ background: "rgba(255,255,255,0.9)", border: "1px solid #f0d9bd", boxShadow: "0 1px 4px rgba(180,120,50,0.12)" }}
+            style={{ background: "rgba(255,255,255,0.9)", border: "1px solid #c4d3f2", boxShadow: "0 1px 4px rgba(50,93,180,0.12)" }}
           >
-            <span style={{ color: "#8a8275" }}>缩放</span>
+            <span style={{ color: "#757c8a" }}>缩放</span>
             <span className="font-semibold" style={{ color: "#3d3d3d" }}>{Math.round(scale * 100)}%</span>
           </div>
           <div
             className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px]"
-            style={{ background: "rgba(255,255,255,0.7)", color: "#8a8275" }}
+            style={{ background: "rgba(255,255,255,0.7)", color: "#757c8a" }}
           >
             <Move className="w-3 h-3" />
             <span>拖动平移 · 滚轮缩放</span>

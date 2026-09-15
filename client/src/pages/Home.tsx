@@ -1,16 +1,15 @@
 import React, { useEffect, useRef, useState } from "react";
-import { useApp, User } from "@/contexts/AppContext";
+import { useApp } from "@/contexts/AppContext";
 import { deviceManager } from "@/lib/deviceManager";
 import MeasurePage from "./MeasurePage";
 import ReportPage from "./ReportPage";
 import SolutionPage from "./SolutionPage";
-import HistoryPage from "./HistoryPage";
-import UserRecordsPage from "./UserRecordsPage";
-import ExceptionModal, { broadcastException, classifySerialError, type ExceptionType } from "@/components/ExceptionModal";
+import RecordsPage from "./RecordsPage";
+import ExceptionModal, { type ExceptionType } from "@/components/ExceptionModal";
 import type { MeasureAnalysis } from "@/contexts/AppContext";
+import BrandLogo, { BRAND_LOGO_URL, BRAND_NAME } from "@/components/BrandLogo";
 
 const HOME_ASSETS = {
-  brandLogo: "/assets/icons/home-page/brand-logo.svg",
   stepIndicator: "/assets/icons/home-page/step-indicator.svg",
   userManagement: "/assets/icons/home-page/user-management.svg",
   deviceConnected: "/assets/icons/home-page/device-connected.svg",
@@ -25,8 +24,7 @@ type AppView =
   | "measure"
   | "report"
   | "solution"
-  | "history"
-  | "userRecords";
+  | "history";
 
 interface UserFormData {
   name: string;
@@ -115,26 +113,21 @@ function LandingPage({
 }) {
   const deviceConnected = useDeviceConnectionStatus();
 
+  // 首页极简：纯白底，正中一枚大 logo 即「开始体验」按钮；右上角保留体验记录入口
   return (
-    <div className="home-page-shell">
-      <HomeBackground />
+    <div className="home-page-shell home-landing">
+      <button className="home-user-link home-landing-user" onClick={onHistory} aria-label="体验记录">
+        体验记录
+      </button>
 
-      <header className="home-header">
-        <img className="home-brand-logo" src={HOME_ASSETS.brandLogo} alt="ACIKI 动态足底压力解析系统" />
-        <div className="home-header-actions">
-          <img className="home-step-indicator" src={HOME_ASSETS.stepIndicator} alt="创建 测量 报告 方案" />
-          <button className="home-user-link" onClick={onHistory} aria-label="用户管理">
-            用户管理
-          </button>
-        </div>
-      </header>
-
-      <main className="home-hero">
-        <h1 className="home-hero-slogan">Switch Your Sole, Reset Your Life.</h1>
-        <button className="home-start-button" onClick={onStart} disabled={connecting} aria-label="开始体验">
-          开始体验
+      <main className="home-landing-main">
+        <button className="home-logo-start" onClick={onStart} aria-label="点击进入系统" title="点击进入系统">
+          <img src={BRAND_LOGO_URL} alt={BRAND_NAME} draggable={false} />
+          <span className="home-logo-start-name">{BRAND_NAME}</span>
         </button>
-        {connecting && <p className="home-connect-hint">正在连接足垫设备…</p>}
+        <p className={`home-connect-hint${connecting ? " is-on" : ""}`}>
+          {connecting ? "正在后台连接足垫设备，可直接点击 Logo 进入" : "点击 Logo 进入系统"}
+        </p>
       </main>
 
       <footer className="home-footer">
@@ -180,12 +173,12 @@ function CreateUserPage({
 
       <header className="home-header">
         <button className="home-logo-button" onClick={onBack} aria-label="返回首页">
-          <img className="home-brand-logo" src={HOME_ASSETS.brandLogo} alt="ACIKI 动态足底压力解析系统" />
+          <BrandLogo className="home-brand-logo" size={64} />
         </button>
         <div className="home-header-actions">
           <img className="home-step-indicator" src={HOME_ASSETS.stepIndicator} alt="创建 测量 报告 方案" />
-          <button className="home-user-button" onClick={onHistory} aria-label="用户管理">
-            <img src={HOME_ASSETS.userManagement} alt="用户管理" />
+          <button className="home-user-button" onClick={onHistory} aria-label="体验记录">
+            <img src={HOME_ASSETS.userManagement} alt="体验记录" />
           </button>
         </div>
       </header>
@@ -272,7 +265,7 @@ export default function Home() {
   // 开发调试：URL 加 ?view=report 可直达对应页面（不影响正常流程）
   const [view, setView] = useState<AppView>(() => {
     const v = new URLSearchParams(window.location.search).get("view");
-    return ["landing", "create", "measure", "report", "solution", "history", "userRecords"].includes(v ?? "")
+    return ["landing", "create", "measure", "report", "solution", "history"].includes(v ?? "")
       ? (v as AppView)
       : "landing";
   });
@@ -294,18 +287,10 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // "开始体验"：尝试连接足垫后进入采集界面。连接失败不挡路——照样进入
-  // （页内可重试连接），异常经全局弹窗在采集页提示。
-  const handleStartExperience = async () => {
-    if (deviceConnecting) return;
-    setDeviceConnecting(true);
-    try {
-      await deviceManager.connectWithPrompt();
-    } catch (err) {
-      broadcastException(classifySerialError(err));
-    } finally {
-      setDeviceConnecting(false);
-    }
+  // 点 Logo 进入采集页：不等连接结果、不弹授权框。足垫连接在后台继续
+  // （桥模式常驻重扫），采集页有「连接设备」按钮可手动重试；未连接时点「开始测量」才提示。
+  const handleStartExperience = () => {
+    void deviceManager.autoConnect().catch(() => {});
     setCurrentStep(2);
     setView("measure");
   };
@@ -341,13 +326,6 @@ export default function Home() {
     setView(prevView);
   };
 
-  const handleSelectHistoryUser = (user: User) => {
-    setCurrentUser(user);
-    // 注意：不要在这里覆盖 prevView —— prevView 是"进入用户管理前的页面"
-    //（首页/采集页），若设成 "history" 会让用户管理页的"返回上一页"跳自己（失效）
-    setView("userRecords");
-  };
-
   // 顶部步骤条点击已完成步骤 → 回退到对应页面
   const goToStep = (step: number) => {
     if (step === 1) {
@@ -380,16 +358,9 @@ export default function Home() {
 
   const renderView = () => {
     if (view === "history") {
-      return <HistoryPage onSelectUser={handleSelectHistoryUser} onBack={handleBackFromHistory} />;
-    }
-    if (view === "userRecords") {
       return (
-        <UserRecordsPage
-          onBack={() => setView("history")}
-          onStartMeasure={() => {
-            setCurrentStep(2);
-            setView("measure");
-          }}
+        <RecordsPage
+          onBack={handleBackFromHistory}
           onOpenReport={() => {
             setCurrentStep(3);
             setView("report");
@@ -405,6 +376,7 @@ export default function Home() {
             setView("report");
           }}
           onEnd={endExperience}
+          onHistory={handleShowHistory}
           onStepBack={goToStep}
         />
       );
@@ -418,6 +390,7 @@ export default function Home() {
             setView("solution");
           }}
           onEnd={endExperience}
+          onHistory={handleShowHistory}
           onStepBack={goToStep}
         />
       );
@@ -449,7 +422,7 @@ export default function Home() {
           />
         ) : (
           <LandingPage
-            onStart={() => void handleStartExperience()}
+            onStart={handleStartExperience}
             onHistory={handleShowHistory}
             connecting={deviceConnecting}
           />
@@ -483,8 +456,8 @@ const homeStyles = `
     inset: 0;
     z-index: -3;
     background:
-      linear-gradient(180deg, rgba(255, 219, 181, 0.86) 0%, rgba(255, 249, 237, 0.96) 48%, #eee7d4 100%),
-      linear-gradient(180deg, #f3ebdd 0%, #eee7d4 100%);
+      linear-gradient(180deg, rgba(189,211,255,0.86) 0%, rgba(239,244,255,0.96) 48%, #d4ddee 100%),
+      linear-gradient(180deg, #dde4f3 0%, #d4ddee 100%);
   }
 
   .home-hourglass {
@@ -512,7 +485,7 @@ const homeStyles = `
     height: auto;
     transform: rotate(180deg);
     opacity: 1;
-    filter: drop-shadow(0 6px 50px rgba(252, 236, 222, 0.16));
+    filter: drop-shadow(0 6px 50px rgba(226,235,252,0.16));
   }
 
   .home-header {
@@ -525,10 +498,82 @@ const homeStyles = `
   }
 
   .home-brand-logo {
+    display: inline-flex;
+  }
+
+  /* ── 首页（landing）：纯白底 + 大 logo 按钮 ── */
+  .home-landing {
+    background: #ffffff;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .home-landing-user {
+    position: fixed;
+    top: clamp(28px, 4.72vh, 51px);
+    right: clamp(48px, 4.22vw, 81px);
+    z-index: 2;
+  }
+
+  .home-landing-main {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 28px;
+  }
+
+  .home-logo-start {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: clamp(20px, 3vh, 36px);
+    padding: 24px;
+    border: 0;
+    border-radius: 48px;
+    background: transparent;
+    cursor: pointer;
+    transition: transform 200ms cubic-bezier(0.23, 1, 0.32, 1), filter 200ms ease;
+  }
+
+  .home-logo-start img {
     display: block;
-    width: min(31.93vw, 613px);
-    min-width: 360px;
+    width: clamp(220px, 26vw, 420px);
     height: auto;
+    user-select: none;
+    filter: drop-shadow(0 18px 40px rgba(0, 53, 155, 0.22));
+    transition: filter 200ms ease;
+  }
+
+  .home-logo-start-name {
+    font-size: clamp(34px, 3.4vw, 60px);
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    color: #00359b;
+    line-height: 1;
+  }
+
+  .home-logo-start:hover {
+    transform: translateY(-4px) scale(1.03);
+  }
+
+  .home-logo-start:hover img {
+    filter: drop-shadow(0 26px 56px rgba(0, 53, 155, 0.32));
+  }
+
+  .home-logo-start:active {
+    transform: scale(0.97);
+  }
+
+  .home-logo-start:disabled {
+    cursor: wait;
+    opacity: 0.92;
+    transform: none;
+  }
+
+  .home-connect-hint.is-on {
+    color: #00359b;
   }
 
   .home-logo-button,
@@ -544,10 +589,10 @@ const homeStyles = `
   }
 
   .home-connect-hint {
-    margin: 14px 0 0;
+    margin: 0;
     font-size: 14px;
     font-weight: 600;
-    color: #8a6a40;
+    color: #8c96ad;
   }
 
   .home-connect-hint.is-error {
@@ -577,14 +622,14 @@ const homeStyles = `
     transition: transform 160ms ease, opacity 160ms ease;
   }
 
-  /* 设计稿：landing 页"用户管理"为橙色下划线文字链接 */
+  /* 设计稿：landing 页"体验记录"为橙色下划线文字链接 */
   .home-user-link {
     padding: 0;
     border: 0;
     background: transparent;
     font-size: clamp(15px, 0.94vw, 18px);
     font-weight: 700;
-    color: #f08614;
+    color: #0a3997;
     text-decoration: underline;
     text-underline-offset: 5px;
     cursor: pointer;
@@ -632,7 +677,7 @@ const homeStyles = `
     color: #17191c;
   }
 
-  /* 设计稿按钮：287×89、圆角 30、#F08614 底、4px 金橙渐变描边（border-image 不支持
+  /* 设计稿按钮：287×89、圆角 30、#0A3997 底、4px 金橙渐变描边（border-image 不支持
      圆角，用 padding-box/border-box 双层背景实现）、白字 */
   .home-start-button {
     display: block;
@@ -642,15 +687,15 @@ const homeStyles = `
     border: 4px solid transparent;
     border-radius: 30px;
     background:
-      linear-gradient(#f08614, #f08614) padding-box,
-      linear-gradient(122deg, #ffc587 9%, #ffd86b 81%) border-box;
+      linear-gradient(#0a3997, #0a3997) padding-box,
+      linear-gradient(122deg, #457ae4 9%, #1f5dd9 81%) border-box;
     color: #ffffff;
     font-size: clamp(20px, 1.25vw, 24px);
     font-weight: 700;
     letter-spacing: 4px;
     cursor: pointer;
     transition: transform 160ms ease, filter 160ms ease;
-    filter: drop-shadow(0 10px 22px rgba(240, 134, 20, 0.3));
+    filter: drop-shadow(0 10px 22px rgba(10,57,151,0.3));
   }
 
   .home-footer {
@@ -683,8 +728,8 @@ const homeStyles = `
   .create-user-panel {
     width: min(620px, calc(100vw - 64px));
     border-radius: 16px;
-    background: rgba(255, 250, 241, 0.94);
-    box-shadow: 0 24px 70px rgba(180, 112, 36, 0.14);
+    background: rgba(243,247,255,0.94);
+    box-shadow: 0 24px 70px rgba(24,55,118,0.14);
     border: 1px solid rgba(255, 255, 255, 0.76);
     padding: 34px 38px 32px;
   }
@@ -708,17 +753,17 @@ const homeStyles = `
 
   .create-panel-head p {
     margin: 8px 0 0;
-    color: #8b7158;
+    color: #58698b;
     font-size: 14px;
   }
 
   .create-close-button {
     width: 34px;
     height: 34px;
-    border: 1px solid rgba(255, 132, 0, 0.18);
+    border: 1px solid rgba(0,53,159,0.18);
     border-radius: 8px;
-    color: #ff8400;
-    background: #fff7ed;
+    color: #00359f;
+    background: #eff4ff;
     font-size: 24px;
     line-height: 28px;
   }
@@ -732,7 +777,7 @@ const homeStyles = `
   .create-form-grid label {
     display: grid;
     gap: 8px;
-    color: #6e5137;
+    color: #37496e;
     font-size: 13px;
     font-weight: 600;
   }
@@ -742,7 +787,7 @@ const homeStyles = `
     width: 100%;
     height: 44px;
     border-radius: 8px;
-    border: 1px solid rgba(203, 161, 115, 0.42);
+    border: 1px solid rgba(115,144,203,0.42);
     background: rgba(255, 255, 255, 0.9);
     padding: 0 13px;
     color: #2d3138;
@@ -752,8 +797,8 @@ const homeStyles = `
 
   .create-form-grid input:focus,
   .create-form-grid select:focus {
-    border-color: #ff9c2f;
-    box-shadow: 0 0 0 3px rgba(255, 132, 0, 0.13);
+    border-color: #003cb4;
+    box-shadow: 0 0 0 3px rgba(0,53,159,0.13);
   }
 
   .create-actions {
@@ -772,16 +817,16 @@ const homeStyles = `
   }
 
   .create-actions button:first-child {
-    border: 1px solid rgba(255, 132, 0, 0.32);
+    border: 1px solid rgba(0,53,159,0.32);
     background: rgba(255, 255, 255, 0.6);
-    color: #ff8400;
+    color: #00359f;
   }
 
   .create-actions button:last-child {
     border: 0;
-    background: #ff8400;
+    background: #00359f;
     color: #fff;
-    box-shadow: 0 8px 18px rgba(255, 132, 0, 0.2);
+    box-shadow: 0 8px 18px rgba(0,53,159,0.2);
   }
 
   .create-actions button:disabled {
@@ -793,11 +838,6 @@ const homeStyles = `
     .home-header {
       align-items: center;
       padding: 28px 28px 0;
-    }
-
-    .home-brand-logo {
-      min-width: 0;
-      width: min(58vw, 440px);
     }
 
     .home-header-actions {

@@ -77,26 +77,38 @@ export interface ApiRecord {
   solutionUpdatedAt?: string;
 }
 
-/** 列出某用户的全部采集记录（按时间倒序，仅元数据 + 方案时间戳） */
-export async function apiListRecords(userId: number): Promise<ApiRecord[]> {
-  const res = await fetch(`${BASE}/users/${userId}/records`, { signal: AbortSignal.timeout(4000) });
-  if (!res.ok) throw new Error(`list records failed: ${res.status}`);
-  const data = await res.json();
-  return (
-    (data.records ?? []) as Array<{
-      id: number;
-      user_id: number;
-      date: string;
-      time: string;
-      solution_updated_at?: string | null;
-    }>
-  ).map((r) => ({
+interface RawRecordRow {
+  id: number;
+  user_id: number;
+  date: string;
+  time: string;
+  solution_updated_at?: string | null;
+}
+
+function mapRecordRows(rows: RawRecordRow[]): ApiRecord[] {
+  return rows.map((r) => ({
     id: r.id,
     userId: r.user_id,
     date: r.date,
     time: r.time,
     solutionUpdatedAt: r.solution_updated_at ?? undefined,
   }));
+}
+
+/** 列出某用户的全部采集记录（按时间倒序，仅元数据 + 方案时间戳） */
+export async function apiListRecords(userId: number): Promise<ApiRecord[]> {
+  const res = await fetch(`${BASE}/users/${userId}/records`, { signal: AbortSignal.timeout(4000) });
+  if (!res.ok) throw new Error(`list records failed: ${res.status}`);
+  const data = await res.json();
+  return mapRecordRows((data.records ?? []) as RawRecordRow[]);
+}
+
+/** 体验记录页：跨用户列出全部采集记录（按时间倒序） */
+export async function apiListAllRecords(): Promise<ApiRecord[]> {
+  const res = await fetch(`${BASE}/records`, { signal: AbortSignal.timeout(4000) });
+  if (!res.ok) throw new Error(`list all records failed: ${res.status}`);
+  const data = await res.json();
+  return mapRecordRows((data.records ?? []) as RawRecordRow[]);
 }
 
 /** 保存一次采集：分析结果（已瘦身）+ 可选原始帧（服务端落盘为仿 sit 格式 CSV） */

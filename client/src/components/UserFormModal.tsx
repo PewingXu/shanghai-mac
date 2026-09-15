@@ -1,5 +1,5 @@
 /**
- * UserFormModal — 用户信息表单弹窗（设计稿：582px 卡片 / #9E958C 80% 遮罩 / 暖橙渐变底）。
+ * UserFormModal — 用户信息表单弹窗（设计稿：582px 卡片 / #8C929E 80% 遮罩 / 暖橙渐变底）。
  *
  * 两种模式共用同一套版式：
  * - create：正式采集前登记（测量页）。ID 前端预生成并随提交传后端
@@ -248,7 +248,7 @@ const styles = `
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(158, 149, 140, 0.8);
+    background: rgba(140,146,158,0.8);
     animation: user-form-fade 180ms ease-out;
   }
 
@@ -256,9 +256,9 @@ const styles = `
     width: min(582px, calc(100vw - 48px));
     padding: 34px 56px 40px;
     border-radius: 16px;
-    background: linear-gradient(180deg, #fff1e2 69%, #fff8ef 99%);
-    border: 1.5px solid #F08614;
-    box-shadow: 0 4px 6px #b59f88;
+    background: linear-gradient(180deg, #e5eeff 69%, #f1f6ff 99%);
+    border: 1.5px solid #0A3997;
+    box-shadow: 0 4px 6px #8897b5;
     box-sizing: border-box;
     animation: user-form-pop 200ms cubic-bezier(0.23, 1, 0.32, 1);
   }
@@ -319,7 +319,7 @@ const styles = `
     width: 100%;
     padding: 0 12px;
     border-radius: 6px;
-    border: 1.5px solid #FFB25F;
+    border: 1.5px solid #1C55C6;
     background: #ffffff;
     font-size: 15px;
     color: #17191c;
@@ -328,7 +328,7 @@ const styles = `
   }
 
   .user-form-field input::placeholder {
-    color: #b8ab99;
+    color: #99a3b8;
     letter-spacing: 0;
   }
 
@@ -343,13 +343,13 @@ const styles = `
   }
 
   .user-form-field select.is-placeholder {
-    color: #b8ab99;
+    color: #99a3b8;
   }
 
   .user-form-field input:focus,
   .user-form-field select:focus {
-    border-color: #F08614;
-    box-shadow: 0 0 0 3px rgba(240, 134, 20, 0.16);
+    border-color: #0A3997;
+    box-shadow: 0 0 0 3px rgba(10,57,151,0.16);
   }
 
   /* 身高/体重：单位在输入框外侧（设计稿 cm / kg） */
@@ -386,13 +386,13 @@ const styles = `
   /* 主按钮（填写完毕 / 开始体验 / 确认修改）：橙色实底 */
   .user-form-actions .user-form-primary {
     border: 0;
-    background: #F08614;
+    background: #0A3997;
     color: #ffffff;
-    box-shadow: 0 4px 10px rgba(240, 134, 20, 0.28);
+    box-shadow: 0 4px 10px rgba(10,57,151,0.28);
   }
 
   .user-form-actions .user-form-primary:disabled {
-    background: #d8d2ca;
+    background: #cacfd8;
     color: #ffffff;
     box-shadow: none;
     cursor: not-allowed;
@@ -400,9 +400,9 @@ const styles = `
 
   /* 次按钮（取消 / 上一步）：浅橙描边 */
   .user-form-actions button:not(.user-form-primary) {
-    border: 1.5px solid #FFB25F;
-    background: #fff4e5;
-    color: #F08614;
+    border: 1.5px solid #1C55C6;
+    background: #e8f0ff;
+    color: #0A3997;
   }
 
   /* 第二步顶部提示 */
@@ -410,7 +410,7 @@ const styles = `
     margin: 0 0 18px;
     font-size: 14px;
     font-weight: 500;
-    color: #8a6a40;
+    color: #40598a;
   }
 
   @keyframes user-form-fade {

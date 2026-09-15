@@ -403,6 +403,12 @@ def get_user_records(user_id: int):
     return {"success": True, "records": db_store.list_records(user_id)}
 
 
+@app.get("/records")
+def get_all_records():
+    """体验记录页：跨用户列出全部采集记录（仅元数据：id/date/time/方案时间戳）"""
+    return {"success": True, "records": db_store.list_all_records()}
+
+
 @app.post("/records")
 def create_record(req: RecordCreateRequest):
     """保存一次采集：写 DB 行 + analysis 落盘 <id>.json + 原始帧落盘 <id>.csv（可选）"""
@@ -585,10 +591,60 @@ except Exception as _bridge_err:  # noqa: N816
 
 @app.get("/device/status")
 def device_status():
-    """足垫连接状态：state = disconnected | scanning | connected"""
+    """足垫连接状态：state = disconnected | scanning | connected；mode = auto | manual"""
     if _serial_bridge is None:
         return {"available": False, "state": "unavailable"}
     return {"available": True, **_serial_bridge.status()}
+
+
+# ─── 手动选口兜底：自动扫描匹配不上时，前端列出 COM 口让用户指定 ──────────────────
+class DevicePortRequest(BaseModel):
+    port: str
+
+
+class DeviceRegisterRequest(BaseModel):
+    """登记默认设备码；不传 code 则登记当前手动连上的那个口读到的设备码"""
+    code: Optional[str] = None
+
+
+@app.get("/device/ports")
+def device_ports():
+    """全部 COM 口（USB 优先、蓝牙垫底），带描述/硬件 ID/是否上次用过"""
+    if _serial_bridge is None:
+        return {"available": False, "ports": []}
+    return {"available": True, "ports": _serial_bridge.list_ports()}
+
+
+@app.post("/device/connect")
+def device_connect(req: DevicePortRequest):
+    """只连指定口（不校验设备码），阻塞到收到完整帧或失败（最长约 12s）"""
+    if _serial_bridge is None:
+        raise HTTPException(status_code=503, detail="serial bridge unavailable")
+    result = _serial_bridge.connect_manual(req.port)
+    return {"success": bool(result.get("ok")), **result}
+
+
+@app.post("/device/register")
+def device_register(req: DeviceRegisterRequest):
+    """把设备码登记为默认（落盘 data/device.json），下次开机自动扫描直接命中"""
+    if _serial_bridge is None:
+        raise HTTPException(status_code=503, detail="serial bridge unavailable")
+    code = (req.code or "").strip() or _serial_bridge.last_identity
+    if not code:
+        raise HTTPException(status_code=400, detail="没有可登记的设备码：当前连接的设备未返回设备码")
+    try:
+        saved = _serial_bridge.set_device_code(code)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"success": True, "deviceCode": saved, **_serial_bridge.status()}
+
+
+@app.post("/device/auto")
+def device_auto():
+    """放弃手动指定，回到自动扫描"""
+    if _serial_bridge is None:
+        raise HTTPException(status_code=503, detail="serial bridge unavailable")
+    return {"success": True, **_serial_bridge.clear_manual()}
 
 
 @app.websocket("/device/stream")
@@ -615,6 +671,23 @@ async def device_stream(ws: WebSocket):
         pass
     finally:
         _serial_bridge.unsubscribe(queue)
+
+
+# ── 打包单进程模式：后端同时托管前端静态文件（Electron 壳只加载 8766 即可）──
+# ACIKI_STATIC_DIR 存在时挂载前端 build 产物。所有 API 路由/WebSocket 都已在
+# 上面定义（Starlette 按声明顺序匹配，先匹配到的优先），所以这里的 mount("/")
+# 只兜底前端请求。前端是"假路由"（view 状态机 + ?view= 查询串，无 history API
+# 路径），实际只会请求 "/" 与 "/assets/*" "/models/*"，StaticFiles(html=True) 足以覆盖。
+# 生产数据目录走 ACIKI_DATA_DIR（db_store / serial_bridge 已支持）；无此变量时保持 dev 行为。
+_STATIC_DIR = os.environ.get("ACIKI_STATIC_DIR")
+if _STATIC_DIR and os.path.isdir(_STATIC_DIR):
+    try:
+        from fastapi.staticfiles import StaticFiles
+
+        app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="frontend")
+        print(f"[static] serving frontend from {_STATIC_DIR}")
+    except Exception as _static_err:  # noqa: N816
+        print(f"[static] failed to mount frontend: {_static_err}")
 
 
 if __name__ == "__main__":
