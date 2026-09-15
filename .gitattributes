@@ -1,0 +1,19 @@
+# 仓库在 Windows 上开发、在 macOS 上克隆构建：
+# shell / python / 配置一律 LF 入库，否则 macOS 上 bash 会报 "\r: command not found"
+*.sh    text eol=lf
+*.py    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.mjs   text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+# Windows 专用脚本保持 CRLF
+*.cmd   text eol=crlf
+*.bat   text eol=crlf
+# 二进制
+*.stl   binary
+*.glb   binary
+*.png   binary
+*.ico   binary
+*.woff2 binary
+*.csv   binary
