@@ -9,6 +9,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useApp, type MeasureAnalysis } from "@/contexts/AppContext";
 import type { PythonCOPTimeSeries } from "@/lib/pythonApi";
+import { copMetricsFromTrajectory } from "@/lib/copMetrics";
 import { formatUserId } from "@/lib/utils";
 import FeetModel3D, {
   equalizeZoneBounds,
@@ -1198,15 +1199,16 @@ function buildReportData(a: MeasureAnalysis | null): ReportData {
     },
     // 兼容字段（老记录只有它）：点数多的那只脚
     cop: copRowsOf(cop) ?? base.cop,
-    // 逐脚：新后端直接给；老记录没有逐脚字段时，按轨迹点数把 cop_time_series 归到它实际算的那只脚上
+    // 逐脚：新后端直接给；老记录没有逐脚字段时，拿存下来的 left/right_cop_trajectory 前端现算
+    // （lib/copMetrics 与后端同一套公式），老记录也能左右切换。轨迹为空的脚 → null → 置灰
     copBySide: (() => {
       const l = copRowsOf(d?.cop_time_series_left);
       const r = copRowsOf(d?.cop_time_series_right);
       if (l || r || !d) return { left: l, right: r };
-      const legacy = copRowsOf(cop);
-      const nl = d.left_cop_trajectory?.length ?? 0;
-      const nr = d.right_cop_trajectory?.length ?? 0;
-      return nl >= nr ? { left: legacy, right: null } : { left: null, right: legacy };
+      return {
+        left: copRowsOf(copMetricsFromTrajectory(d.left_cop_trajectory)),
+        right: copRowsOf(copMetricsFromTrajectory(d.right_cop_trajectory)),
+      };
     })(),
   };
 }
