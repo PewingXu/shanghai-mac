@@ -107,30 +107,108 @@ bash release/build-installer-mac.sh
 
 ---
 
-## 二·五、打 Windows 安装包
+## 二·五、打 Windows 安装包（换新电脑从零开始）
 
-在 **Windows** 机器上双击（或在 cmd 里运行）：
+### 打包原理（一分钟看懂）
+
+安装包 = Electron 壳 + 三份资源，装到用户电脑后布局如下：
+
+```text
+矩侨工业足底压力分析\
+  矩侨工业足底压力分析.exe          ← Electron 壳：启动后端、等 /health 就绪、开窗口加载 http://127.0.0.1:8766
+  resources\
+    python-rt\                      ← 嵌入式 Python 3.12 + requirements.lock.txt 全部依赖 + VC++ 运行库 DLL
+    backend\                        ← 六个后端 .py（api_server / db_store / serial_bridge / OneStep_report / stl_thumb / heatmap_renderer）
+    public\                         ← 前端构建产物（pnpm build 的 dist/public），由后端经 ACIKI_STATIC_DIR 托管
+    app\main.js                     ← 壳的主进程代码
+```
+
+**不用 PyInstaller**。参考项目试过，把 anaconda 全家桶打进单文件会卡死；嵌入式 Python 目录直接拷走最稳，而且后端 `.py` 可在安装目录里直接替换热修。
+
+### 第一步：新电脑装工具（只做一次）
+
+| 工具 | 怎么装 | 检查 |
+|---|---|---|
+| Git | <https://git-scm.com> 默认安装 | `git --version` |
+| Node.js 18 或更高 | <https://nodejs.org> 下 LTS 安装 | `node --version` |
+| pnpm | 管理员 cmd 里 `corepack enable`；不行就 `npm install -g pnpm@10` | `pnpm --version` |
+
+**不需要**手动装 Python。构建脚本会自己下载嵌入式 Python 放到项目目录里，不碰系统。
+
+### 第二步：拉代码、装前端依赖
+
+```bat
+git clone https://github.com/PewingXu/shanghai-mac.git
+cd shanghai-mac
+pnpm install
+```
+
+仓库约 230 MB（含 3D 鞋垫模型），`pnpm install` 首次约 2 到 5 分钟。
+
+### 第三步：一键打包
 
 ```bat
 release\build-installer.cmd
 ```
 
-产物：`release\dist\矩侨工业足底压力分析-Setup-<版本>.exe`（约 275 MB）。
+脚本四步，全程自动，首次约 10 到 20 分钟（取决于网速）：
 
-脚本做的事，与 macOS 版一一对应：
+| 步骤 | 做什么 | 首次耗时 | 产物位置 |
+|---|---|---|---|
+| 1 | `pnpm build` 编译前端 | 10 秒 | `dist\public\` |
+| 2 | 下载 python.org 的 embed 包 → 装 pip → 按 `requirements.lock.txt` 装齐 numpy / scipy / OpenCV / FastAPI 等 → 从本机 `System32` 拷 VC++ 运行库 DLL | 5 到 15 分钟 | `release\dist\python-rt\` |
+| 3 | 复制六个后端 `.py` | 瞬时 | `release\dist\backend\` |
+| 4 | `npm install` 装 electron-builder → 下载 Electron 和 NSIS → 出安装包 | 3 到 5 分钟 | `release\dist\` |
 
-1. `pnpm build` 编译前端到 `dist/public`。
-2. 准备嵌入式 Python 3.12 运行时到 `release/dist/python-rt`：首次会从 python.org 下载 embed 包、装 pip、按 `requirements.lock.txt` 装齐依赖，并把 VC++ 运行库 DLL 从本机 System32 拷进去（numpy / OpenCV 依赖，干净电脑常缺）。已有就跳过；要重建先删掉该目录。
-3. 复制六个后端 `.py` 到 `release/dist/backend`。
-4. `electron-builder` 出 NSIS 安装包。首次会下载 Electron 和 NSIS 工具，已配国内镜像。
+**产物**：
 
-前置：Windows 上装好 Node.js 18+ 和 pnpm（`corepack enable` 即可）。
+```text
+release\dist\矩侨工业足底压力分析-Setup-<版本>.exe    约 275 MB，这就是给别人的安装包
+release\dist\win-unpacked\                            解包后的目录版，双击里面的 exe 可直接试运行不用安装
+```
 
-装到别的 Windows 电脑：双击安装，不需要装 Python 或任何运行环境。首次运行会弹 SmartScreen 蓝色警告（未签名），点“更多信息”再点“仍要运行”。有足垫需装 CH343 串口驱动。启动日志在 `%TEMP%\juqiao-shell.log`，数据在 `%APPDATA%\juqiao-plantar-pressure-app\aciki-data`。
+版本号取自 `release\electron\package.json` 的 `version` 字段。发新版前把它和根目录 `package.json` 的 `version` 一起改。
 
-**改后端不用重打包**：后端源码以 `.py` 形式放在安装目录 `resources\backend\`，直接替换文件重开应用即可。改前端或壳才需要重新打包。
+**第二次及以后**：步骤 2 和 4 的下载都会跳过（运行时目录已存在、`node_modules` 已存在），整个打包只需 1 到 2 分钟。
 
-**改压强标定公式**：只改 `client/src/lib/pressureCalib.ts` 里 `adcToKpa` 的三个系数，然后重新打包。标定工具见 `tools/calibrate_pressure.html` 与 `tools/README-calibration.md`。
+### 第四步：本机验证（可选但建议）
+
+先确认 8766 端口没被占用（`pnpm dev` 的后端在跑就先关掉），然后双击：
+
+```text
+release\dist\win-unpacked\矩侨工业足底压力分析.exe
+```
+
+窗口 3 秒内出现、首页有 Logo 即成功。没起来看 `%TEMP%\juqiao-shell.log`。验证完把 `%APPDATA%\juqiao-plantar-pressure-app` 删掉，免得测试数据带到正式环境。
+
+### 常见失败与处理
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 步骤 2 卡在下载 embed 包 | python.org 国内慢 | 从有网的机器把 `python-3.12.8-embed-amd64.zip` 下好放到 `release\` 下，脚本会直接用 |
+| 步骤 2 pip 装依赖超时 | PyPI 慢 | 先 `set PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple` 再跑脚本 |
+| 步骤 4 下载 Electron 失败 | 镜像抽风 | 脚本已配 npmmirror；重跑一次通常就好 |
+| 装好后双击提示“后端服务未能就绪” | 8766 被占，或 python-rt 缺 DLL | 看 `%TEMP%\juqiao-shell.log`；缺 DLL 就手动把 `msvcp140.dll` `vcruntime140.dll` `vcruntime140_1.dll` `concrt140.dll` 拷进 `resources\python-rt\` |
+| 干净电脑 numpy 报 `DLL load failed` | VC++ 运行库没打进去 | 同上，或让用户装 VC++ 2015-2022 运行库 |
+| 打包机上运行时目录是旧的，想重建 | — | 删掉 `release\dist\python-rt\` 再跑脚本 |
+
+### 给用户的安装说明
+
+- Windows 10/11 64 位，双击安装，不需要装 Python 或任何运行环境。
+- 首次运行会弹 SmartScreen 蓝色警告（未签名），点“更多信息”再点“仍要运行”。
+- 有足垫需装 CH343 串口驱动，多数 Windows 会自动装。
+- 自动连不上足垫时，采集页点“连接设备”会弹出选 COM 口的窗口，选中后可登记为默认设备。
+- 启动日志 `%TEMP%\juqiao-shell.log`；数据在 `%APPDATA%\juqiao-plantar-pressure-app\aciki-data`，重装不丢。
+
+### 改了代码要不要重打包
+
+| 改了什么 | 要不要重打包 |
+|---|---|
+| 后端 `.py`（算法、串口、接口） | **不用**。直接替换用户电脑上 `resources\backend\` 里的文件，重开应用即可 |
+| 前端（`client/` 下任何文件） | 要 |
+| 壳 `release/electron/main.js` | 要 |
+| 压强标定公式 `client/src/lib/pressureCalib.ts` | 要（它在前端）。只改 `adcToKpa` 的三个系数；标定工具见 `tools/calibrate_pressure.html` 与 `tools/README-calibration.md` |
+| Python 依赖版本 `requirements.lock.txt` | 要，且要先删 `release\dist\python-rt\` 让脚本重建运行时 |
 
 ## 三、项目结构
 

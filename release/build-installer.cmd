@@ -19,7 +19,13 @@ echo [2/4] 准备嵌入式 Python 运行时 ...
 if exist "%RT%\python.exe" (
   echo   已存在 %RT%，跳过（要重建请先删掉该目录）
 ) else (
-  curl -L -o "%~dp0python-embed.zip" https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd64.zip || goto :fail
+  REM 国内下 python.org 慢：把 python-3.12.8-embed-amd64.zip 预先放到 release\ 下即跳过下载
+  if exist "%~dp0python-3.12.8-embed-amd64.zip" (
+    echo   使用预置的 python-3.12.8-embed-amd64.zip
+    copy /y "%~dp0python-3.12.8-embed-amd64.zip" "%~dp0python-embed.zip" >nul
+  ) else (
+    curl -L -o "%~dp0python-embed.zip" https://www.python.org/ftp/python/3.12.8/python-3.12.8-embed-amd64.zip || goto :fail
+  )
   powershell -Command "Expand-Archive '%~dp0python-embed.zip' -DestinationPath '%RT%' -Force" || goto :fail
   powershell -Command "(Get-Content '%RT%\python312._pth') -replace '^#import site', 'import site' | Set-Content '%RT%\python312._pth' -Encoding ascii" || goto :fail
   curl -sL -o "%~dp0get-pip.py" https://bootstrap.pypa.io/get-pip.py || goto :fail

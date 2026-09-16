@@ -131,3 +131,7 @@ release/dist/
 release/dist-mac/
 release/_work/
 release/electron/node_modules/
+
+# 打包时预置/下载的 Python embed 包与 pip 引导脚本（不入库）
+release/*.zip
+release/get-pip.py
