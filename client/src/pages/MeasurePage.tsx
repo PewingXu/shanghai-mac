@@ -11,6 +11,7 @@ import { parseCollectionFile, reshapeFrame } from "@/lib/collectionData";
 import { broadcastException, classifySerialError } from "@/components/ExceptionModal";
 import { analyzePython, type PythonAnalysisResult } from "@/lib/pythonApi";
 import { computeMliLine } from "@/lib/mli";
+import { adcToKpa, CELL_AREA_M2 } from "@/lib/pressureCalib";
 import type { MeasureAnalysis } from "@/contexts/AppContext";
 
 // 单个传感点面积：传感器 7mm 间距 → 0.7cm × 0.7cm ≈ 0.49 cm²
@@ -18,6 +19,8 @@ const CELL_AREA_CM2 = 0.49;
 // 指标 UI 刷新节流（约 12fps，避免每帧 setState）
 const METRIC_UI_INTERVAL_MS = 80;
 const EMPTY_METRICS = { realtime: 0, average: 0, peak: 0, total: 0 };
+/** 一位小数四舍五入（kPa / N 这类物理量整数太粗、两位又晃眼） */
+const r1 = (v: number) => Math.round(v * 10) / 10;
 
 /**
  * 对整段采集帧做前端补充统计：平均帧 → 左右脚 MLI、左右 ADC 总和与接触面积。
@@ -226,11 +229,14 @@ function HudGroup({
   english,
   unit,
   values,
+  extra,
 }: {
   heading: string;
   english: string;
   unit: string;
   values: { realtime: number; average: number; peak: number; total: number };
+  /** 附加一项（如压力卡下方的「总力 N」），与平均/峰值并排 */
+  extra?: { label: string; value: number; unit: string };
 }) {
   return (
     <section className="hud-group">
@@ -259,6 +265,15 @@ function HudGroup({
             <i>{unit}</i>
           </b>
         </div>
+        {extra && (
+          <div className="hud-sub-item">
+            <span>{extra.label}</span>
+            <b>
+              {extra.value}
+              <i>{extra.unit}</i>
+            </b>
+          </div>
+        )}
       </div>
     </section>
   );
@@ -420,7 +435,9 @@ export default function MeasurePage({
   const [deviceConnected, setDeviceConnected] = useState(() => deviceManager.isConnected());
   const [connecting, setConnecting] = useState(false);
   const [areaData, setAreaData] = useState(EMPTY_METRICS);
+  // 压力卡：平均压强 kPa（主值 / 平均 / 峰值）+ 总力 N（附加项）。二者都由标定公式 adcToKpa 逐格换算而来
   const [pressureData, setPressureData] = useState(EMPTY_METRICS);
+  const [forceN, setForceN] = useState(0);
   const noiseFilterRef = useRef(noiseFilter);
   const metricAccRef = useRef({ frames: 0, areaSum: 0, areaPeak: 0, pressSum: 0, pressPeak: 0 });
   const lastMetricUiRef = useRef(0);
@@ -452,22 +469,24 @@ export default function MeasurePage({
       setLatestFrame(frame);
     }
 
-    // 本帧面积/压力
+    // 本帧面积/压力。压力不再是 ADC 总和：每个有效格先按标定曲线换成 kPa（lib/pressureCalib），
+    // 再 Σ kPa×面积 得总力 N、总力/接触面积 得平均压强 kPa —— 与接触面积、脚型无关
     const threshold = noiseFilterRef.current;
-    let sum = 0;
     let active = 0;
+    let kpaSum = 0;
     for (let r = 0; r < frame.length; r++) {
       const row = frame[r];
       for (let c = 0; c < row.length; c++) {
         const v = row[c];
         if (v > threshold) {
           active += 1;
-          sum += v;
+          kpaSum += adcToKpa(v);
         }
       }
     }
     const area = active * CELL_AREA_CM2; // cm²
-    const pressure = sum; // ADC 总和（压力代理值，后续可标定为 pa）
+    const force = kpaSum * 1000 * CELL_AREA_M2; // N
+    const pressure = active ? kpaSum / active : 0; // 平均压强 kPa
 
     // 采集期间逐帧记录（供完成后送分析），上限 900 帧防内存膨胀；
     // 回放不在这里记录——它自己持有全量帧，播完直接写 framesRef
@@ -495,11 +514,12 @@ export default function MeasurePage({
       total: Math.round(acc.areaPeak),
     });
     setPressureData({
-      realtime: Math.round(pressure),
-      average: Math.round(acc.pressSum / n),
-      peak: Math.round(acc.pressPeak),
-      total: Math.round(acc.pressSum),
+      realtime: r1(pressure),
+      average: r1(acc.pressSum / n),
+      peak: r1(acc.pressPeak),
+      total: r1(acc.pressSum),
     });
+    setForceN(r1(force));
   };
 
   const resetMetrics = () => {
@@ -508,6 +528,7 @@ export default function MeasurePage({
     framesRef.current = [];
     setAreaData(EMPTY_METRICS);
     setPressureData(EMPTY_METRICS);
+    setForceN(0);
   };
 
   // 订阅全局设备帧（串口桥 WebSocket 或 Web Serial，deviceManager 统一分发）+ 连接状态。
@@ -894,7 +915,7 @@ export default function MeasurePage({
         <aside className="measure-hud">
           <HudGroup heading="受压面积" english="Contact Area" unit="cm²" values={areaData} />
           <div className="hud-divider" />
-          <HudGroup heading="压力" english="Pressure" unit="pa" values={pressureData} />
+          <HudGroup heading="压强" english="Pressure" unit="kPa" values={pressureData} extra={{ label: "总力", value: forceN, unit: "N" }} />
         </aside>
 
         {/* 右：竖排工具条 */}

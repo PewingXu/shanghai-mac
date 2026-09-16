@@ -1,0 +1,1188 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>足垫压力标定工具 · 64×64 ADC ↔ N / kPa</title>
+<style>
+:root{
+  --bg:#0d1117; --panel:#161b22; --panel2:#1c2128; --line:#30363d;
+  --ink:#e6edf3; --ink2:#8b949e; --ink3:#6e7681;
+  --blue:#388bfd; --orange:#db6d28; --green:#3fb950; --red:#da3633; --yellow:#d29922;
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:13px/1.5 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;padding:14px;}
+h1{font-size:17px;margin:0 0 12px;font-weight:700;letter-spacing:.5px;}
+h1 span{color:var(--ink3);font-weight:400;font-size:12px;margin-left:8px;}
+
+/* 三栏：左=控制，中=64×64 阵列，右=曲线/数据 */
+.grid{display:grid;gap:12px;align-items:start;
+  grid-template-columns:340px minmax(420px,1fr) minmax(460px,1.3fr);
+  grid-template-areas:"a b c";}
+#colL{grid-area:a;} #colM{grid-area:b;} #colR{grid-area:c;}
+@media(max-width:1500px){.grid{grid-template-columns:340px 1fr;grid-template-areas:"a c" "a b";}}
+@media(max-width:1000px){.grid{grid-template-columns:1fr;grid-template-areas:"a" "b" "c";}}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px;}
+.card-t{font-size:12px;font-weight:700;color:var(--ink2);margin-bottom:10px;
+  text-transform:uppercase;letter-spacing:.8px;display:flex;align-items:center;gap:8px;}
+
+button{padding:7px 13px;border-radius:6px;font-size:12px;font-weight:600;border:none;
+  cursor:pointer;font-family:inherit;transition:opacity .12s;}
+button:hover:not(:disabled){opacity:.85;}
+button:disabled{opacity:.35;cursor:not-allowed;}
+.b-pri{background:var(--blue);color:#fff;}
+.b-ok{background:#238636;color:#fff;}
+.b-warn{background:var(--yellow);color:#000;}
+.b-red{background:var(--red);color:#fff;}
+.b-gh{background:#21262d;color:var(--ink2);border:1px solid var(--line);}
+.b-sm{padding:5px 9px;font-size:11px;}
+.row{display:flex;gap:6px;flex-wrap:wrap;align-items:center;}
+.row+.row{margin-top:8px;}
+
+.dot{width:8px;height:8px;border-radius:50%;background:#484f58;display:inline-block;flex:none;}
+.dot.g{background:var(--green);box-shadow:0 0 6px var(--green);}
+.dot.y{background:var(--yellow);animation:pulse 1s infinite;}
+.dot.r{background:var(--red);}
+@keyframes pulse{50%{opacity:.3}}
+.stxt{font-size:11px;color:var(--ink2);}
+
+input[type=number],select{background:var(--panel2);border:1px solid var(--line);color:var(--ink);
+  border-radius:5px;padding:5px 8px;font-size:12px;font-family:inherit;width:82px;}
+input[type=number]:focus,select:focus{outline:none;border-color:var(--blue);}
+label{font-size:12px;color:var(--ink2);}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden;}
+.seg button{border-radius:0;background:var(--panel2);color:var(--ink2);padding:5px 12px;}
+.seg button.on{background:var(--blue);color:#fff;}
+
+.reads{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+.read{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:9px 10px;}
+.read .k{font-size:10px;color:var(--ink3);text-transform:uppercase;letter-spacing:.6px;}
+.read .v{font-size:21px;font-weight:700;font-variant-numeric:tabular-nums;margin-top:2px;line-height:1.1;}
+.read .u{font-size:11px;color:var(--ink3);font-weight:400;margin-left:3px;}
+.read.hl .v{color:var(--blue);}
+.read.hl2 .v{color:var(--orange);}
+
+/* 64×64 阵列：Canvas 绘制（4096 个 DOM 格子每帧刷字会卡） */
+#matBox{overflow:auto;margin-top:10px;border-radius:5px;background:#010409;padding:4px;position:relative;}
+#mat{display:block;margin:0 auto;cursor:crosshair;image-rendering:pixelated;}
+#matTip{position:fixed;pointer-events:none;background:#1c2128;border:1px solid var(--line);
+  border-radius:6px;padding:6px 9px;font-size:11px;line-height:1.6;display:none;z-index:99;
+  font-variant-numeric:tabular-nums;box-shadow:0 4px 14px rgba(0,0,0,.6);}
+
+#chart{width:100%;height:340px;display:block;border-radius:6px;background:#010409;}
+#tip{position:fixed;pointer-events:none;background:#1c2128;border:1px solid var(--line);
+  border-radius:6px;padding:7px 10px;font-size:11px;line-height:1.6;display:none;z-index:99;
+  box-shadow:0 4px 14px rgba(0,0,0,.6);font-variant-numeric:tabular-nums;}
+.legend{display:flex;gap:16px;font-size:11px;color:var(--ink2);margin-top:8px;align-items:center;}
+.legend i{width:11px;height:11px;border-radius:3px;display:inline-block;margin-right:5px;vertical-align:-1px;}
+
+.tblwrap{max-height:230px;overflow:auto;border:1px solid var(--line);border-radius:6px;margin-top:8px;}
+table{width:100%;border-collapse:collapse;font-size:11px;font-variant-numeric:tabular-nums;}
+th{background:var(--panel2);color:var(--ink3);font-weight:600;text-align:right;padding:6px 9px;
+  position:sticky;top:0;text-transform:uppercase;font-size:10px;letter-spacing:.5px;}
+th:first-child,td:first-child{text-align:left;}
+td{padding:5px 9px;text-align:right;border-top:1px solid #21262d;color:var(--ink);}
+tr:hover td{background:#1c2128;}
+td.del{color:var(--ink3);cursor:pointer;width:26px;text-align:center;}
+td.del:hover{color:var(--red);}
+
+.fit{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:10px;margin-top:8px;
+  font-family:ui-monospace,"Cascadia Code",Consolas,monospace;font-size:11.5px;color:var(--orange);
+  word-break:break-all;line-height:1.7;white-space:pre-wrap;}
+.fit b{color:var(--ink2);font-family:inherit;}
+.hint{font-size:11px;color:var(--ink3);margin-top:7px;line-height:1.6;}
+.warn{color:var(--yellow);}
+#log{max-height:110px;overflow:auto;font-size:11px;font-family:ui-monospace,Consolas,monospace;
+  color:var(--ink2);line-height:1.7;}
+#rawBox{margin-top:8px;max-height:120px;overflow:auto;background:#010409;border:1px solid var(--line);
+  border-radius:5px;padding:7px 9px;font-family:ui-monospace,Consolas,monospace;font-size:10.5px;
+  line-height:1.65;color:var(--ink2);word-break:break-all;}
+#rawBox .hex{color:var(--ink3);} #rawBox .asc{color:var(--green);} #rawBox .hit{color:var(--orange);font-weight:600;}
+input[type=checkbox]{accent-color:var(--blue);vertical-align:-2px;margin-right:4px;}
+#log .ok{color:var(--green);} #log .err{color:var(--red);} #log .wa{color:var(--yellow);}
+.badge{font-size:10px;padding:2px 7px;border-radius:10px;background:var(--panel2);
+  border:1px solid var(--line);color:var(--ink2);font-variant-numeric:tabular-nums;}
+.stable{background:rgba(63,185,80,.14);border-color:rgba(63,185,80,.35);color:var(--green);}
+.unstable{background:rgba(210,153,34,.14);border-color:rgba(210,153,34,.35);color:var(--yellow);}
+</style>
+</head>
+<body>
+
+<h1>足垫压力标定工具 <span>64×64 · 3M 波特 · ADC ↔ N / kPa（矩侨工业足垫）</span></h1>
+
+<div class="grid">
+<!-- ═══════════ 左栏 ═══════════ -->
+<div id="colL">
+
+  <div class="card">
+    <div class="card-t">① 足垫连接</div>
+    <div class="row">
+      <span class="dot" id="dMat"></span><span class="stxt" id="sMat" style="width:120px">足垫未连接</span>
+      <button class="b-pri b-sm" id="btnBridge" title="后端 api_server.py 在跑时用这个：不抢串口，主程序与本工具同时看帧">🔗 后端桥</button>
+      <button class="b-pri b-sm" id="btnSer" title="后端没起时用：浏览器直连串口 3,000,000 波特">🔌 串口</button>
+      <button class="b-red b-sm" id="btnMatDis" style="display:none">断开</button>
+    </div>
+    <div class="row">
+      <label>桥地址</label>
+      <input type="text" id="inBridge" value="127.0.0.1:8766" style="width:130px;background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:5px;padding:5px 8px;font-size:12px;font-family:inherit">
+      <span class="stxt">主程序开着就直接点「后端桥」</span>
+    </div>
+    <div class="row" style="margin-top:10px;border-top:1px solid var(--line);padding-top:10px">
+      <span class="dot" id="dGau"></span><span class="stxt" id="sGau" style="width:120px">压力计未连接</span>
+      <button class="b-pri b-sm" id="btnGau">🔌 连接压力计</button>
+      <button class="b-red b-sm" id="btnGauDis" style="display:none">断开</button>
+    </div>
+    <div class="row">
+      <label>表上显示的单位</label>
+      <select id="selUnit" style="width:72px"><option value="N">N</option><option value="kgf">kgf</option></select>
+      <span class="stxt">必须和压力计屏幕上的单位一致</span>
+    </div>
+    <div class="row">
+      <span class="badge" id="bFps">0 fps</span>
+      <span class="badge" id="bFrames">0 帧</span>
+      <span class="badge" id="bStable">—</span>
+      <button class="b-gh b-sm" style="margin-left:auto" onclick="toggleDbg()">🔍 压力计诊断</button>
+    </div>
+
+    <div id="dbgBox" style="display:none;margin-top:10px;border-top:1px solid var(--line);padding-top:10px">
+      <div class="row">
+        <label>波特率</label>
+        <select id="selBaud" style="width:88px">
+          <option>2400</option><option>4800</option><option>9600</option>
+          <option>19200</option><option>38400</option><option>115200</option>
+        </select>
+        <label>数据格式</label>
+        <select id="selFmt" style="width:150px">
+          <option value="strict">严格 000.00</option><option value="loose">宽松 任意小数</option>
+        </select>
+      </div>
+      <div class="row">
+        <label title="部分表休眠后需持续唤醒才继续输出"><input type="checkbox" id="ckKeep" style="width:auto"> 每秒重发 0xFA</label>
+        <button class="b-gh b-sm" onclick="sendWake()">📡 发 0xFA</button>
+        <button class="b-gh b-sm" onclick="toggleSignals()">🔌 切换 DTR/RTS</button>
+      </div>
+      <div class="row"><span class="badge" id="bRx">收到 0 字节</span><span class="badge" id="bSig">DTR/RTS: 开</span></div>
+      <div id="rawBox">等待原始数据…</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-t">② 压头（砝码底面）+ 底重</div>
+    <div class="row">
+      <div class="seg">
+        <button id="shSq" class="on" onclick="setShape('square')">■ 方形</button>
+        <button id="shCi" onclick="setShape('circle')">● 圆形</button>
+      </div>
+      <span class="stxt">砝码<b>底面</b>与垫子的接触形状</span>
+    </div>
+    <div class="row" id="rowSq">
+      <label>长</label><input type="number" id="inW" value="50" min="0.1" step="0.1"><label>mm</label>
+      <label>宽</label><input type="number" id="inH" value="50" min="0.1" step="0.1"><label>mm</label>
+    </div>
+    <div class="row" id="rowCi" style="display:none">
+      <label>半径</label><input type="number" id="inR" value="25" min="0.1" step="0.1"><label>mm</label>
+    </div>
+    <div class="row"><span class="badge" id="bArea">面积 2500.00 mm² ≈ 51 格</span></div>
+    <div class="row" style="margin-top:10px;border-top:1px solid var(--line);padding-top:10px">
+      <label>底重（托盘＋压力计自重）</label>
+      <input type="number" id="inDead" value="0" min="0" step="0.01" style="width:88px">
+      <select id="selDeadUnit" style="width:64px"><option value="kg">kg</option><option value="N">N</option></select>
+    </div>
+    <div class="row"><span class="badge" id="bDead">底重 0.00 N → 0.00 kPa</span></div>
+    <div class="hint" id="hFormula">kPa = (底重 + 施加力) ÷ 压头面积(mm²) × 1000</div>
+    <div class="hint">
+      压头面积用<b>刚性平板</b>（如 5cm×5cm 铝块）压在垫子上，砝码叠在板上。垫子传感点 7mm 间距、
+      单格 49 mm²，压头尽量盖住整数个格子、边缘对齐格线。
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-t">③ 实时读数
+      <button class="b-gh b-sm" style="margin-left:auto" onclick="doTare()">⊘ 空垫去皮</button>
+      <button class="b-gh b-sm" onclick="undoTare()" title="还原去皮">↺</button>
+    </div>
+    <div class="row" style="margin-bottom:8px">
+      <label>噪声阈值 ADC ≤</label><input type="number" id="inNoise" value="14" min="0" max="255" step="1" style="width:64px">
+      <span class="stxt">视为 0（主程序默认 14）</span>
+    </div>
+    <div class="reads">
+      <div class="read hl"><div class="k">ROI 内 ADC 总和</div><div class="v" id="vAdc">0</div></div>
+      <div class="read hl"><div class="k">ROI 内有效点 ADC 均值</div><div class="v" id="vMean">0.0</div></div>
+      <div class="read hl2"><div class="k">压强</div><div class="v" id="vKpa">0.00<span class="u">kPa</span></div></div>
+      <div class="read hl2"><div class="k">总力</div><div class="v" id="vN">0.00<span class="u">N</span></div></div>
+      <div class="read"><div class="k" id="kGauge">压力计</div><div class="v" id="vKgf">0.00<span class="u">N</span></div></div>
+      <div class="read"><div class="k">有效点数 / 峰值</div><div class="v" id="vPeak" style="font-size:16px">0 / 0</div></div>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <span class="badge" id="bTare">未去皮 — 空载时点「⊘ 空垫去皮」</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-t">③′ 手动输入压力
+      <label style="margin-left:auto;font-weight:400;text-transform:none;letter-spacing:0">
+        <input type="checkbox" id="ckManual" onchange="toggleManual()">启用（不用压力计）
+      </label>
+    </div>
+    <div id="manualBox" style="display:none">
+      <div class="row">
+        <div class="seg">
+          <button id="mdW" class="on" onclick="setManMode('weight')">🏋 砝码</button>
+          <button id="mdR" onclick="setManMode('read')">🔢 读数</button>
+        </div>
+        <span class="badge" id="bManHint">按砝码质量输入</span>
+      </div>
+      <div id="mWeight">
+        <div class="row">
+          <label>砝码</label>
+          <input type="number" id="inWeight" value="1" step="0.001" style="width:92px">
+          <select id="selWUnit" style="width:64px"><option value="kg">kg</option><option value="g">g</option></select>
+          <button class="b-gh b-sm" onclick="addWeight(1)">＋ 加一块</button>
+          <button class="b-gh b-sm" onclick="addWeight(-1)">－ 减一块</button>
+          <button class="b-gh b-sm" onclick="clearWeight()">归零</button>
+        </div>
+        <div class="row"><span class="badge" id="bStack" style="font-size:12px;padding:5px 10px">台面总质量 0.000 kg</span></div>
+      </div>
+      <div id="mRead" style="display:none">
+        <div class="row">
+          <label>压力计读数</label>
+          <input type="number" id="inManual" value="0" step="0.01" style="width:96px">
+          <select id="selManUnit" style="width:66px"><option value="N">N</option><option value="kgf">kgf</option><option value="kPa">kPa</option></select>
+        </div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <span class="badge" id="bManual" style="font-size:12px;padding:5px 10px">→ 0.00 kPa</span>
+        <button class="b-ok b-sm" onclick="manualMark()" style="margin-left:auto">📍 记录该点 (空格)</button>
+      </div>
+      <div class="hint">
+        <b>砝码流程</b>：垫子<b>空载</b>点「⊘ 空垫去皮」→ 放刚性压板 → 把压板质量填进「底重」→
+        放第 1 块砝码 → 「＋ 加一块」→ 等读数「稳定」→ 按 <b>空格</b> 记录 → 再放一块 → 再「＋」→ 再记录……
+        建议 8～12 级、覆盖 0～预期最大压强（成人站立足底约 50～200 kPa，局部可到 400 kPa）。
+      </div>
+    </div>
+  </div>
+
+  <div class="card"><div class="card-t">日志</div><div id="log"></div></div>
+</div>
+
+<!-- ═══════════ 中栏：64×64 阵列 ═══════════ -->
+<div id="colM">
+  <div class="card">
+    <div class="card-t">④ 传感器阵列 64×64（显示方向 = 主程序采集页）
+      <span class="badge" id="bMatStat" style="margin-left:auto;font-weight:400">全垫总和 0 · 峰值 0</span>
+    </div>
+    <div class="row">
+      <label>格子</label>
+      <input type="range" id="inCell" min="5" max="14" step="1" value="8" style="width:110px;accent-color:var(--blue)" oninput="setCellSize(+this.value)">
+      <span class="badge" id="bCellSz">8 px</span>
+      <label style="margin-left:8px"><input type="checkbox" id="ckVal">≥12px 时显示数值</label>
+      <label style="margin-left:8px"><input type="checkbox" id="ckPeak" checked>标峰值</label>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <label>ROI</label>
+      <div class="seg">
+        <button id="roiAuto" class="on" onclick="setRoi('auto')">自动（有效点）</button>
+        <button id="roiRect" onclick="setRoi('rect')">框选</button>
+        <button id="roiAll" onclick="setRoi('all')">全垫</button>
+      </div>
+      <span class="badge" id="bRoi">ROI：全部有效点</span>
+    </div>
+    <div id="matBox"><canvas id="mat"></canvas></div>
+    <div class="badge" id="bPeakPos" style="margin-top:7px;display:block">峰值：无</div>
+    <div class="hint">
+      <b>线序自检</b>：用手指按足垫的某一点，看橙框跳到的格子是不是对应位置——脚尖朝上、左半是左脚、右半是右脚，
+      与主程序采集页 2D 视图完全一致（同一套 FLIP + 转置）。悬停格子可看「显示 R/C → 原始字节序号」。<br>
+      <b>ROI</b>：默认只统计 ADC &gt; 阈值 的格子（砝码压住的区域）；压头附近有零散噪点时改用「框选」，在图上拖一个框。
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ 右栏 ═══════════ -->
+<div id="colR">
+  <div class="card">
+    <div class="card-t">⑤ 采集标定点</div>
+    <div class="row">
+      <button class="b-ok" id="btnMark" onclick="doMark()" disabled>📍 打点记录 (空格)</button>
+      <button class="b-warn" id="btnAuto" onclick="toggleAuto()" disabled>⏺ 连续记录</button>
+      <button class="b-gh" onclick="doUndo()">↩ 撤销</button>
+      <button class="b-gh" onclick="doClear()">🗑 清空</button>
+      <button class="b-gh" onclick="exportCSV()">💾 导出 CSV</button>
+      <label class="b-gh" style="padding:7px 13px;border-radius:6px;cursor:pointer">📂 导入 CSV<input type="file" id="inCsv" accept=".csv" style="display:none" onchange="importCSV(this.files[0])"></label>
+    </div>
+    <div class="row">
+      <label>连续记录间隔</label><input type="number" id="inIval" value="200" min="20" step="10"><label>ms</label>
+      <label style="margin-left:12px">稳定判据 总和波动 ≤</label><input type="number" id="inTol" value="40" min="1" step="1">
+      <span class="badge" id="bCount" style="margin-left:auto">0 个标定点</span>
+    </div>
+    <div class="hint" id="hintReady"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-t">⑥ 标定曲线
+      <select id="selX" style="margin-left:auto;width:auto" onchange="render()">
+        <option value="mean">x = 有效点 ADC 均值</option>
+        <option value="sum">x = ROI ADC 总和</option>
+      </select>
+      <select id="selY" style="width:auto" onchange="render()">
+        <option value="kpa">y = 压强 kPa</option>
+        <option value="n">y = 总力 N</option>
+      </select>
+      <select id="selFit" style="width:auto" onchange="render()">
+        <option value="linear">线性 y = a·x + b</option>
+        <option value="quad">二次 y = a·x² + b·x + c</option>
+        <option value="power" selected>幂函数 y = a·(x−x₀)^b</option>
+        <option value="none">不拟合</option>
+      </select>
+    </div>
+    <canvas id="chart"></canvas>
+    <div class="legend">
+      <span><i style="background:#388bfd"></i>实测标定点</span>
+      <span><i style="background:#db6d28"></i>拟合曲线</span>
+      <span id="lgR2" style="margin-left:auto;color:var(--ink3)"></span>
+    </div>
+    <div class="fit" id="fitOut">尚无拟合结果 — 至少需要 2 个标定点。</div>
+    <div class="row" style="margin-top:8px">
+      <button class="b-gh" onclick="copyFit('js')">📋 复制 JS 公式</button>
+      <button class="b-gh" onclick="copyFit('py')">📋 复制 Python 公式</button>
+      <button class="b-pri" onclick="copyFit('ts')">📋 复制 接入主程序的 TS 片段</button>
+    </div>
+    <div class="hint">
+      <b>推荐 x = 有效点 ADC 均值、y = kPa（幂函数）</b>：这是<b>单个传感点</b>的 ADC→压强曲线，与压头大小无关，
+      主程序里逐格换算后 Σ(kPa × 49mm²) 就是总力，任何脚型都成立。<br>
+      <b>x = ADC 总和、y = N</b> 只在压头面积固定时成立，换了接触面积就不准 —— 仅作对照。
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-t">⑦ 标定点数据</div>
+    <div class="tblwrap">
+      <table id="tbl">
+        <thead><tr><th>#</th><th>时间</th><th>ADC总和</th><th>均值</th><th>有效点</th><th>峰</th><th>力 N</th><th>kPa</th><th></th></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+</div>
+
+<div id="tip"></div>
+<div id="matTip"></div>
+
+<script>
+// ════════════════════════════════════════════════════
+// 协议常量 —— 与主程序 SerialService.ts / serial_bridge.py 一致
+// ════════════════════════════════════════════════════
+const FRAME_TAIL = [0xAA, 0x55, 0x03, 0x99];
+const FRAME_LEN  = 4096;          // 64×64 行优先，无时间戳
+const N = 64;
+const BAUD = 3000000;
+const CELL_MM2 = 49;              // 7mm 间距 → 单格 49 mm² = 0.49 cm²
+// 帧方向校正：真机传感器原点在显示坐标系对角，两个开关都开 = 180° 旋转（SerialService.FRAME_FLIP_*）
+const FLIP_H = true, FLIP_V = true;
+// 显示：D[r][c] = M[c][r]（转置），左脚 = 显示列 0-31，右脚 = 32-63，脚尖朝上（Pressure2DHeatmap）
+// 综合：显示 (r,c) ← 原始字节序号 rawIdx = (FLIP_H ? 63-c : c)*64 + (FLIP_V ? 63-r : r)
+function rawIdxOf(r, c){
+  const srcRow = FLIP_H ? N - 1 - c : c;
+  const srcCol = FLIP_V ? N - 1 - r : r;
+  return srcRow * N + srcCol;
+}
+const IDX = new Int32Array(N * N);
+for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) IDX[r * N + c] = rawIdxOf(r, c);
+
+const GRAVITY = 9.80665;
+function gaugeUnit(){ return document.getElementById('selUnit').value; }
+const RE_STRICT = /(\d{3}\.\d{2})/g;
+const RE_LOOSE  = /([-+]?\d+\.\d+)/g;
+
+// ════════════════════════════════════════════════════
+// 状态
+// ════════════════════════════════════════════════════
+let raw = new Uint8Array(FRAME_LEN);     // 最新一帧原始字节
+let disp = new Uint8Array(N * N);        // 显示方向（已 FLIP + 转置）
+let matConnected = false, matSource = '';
+let ws = null, matPort = null, matReader = null, matReading = false;
+let gauConnected = false, gauPort = null, gauReader = null, gauWriter = null, gauReading = false;
+
+let fpsCount = 0, fps = 0, lastFpsT = performance.now(), totalFrames = 0;
+let stat = {sum:0, mean:0, active:0, peak:0, peakR:-1, peakC:-1, allSum:0, allPeak:0};
+let adcBase = 0;   // 空垫去皮：ROI 总和基线（阈值过滑后一般已是 0）
+let tareAt = '';
+let gaugeKgf = 0, gaugeTareKgf = 0, gaugeT = 0, gaugeRaw = 0, gaugeGotData = false;
+let rxBytes = 0, rxSamples = [], sigOn = true, keepTimer = null, noParseWarned = false;
+
+let shape = 'square';
+let roiMode = 'auto';                    // auto | rect | all
+let roi = null;                          // {r0,c0,r1,c1} 含端点
+let points = [];
+let autoRec = false, autoTimer = null;
+const hist = [];
+
+function log(msg, cls){
+  const el = document.getElementById('log');
+  const t = new Date().toLocaleTimeString('zh-CN',{hour12:false});
+  el.insertAdjacentHTML('afterbegin', `<div class="${cls||''}">[${t}] ${msg}</div>`);
+  while (el.children.length > 80) el.lastChild.remove();
+}
+
+// ════════════════════════════════════════════════════
+// 帧：原始字节 → 显示矩阵 → ROI 统计
+// ════════════════════════════════════════════════════
+// 噪声阈值：读 DOM 很贵（每帧 4096 次循环里不能碰它），改成缓存 + input 事件更新
+let noiseTh = 14;
+function noise(){ return noiseTh; }
+
+/**
+ * 性能结构（原版每帧同步 computeStat + updateLive + renderMat，42fps 下主线程被画布重绘塞满，
+ * WebSocket 消息排队 → 看到的延迟越来越大）：
+ *   帧到达（onFrame）   只做 O(4096) 的转置 + ROI 统计，写内存，标记 dirty —— 微秒级
+ *   渲染（rAF 循环）    每个显示帧至多画一次：画布重绘、DOM 文本；没有新帧就跳过
+ *   fps/帧计数等文字    另按 250ms 节流，它们变得再快也没意义
+ * 这样无论足垫来多少帧，渲染成本恒为显示器刷新率，队列不会积压。
+ */
+let frameDirty = false;
+function onFrame(bytes){
+  raw = bytes;
+  for (let i = 0; i < N * N; i++) disp[i] = raw[IDX[i]];
+  totalFrames++; fpsCount++;
+  const now = performance.now();
+  if (now - lastFpsT >= 1000){ fps = Math.round(fpsCount * 1000 / (now - lastFpsT)); fpsCount = 0; lastFpsT = now; }
+  computeStat();
+  hist.push(stat.sum); if (hist.length > 20) hist.shift();
+  frameDirty = true;
+}
+
+let rafPending = false;
+function scheduleRender(){ if (rafPending) return; rafPending = true; requestAnimationFrame(renderTick); }
+let lastTextT = 0;
+function renderTick(){
+  rafPending = false;
+  if (frameDirty){
+    frameDirty = false;
+    renderMat();
+    updateLiveNumbers();
+  }
+  const now = performance.now();
+  if (now - lastTextT >= 250){ lastTextT = now; updateLiveText(); }
+  // 连接中就持续跑循环（每显示帧检查一次 dirty，成本只有一次布尔判断）
+  if (matConnected || gauConnected) scheduleRender();
+}
+
+function inRoi(r, c){
+  if (roiMode === 'rect' && roi) return r >= roi.r0 && r <= roi.r1 && c >= roi.c0 && c <= roi.c1;
+  return true;
+}
+function computeStat(){
+  const th = noiseTh;
+  const rect = roiMode === 'rect' && roi ? roi : null;
+  let sum = 0, active = 0, peak = 0, pr = -1, pc = -1, allSum = 0, allPeak = 0;
+  for (let r = 0; r < N; r++){
+    const inR = !rect || (r >= rect.r0 && r <= rect.r1);
+    const base = r * N;
+    for (let c = 0; c < N; c++){
+      const v = disp[base + c];
+      if (v <= th) continue;
+      allSum += v; if (v > allPeak) allPeak = v;
+      if (!inR || (rect && (c < rect.c0 || c > rect.c1))) continue;
+      sum += v; active++;
+      if (v > peak){ peak = v; pr = r; pc = c; }
+    }
+  }
+  stat = {sum, mean: active ? sum / active : 0, active, peak, peakR: pr, peakC: pc, allSum, allPeak};
+}
+
+// 从字节流里切帧（串口直连用；桥的 WS 每条二进制消息就是一整帧）。
+// 3M 波特 ≈ 300KB/s，串口 chunk 很碎：用固定容量环形缓冲 + 单指针扫描，
+// 不再每个 chunk 都 new 一个大数组拼接（原版每次拼接都拷贝整段残留，等于 O(n²)）。
+const RX_CAP = FRAME_LEN * 8;
+const rxRing = new Uint8Array(RX_CAP);
+let rxLen = 0;
+const frameBuf = new Uint8Array(FRAME_LEN);
+function feedMat(chunk){
+  if (chunk.length >= RX_CAP){ chunk = chunk.subarray(chunk.length - RX_CAP + 1); }
+  if (rxLen + chunk.length > RX_CAP){
+    // 溢出：丢最旧的，只留最近能装下 chunk 的部分（至多丢掉几帧，不会卡死）
+    const keep = RX_CAP - chunk.length;
+    rxRing.copyWithin(0, rxLen - keep, rxLen); rxLen = keep;
+  }
+  rxRing.set(chunk, rxLen); rxLen += chunk.length;
+  let consumed = 0;
+  for (let i = FRAME_LEN; i <= rxLen - 4; i++){
+    if (rxRing[i]===FRAME_TAIL[0] && rxRing[i+1]===FRAME_TAIL[1] && rxRing[i+2]===FRAME_TAIL[2] && rxRing[i+3]===FRAME_TAIL[3]){
+      frameBuf.set(rxRing.subarray(i - FRAME_LEN, i));
+      onFrame(frameBuf);
+      consumed = i + 4; i = consumed + FRAME_LEN - 1;
+    }
+  }
+  if (consumed > 0){ rxRing.copyWithin(0, consumed, rxLen); rxLen -= consumed; }
+}
+
+// ════════════════════════════════════════════════════
+// 连接 A：后端串口桥（WebSocket /device/stream）
+// ════════════════════════════════════════════════════
+document.getElementById('btnBridge').addEventListener('click', async () => {
+  const host = document.getElementById('inBridge').value.trim().replace(/^https?:\/\//, '').replace(/\/+$/, '');
+  setMat('y', '探测后端…');
+  try{
+    const st = await (await fetch(`http://${host}/device/status`, {signal: AbortSignal.timeout(2500)})).json();
+    if (!st.available){ setMat('r', '桥不可用'); log('后端在跑但串口桥不可用（缺 pyserial？）', 'err'); return; }
+    log(`后端桥状态：${st.state}${st.port ? ' @ ' + st.port : ''}${st.mode === 'manual' ? '（手动选口）' : ''}`, st.state === 'connected' ? 'ok' : 'wa');
+    if (st.state !== 'connected') log('桥还没连上足垫：等它自动扫描命中，或先在主程序里「连接设备」/手动选口', 'wa');
+  }catch(e){
+    setMat('r', '后端未启动'); log(`连不上 http://${host}/device/status —— 主程序没开？没开就用「串口」直连`, 'err'); return;
+  }
+  ws = new WebSocket(`ws://${host}/device/stream`);
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => { matConnected = true; matSource = 'bridge'; setMat('g', '后端桥 已订阅'); log('WebSocket 帧流已订阅 ✅', 'ok'); refreshBtns(); scheduleRender(); };
+  ws.onmessage = (ev) => {
+    if (typeof ev.data === 'string'){
+      try{ const m = JSON.parse(ev.data); if (m.type === 'status') setMat(m.state === 'connected' ? 'g' : 'y', `后端桥 · ${m.state}${m.port ? ' ' + m.port : ''}`); }catch{}
+      return;
+    }
+    // 后端每条二进制消息就是一整帧；直接在 ArrayBuffer 上建视图，不拷贝
+    if (ev.data.byteLength === FRAME_LEN) onFrame(new Uint8Array(ev.data));
+  };
+  ws.onclose = () => { if (matConnected && matSource === 'bridge'){ matConnected = false; setMat('r', '桥连接断开'); log('WebSocket 已断开', 'wa'); refreshBtns(); updateLive(); } };
+  ws.onerror = () => { setMat('r', 'WS 错误'); };
+});
+
+// ════════════════════════════════════════════════════
+// 连接 B：Web Serial 直连（3,000,000 8N1）—— 后端没跑时用
+// ════════════════════════════════════════════════════
+document.getElementById('btnSer').addEventListener('click', async () => {
+  if (!('serial' in navigator)){ log('浏览器不支持 Web Serial，请用 Chrome / Edge', 'err'); return; }
+  setMat('y', '等待选择串口...');
+  try{
+    matPort = await navigator.serial.requestPort();
+    await matPort.open({baudRate: BAUD, dataBits: 8, stopBits: 1, parity: 'none', flowControl: 'none'});
+    matConnected = true; matReading = true; matSource = 'serial'; rxLen = 0;
+    setMat('g', `串口 ${BAUD}`); log(`足垫串口已打开 (${BAUD})。若主程序后端也在跑会抢不到口 —— 先关掉它或改用「后端桥」`, 'ok');
+    refreshBtns(); scheduleRender(); readMatLoop();
+  }catch(e){
+    const m = e.message || String(e);
+    if (m.includes('cancel') || m.includes('No port')) setMat('', '足垫未连接');
+    else { setMat('r', '串口失败'); log('足垫串口失败: ' + m + (m.match(/access|open|busy/i) ? '（多半被后端 api_server.py 占着，用「后端桥」）' : ''), 'err'); }
+  }
+});
+async function readMatLoop(){
+  try{
+    while (matPort && matPort.readable && matReading){
+      matReader = matPort.readable.getReader();
+      try{ while (true){ const {value, done} = await matReader.read(); if (done) break; if (value) feedMat(value); } }
+      finally { try{ matReader.releaseLock(); }catch{} matReader = null; }
+    }
+  }catch(e){ if (matConnected) log('足垫读取错误: ' + (e.message||e), 'err'); }
+}
+document.getElementById('btnMatDis').addEventListener('click', async () => {
+  matReading = false;
+  if (ws){ try{ ws.close(); }catch{} ws = null; }
+  if (matReader){ try{ await matReader.cancel(); }catch{} matReader = null; }
+  if (matPort){ try{ await matPort.close(); }catch{} matPort = null; }
+  matConnected = false; rxLen = 0;
+  setMat('', '足垫未连接'); log('足垫已断开'); refreshBtns(); updateLive();
+});
+
+// ════════════════════════════════════════════════════
+// 压力计串口（2400 8N1，开口发 0xFA 唤醒 → ASCII 正则取值）—— 照搬参考工具
+// ════════════════════════════════════════════════════
+document.getElementById('btnGau').addEventListener('click', async () => {
+  if (!('serial' in navigator)){ log('浏览器不支持 Web Serial', 'err'); return; }
+  setGau('y', '等待选择串口...');
+  const baud = parseInt(document.getElementById('selBaud').value) || 2400;
+  try{
+    gauPort = await navigator.serial.requestPort();
+    await gauPort.open({baudRate: baud, dataBits: 8, stopBits: 1, parity: 'none', flowControl: 'none'});
+    sigOn = true;
+    try{ await gauPort.setSignals({dataTerminalReady: true, requestToSend: true}); }catch(e){ log('setSignals 失败（可忽略）: ' + (e.message||e), 'wa'); }
+    updateSigBadge();
+    rxBytes = 0; rxSamples = []; noParseWarned = false; gauConnected = true; gauReading = true; gaugeGotData = false;
+    setGau('y', '等待读数…'); log(`压力计串口已打开 (${baud} 8-N-1)`, 'ok'); refreshBtns(); scheduleRender();
+    readGauLoop(); await sendWake(); applyKeepAlive();
+  }catch(e){
+    const m = e.message || String(e);
+    if (m.includes('cancel') || m.includes('No port')) setGau('', '压力计未连接');
+    else { setGau('r', '串口失败'); log('压力计串口失败: ' + m, 'err'); }
+  }
+});
+async function sendWake(){
+  if (!gauPort || !gauPort.writable){ log('压力计未连接，无法发送', 'wa'); return; }
+  try{ gauWriter = gauPort.writable.getWriter(); await gauWriter.write(new Uint8Array([0xFA])); gauWriter.releaseLock(); gauWriter = null; }
+  catch(e){ try{ gauWriter && gauWriter.releaseLock(); }catch{} gauWriter = null; log('发送 0xFA 失败: ' + (e.message||e), 'err'); }
+}
+function applyKeepAlive(){
+  clearInterval(keepTimer); keepTimer = null;
+  if (document.getElementById('ckKeep').checked && gauConnected) keepTimer = setInterval(sendWake, 1000);
+}
+document.getElementById('ckKeep').addEventListener('change', applyKeepAlive);
+async function toggleSignals(){
+  if (!gauPort){ log('压力计未连接', 'wa'); return; }
+  sigOn = !sigOn;
+  try{ await gauPort.setSignals({dataTerminalReady: sigOn, requestToSend: sigOn}); }catch(e){ log('setSignals 失败: ' + (e.message||e), 'err'); }
+  updateSigBadge();
+}
+function updateSigBadge(){ document.getElementById('bSig').textContent = 'DTR/RTS: ' + (sigOn ? '开' : '关'); }
+function toggleDbg(){ const b = document.getElementById('dbgBox'); b.style.display = b.style.display === 'none' ? '' : 'none'; }
+function renderRaw(){
+  if (document.getElementById('dbgBox').style.display === 'none') return;
+  document.getElementById('bRx').textContent = '收到 ' + rxBytes + ' 字节';
+  const box = document.getElementById('rawBox');
+  if (!rxSamples.length){ box.textContent = '等待原始数据…'; return; }
+  box.innerHTML = rxSamples.slice(-6).reverse().map(s =>
+    `<div><span class="hex">${s.hex}</span><br><span class="asc">"${s.asc}"</span>` +
+    (s.hits.length ? ` → <span class="hit">${s.hits.join(' ')}</span>` : ' → <span style="color:#da3633">无匹配</span>') + `</div>`).join('');
+}
+async function readGauLoop(){
+  let text = ''; const dec = new TextDecoder('ascii');
+  try{
+    while (gauPort && gauPort.readable && gauReading){
+      gauReader = gauPort.readable.getReader();
+      try{
+        while (true){
+          const {value, done} = await gauReader.read();
+          if (done) break; if (!value || !value.length) continue;
+          gaugeGotData = true; rxBytes += value.length; text += dec.decode(value, {stream: true});
+          const re = document.getElementById('selFmt').value === 'loose' ? RE_LOOSE : RE_STRICT; re.lastIndex = 0;
+          let m, last = -1; const hits = [];
+          while ((m = re.exec(text)) !== null){ last = m.index + m[0].length; hits.push(m[1]); onGauge(parseFloat(m[1])); }
+          rxSamples.push({
+            hex: Array.from(value.slice(0,24)).map(b=>b.toString(16).padStart(2,'0')).join(' ') + (value.length>24 ? ' …' : ''),
+            asc: new TextDecoder('ascii').decode(value.slice(0,40)).replace(/[\x00-\x1f\x7f-\xff]/g, c => c==='\r' ? '\\r' : c==='\n' ? '\\n' : '·'),
+            hits,
+          });
+          if (rxSamples.length > 12) rxSamples.shift();
+          renderRaw();
+          if (!hits.length && !noParseWarned && rxBytes > 40){
+            noParseWarned = true; document.getElementById('dbgBox').style.display = ''; renderRaw();
+            log(`收到 ${rxBytes} 字节但解析不出读数，看诊断面板里实际收到的内容；有数字就换「宽松」格式`, 'err');
+          }
+          if (last >= 0) text = text.slice(last);
+          if (text.length > 256) text = text.slice(-64);
+        }
+      } finally { try{ gauReader.releaseLock(); }catch{} gauReader = null; }
+    }
+  }catch(e){ if (gauConnected) log('压力计读取错误: ' + (e.message||e), 'err'); }
+}
+function onGauge(r){
+  const val = gaugeUnit() === 'N' ? r / GRAVITY : r;
+  const first = !gaugeT;
+  gaugeRaw = r; gaugeKgf = val; gaugeT = Date.now();
+  if (first){ log(`压力计首个读数 ${r.toFixed(2)} ${gaugeUnit()} — 已可打点`, 'ok'); refreshBtns(); }
+  const gu = gaugeUnit();
+  const net = gu === 'N' ? (val - gaugeTareKgf) * GRAVITY : val - gaugeTareKgf;
+  setGau('g', `就绪 ${net.toFixed(2)} ${gu}`);
+  frameDirty = true;   // 数字交给 rAF 循环刷，不在串口回调里直接写 DOM
+}
+document.getElementById('btnGauDis').addEventListener('click', async () => {
+  gauReading = false; clearInterval(keepTimer); keepTimer = null;
+  if (gauReader){ try{ await gauReader.cancel(); }catch{} gauReader = null; }
+  if (gauWriter){ try{ gauWriter.releaseLock(); }catch{} gauWriter = null; }
+  if (gauPort){ try{ await gauPort.close(); }catch{} gauPort = null; }
+  gauConnected = false; setGau('', '压力计未连接'); log('压力计已断开'); refreshBtns();
+});
+document.getElementById('selUnit').addEventListener('change', () => {
+  const gu = gaugeUnit();
+  if (gaugeT){ gaugeKgf = gu === 'N' ? gaugeRaw / GRAVITY : gaugeRaw; gaugeTareKgf = 0; log(`读数单位已切到 ${gu}，压力计零点已清除`, 'wa'); }
+  updateArea();
+});
+
+// ════════════════════════════════════════════════════
+// 手动输入（砝码 / 抄表）
+// ════════════════════════════════════════════════════
+let manualMode = false, manMode = 'weight', stackKg = 0;
+function toggleManual(){
+  manualMode = document.getElementById('ckManual').checked;
+  document.getElementById('manualBox').style.display = manualMode ? '' : 'none';
+  log(manualMode ? '已启用手动输入（砝码 / 抄表）' : '已关闭手动输入，回到压力计串口模式', 'wa');
+  refreshBtns(); updateManualBadge(); updateArea();
+}
+function setManMode(m){
+  manMode = m;
+  document.getElementById('mdW').classList.toggle('on', m === 'weight');
+  document.getElementById('mdR').classList.toggle('on', m === 'read');
+  document.getElementById('mWeight').style.display = m === 'weight' ? '' : 'none';
+  document.getElementById('mRead').style.display = m === 'read' ? '' : 'none';
+  document.getElementById('bManHint').textContent = m === 'weight' ? '按砝码质量输入' : '照抄压力计屏幕读数';
+  updateManualBadge(); updateArea();
+}
+function oneWeightKg(){ const v = parseFloat(document.getElementById('inWeight').value) || 0; return document.getElementById('selWUnit').value === 'g' ? v/1000 : v; }
+function addWeight(sign){ stackKg = Math.max(0, stackKg + sign * oneWeightKg()); updateManualBadge(); updateLive(); log(`台面总质量 ${stackKg.toFixed(3)} kg → ${toKpa(stackKg).toFixed(2)} kPa`); }
+function clearWeight(){ stackKg = 0; updateManualBadge(); updateLive(); log('砝码计数已归零'); }
+function manualKgf(){
+  if (manMode === 'weight') return stackKg;
+  const v = parseFloat(document.getElementById('inManual').value) || 0;
+  const u = document.getElementById('selManUnit').value;
+  if (u === 'kgf') return v; if (u === 'N') return v / GRAVITY;
+  const a = areaMM2(); return a > 0 ? (v * a / 1000) / GRAVITY : 0;
+}
+function updateManualBadge(){
+  if (!manualMode) return;
+  const kgf = manualKgf();
+  document.getElementById('bStack').textContent = `台面总质量 ${stackKg.toFixed(3)} kg`;
+  document.getElementById('bManual').textContent = `→ ${toKpa(kgf).toFixed(2)} kPa（${(kgf*GRAVITY + deadLoadN()).toFixed(2)} N 总力）`;
+}
+['inManual','selManUnit','inWeight','selWUnit'].forEach(id => document.getElementById(id).addEventListener('input', () => { updateManualBadge(); updateLive(); }));
+function manualMark(){
+  if (!matConnected){ log('足垫未连接，没有 ADC 可记录', 'err'); return; }
+  addPoint(manualKgf());
+  log(`已记录: ADC 均值 ${stat.mean.toFixed(1)} / 总和 ${Math.max(0, stat.sum - adcBase)} ↔ ${toKpa(manualKgf()).toFixed(2)} kPa`, 'ok');
+}
+
+// ════════════════════════════════════════════════════
+// 状态栏 / 门槛
+// ════════════════════════════════════════════════════
+function setMat(cls, txt){ document.getElementById('dMat').className = 'dot' + (cls ? ' ' + cls : ''); document.getElementById('sMat').textContent = txt; document.getElementById('btnMatDis').style.display = matConnected ? '' : 'none'; }
+function setGau(cls, txt){ document.getElementById('dGau').className = 'dot' + (cls ? ' ' + cls : ''); document.getElementById('sGau').textContent = txt; document.getElementById('btnGauDis').style.display = gauConnected ? '' : 'none'; }
+function refreshBtns(){
+  const gaugeUsable = gauConnected && gaugeT > 0;
+  const ready = matConnected && (manualMode || gaugeUsable);
+  document.getElementById('btnMark').disabled = !ready;
+  document.getElementById('btnAuto').disabled = !ready || manualMode;
+  document.getElementById('hintReady').innerHTML =
+    ready && manualMode ? '手动模式：空载「去皮」→ 放压板并填底重 → 加砝码「＋」→ 等「读数稳定」→ 按 <b>空格</b> 记录。'
+    : ready ? '可以打点了。空载先「去皮」→ 逐级加载 → 待稳定 → 按 <b>空格</b> 记录；也可「连续记录」慢慢加载画整条曲线。'
+    : !matConnected ? '<span class="warn">请先连接足垫：主程序开着就点「后端桥」，没开就点「串口」。</span>'
+    : '<span class="warn">压力计还没解析出读数。没有压力计就勾选「③′ 手动输入压力」用砝码标定。</span>';
+}
+
+// ════════════════════════════════════════════════════
+// 压头面积 / 底重 / kPa
+// ════════════════════════════════════════════════════
+function setShape(s){
+  shape = s;
+  document.getElementById('shSq').classList.toggle('on', s === 'square');
+  document.getElementById('shCi').classList.toggle('on', s === 'circle');
+  document.getElementById('rowSq').style.display = s === 'square' ? '' : 'none';
+  document.getElementById('rowCi').style.display = s === 'circle' ? '' : 'none';
+  updateArea();
+}
+function areaMM2(){
+  if (shape === 'square'){ return (parseFloat(document.getElementById('inW').value) || 0) * (parseFloat(document.getElementById('inH').value) || 0); }
+  const r = parseFloat(document.getElementById('inR').value) || 0; return Math.PI * r * r;
+}
+function deadLoadN(){ const v = parseFloat(document.getElementById('inDead').value) || 0; return document.getElementById('selDeadUnit').value === 'kg' ? v * GRAVITY : v; }
+function totalN(kgf){ return deadLoadN() + kgf * GRAVITY; }
+function toKpa(kgf){ const a = areaMM2(); return a > 0 ? totalN(kgf) / a * 1000 : 0; }
+function updateArea(){
+  const a = areaMM2();
+  document.getElementById('bArea').textContent = `面积 ${a.toFixed(2)} mm² ≈ ${(a / CELL_MM2).toFixed(0)} 格`;
+  const dN = deadLoadN();
+  document.getElementById('bDead').textContent = `底重 ${dN.toFixed(2)} N → ${(a>0 ? dN/a*1000 : 0).toFixed(2)} kPa`;
+  document.getElementById('hFormula').textContent = manualMode && manMode === 'weight'
+    ? 'kPa = (底重 + 砝码质量 × 9.80665) ÷ 压头面积(mm²) × 1000'
+    : gaugeUnit() === 'N' ? 'kPa = (底重 + 压力计读数 N) ÷ 压头面积(mm²) × 1000'
+    : 'kPa = (底重 + 压力计读数 kgf × 9.80665) ÷ 压头面积(mm²) × 1000';
+  updateLive();
+}
+['inDead','selDeadUnit','inW','inH','inR'].forEach(id => document.getElementById(id).addEventListener('input', updateArea));
+document.getElementById('inNoise').addEventListener('input', e => { noiseTh = Math.max(0, Math.min(255, parseInt(e.target.value) || 0)); computeStat(); updateLive(); });
+
+// ════════════════════════════════════════════════════
+// 实时显示
+// ════════════════════════════════════════════════════
+function isStable(){
+  const tol = parseFloat(document.getElementById('inTol').value) || 40;
+  if (hist.length < 8) return false;
+  const w = hist.slice(-8); return (Math.max(...w) - Math.min(...w)) <= tol;
+}
+// DOM 节点缓存：每帧 getElementById 十几次也是开销
+const $ = (() => { const m = {}; return id => m[id] || (m[id] = document.getElementById(id)); })();
+// 只在值真的变了才写 DOM（写同样的字符串仍会触发样式失效）
+function setText(id, txt){ const el = $(id); if (el.__t !== txt){ el.__t = txt; el.textContent = txt; } }
+function setHtml(id, html){ const el = $(id); if (el.__h !== html){ el.__h = html; el.innerHTML = html; } }
+function setClass(id, cls){ const el = $(id); if (el.__c !== cls){ el.__c = cls; el.className = cls; } }
+
+/** 随帧变化的数字（每显示帧至多一次） */
+function updateLiveNumbers(){
+  const kgf = manualMode ? manualKgf() : Math.max(0, gaugeKgf - gaugeTareKgf);
+  const n = totalN(kgf), kpa = toKpa(kgf);
+  setText('vAdc', String(Math.max(0, stat.sum - adcBase)));
+  setText('vMean', stat.mean.toFixed(1));
+  setHtml('vKpa', kpa.toFixed(2) + '<span class="u">kPa</span>');
+  setHtml('vN', n.toFixed(2) + '<span class="u">N</span>');
+  const gu = gaugeUnit();
+  setHtml('vKgf', manualMode
+    ? (gu === 'N' ? kgf*GRAVITY : kgf).toFixed(2) + `<span class="u">${gu === 'N' ? 'N' : 'kgf'}</span>`
+    : gaugeRaw.toFixed(2) + `<span class="u">${gu}</span>`);
+  setText('vPeak', stat.active + ' / ' + stat.peak);
+  setText('bMatStat', `全垫总和 ${stat.allSum} · 峰值 ${stat.allPeak}`);
+  setText('bPeakPos', stat.peakR >= 0
+    ? `峰值：显示 R${stat.peakR} C${stat.peakC}（${stat.peakC < 32 ? '左脚区' : '右脚区'}）· 原始字节 #${IDX[stat.peakR*N + stat.peakC]} · ADC ${stat.peak}`
+    : '峰值：无（ROI 内没有受压点）');
+  setText('bRoi',
+    roiMode === 'all' ? 'ROI：全垫（含全部有效点）'
+    : roiMode === 'rect' ? (roi ? `ROI：R${roi.r0}-${roi.r1} × C${roi.c0}-${roi.c1}（${(roi.r1-roi.r0+1)*(roi.c1-roi.c0+1)} 格 = ${((roi.r1-roi.r0+1)*(roi.c1-roi.c0+1)*CELL_MM2).toFixed(0)} mm²）` : 'ROI：在图上拖框')
+    : `ROI：全部有效点（${stat.active} 格 ≈ ${(stat.active*CELL_MM2).toFixed(0)} mm²）`);
+}
+
+/** 慢变文字（250ms 节流）：去皮徽章、压力计新鲜度、fps、稳定判据 */
+function updateLiveText(){
+  const gu = gaugeUnit();
+  if (tareAt){ setText('bTare', `已空垫去皮 @ ${tareAt} · 总和基线 ${adcBase}` + (gaugeTareKgf ? ` · 表零点 ${(gu==='N'?gaugeTareKgf*GRAVITY:gaugeTareKgf).toFixed(2)} ${gu}` : '')); setClass('bTare', 'badge stable'); }
+  else { setText('bTare', '未去皮 — 请在垫子完全空载时点「⊘ 空垫去皮」'); setClass('bTare', 'badge unstable'); }
+
+  const kg = $('kGauge');
+  if (manualMode){ setText('kGauge', manMode === 'weight' ? '砝码（手动）' : '手动输入'); kg.style.color = ''; }
+  else if (!gaugeT){ setText('kGauge', '压力计'); kg.style.color = ''; }
+  else { const idle = (Date.now() - gaugeT)/1000; setText('kGauge', '压力计原始 · ' + (idle < 1 ? '实时' : idle.toFixed(1) + 's 前')); kg.style.color = idle > 3 ? 'var(--red)' : ''; }
+
+  setText('bFps', fps + ' fps');
+  setText('bFrames', totalFrames + ' 帧');
+  if (!matConnected){ setText('bStable', '—'); setClass('bStable', 'badge'); }
+  else if (isStable()){ setText('bStable', '读数稳定'); setClass('bStable', 'badge stable'); }
+  else { setText('bStable', '波动中'); setClass('bStable', 'badge unstable'); }
+}
+
+/** 兼容旧调用点（按钮、输入框等交互触发）：立刻全量刷一次 */
+function updateLive(){ renderMat(); updateLiveNumbers(); updateLiveText(); }
+function doTare(){
+  if (stat.allSum > 0 && stat.active > 6 && !confirm(`当前垫子上似乎有载荷（有效点 ${stat.active}）。去皮只应在垫子完全空载时做。确定继续？`)) return;
+  gaugeTareKgf = gaugeKgf; adcBase = stat.sum;
+  tareAt = new Date().toLocaleTimeString('zh-CN',{hour12:false});
+  log(`已空垫去皮 — ROI 总和基线 ${adcBase}` + (gauConnected ? `，压力计零点 ${gaugeRaw.toFixed(2)} ${gaugeUnit()}` : ''), 'ok');
+  if (points.length) log('⚠ 已有标定点是按旧基线记的，建议「清空」重采', 'wa');
+  updateLive();
+}
+function undoTare(){ gaugeTareKgf = 0; adcBase = 0; tareAt = ''; log('已还原去皮', 'wa'); updateLive(); }
+
+// ════════════════════════════════════════════════════
+// 64×64 阵列 Canvas + ROI 框选
+// ════════════════════════════════════════════════════
+let cell = 8;
+const matCv = document.getElementById('mat');
+const matG = matCv.getContext('2d', { alpha: false });
+// 离屏 64×64 位图：每格 1 像素写进 ImageData，再 drawImage 放大到画布 —— 一次 putImageData + 一次
+// drawImage 代替 4096 次 fillRect + 4096 次 hsl 字符串解析（原版单帧 ~15ms，这里 <1ms）
+const off = document.createElement('canvas'); off.width = N; off.height = N;
+const offG = off.getContext('2d');
+const img = offG.createImageData(N, N);
+const px = new Uint32Array(img.data.buffer);
+// 256 级色表（与原 adcColor 同一条色阶：深蓝 → 亮蓝 → 白），预先算成 ABGR 整数
+const LUT = new Uint32Array(256);
+(function buildLut(){
+  const c = document.createElement('canvas'); c.width = 256; c.height = 1; const g = c.getContext('2d');
+  for (let v = 0; v < 256; v++){ const t = v / 255; g.fillStyle = `hsl(212 ${90 - t*55}% ${12 + t*78}%)`; g.fillRect(v, 0, 1, 1); }
+  const d = g.getImageData(0, 0, 256, 1).data;
+  for (let v = 0; v < 256; v++) LUT[v] = (255 << 24) | (d[v*4+2] << 16) | (d[v*4+1] << 8) | d[v*4];
+})();
+const BG_PX = (255 << 24) | (0x09 << 16) | (0x04 << 8) | 0x01;   // #010409
+function setCellSize(p){ cell = p; matCv.width = N * cell + 1; matCv.height = N * cell + 1; matCv.style.width = matCv.width + 'px'; matCv.style.height = matCv.height + 'px'; setText('bCellSz', p + ' px'); renderMat(); }
+let showValCached = false, showPeakCached = true;
+$('ckVal').addEventListener('change', e => { showValCached = e.target.checked; renderMat(); });
+$('ckPeak').addEventListener('change', e => { showPeakCached = e.target.checked; renderMat(); });
+function renderMat(){
+  const th = noiseTh;
+  // ① 64×64 像素图
+  for (let i = 0; i < N * N; i++){ const v = disp[i]; px[i] = v > th ? LUT[v] : BG_PX; }
+  offG.putImageData(img, 0, 0);
+  matG.imageSmoothingEnabled = false;
+  matG.fillStyle = '#010409'; matG.fillRect(0, 0, matCv.width, matCv.height);
+  matG.drawImage(off, 0, 0, N, N, 0, 0, N * cell, N * cell);
+  // ② 格线（cell ≥ 6 才画，小格子画了只剩一片灰）
+  if (cell >= 6){
+    matG.strokeStyle = 'rgba(1,4,9,.9)'; matG.lineWidth = 1; matG.beginPath();
+    for (let k = 0; k <= N; k++){ const p = k * cell + 0.5; matG.moveTo(p, 0); matG.lineTo(p, N * cell); matG.moveTo(0, p); matG.lineTo(N * cell, p); }
+    matG.stroke();
+  }
+  // ③ 数值（只在大格子且勾选时；这是唯一的逐格文本路径，用户主动开的）
+  if (showValCached && cell >= 12){
+    matG.font = `${Math.floor(cell*0.55)}px ui-monospace,Consolas,monospace`; matG.textAlign = 'center'; matG.textBaseline = 'middle';
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++){
+      const v = disp[r * N + c]; if (v <= th) continue;
+      matG.fillStyle = v/255 > .55 ? 'rgba(0,0,0,.85)' : 'rgba(255,255,255,.9)'; matG.fillText(v, c*cell + cell/2 + 0.5, r*cell + cell/2 + 1);
+    }
+  }
+  // ④ 左右脚分界线
+  matG.strokeStyle = 'rgba(255,255,255,.22)'; matG.lineWidth = 1;
+  matG.beginPath(); matG.moveTo(32 * cell + 0.5, 0); matG.lineTo(32 * cell + 0.5, matCv.height); matG.stroke();
+  // ⑤ ROI 框
+  if (roiMode === 'rect' && roi){
+    matG.strokeStyle = '#3fb950'; matG.lineWidth = 2;
+    matG.strokeRect(roi.c0 * cell + 0.5, roi.r0 * cell + 0.5, (roi.c1 - roi.c0 + 1) * cell, (roi.r1 - roi.r0 + 1) * cell);
+  }
+  // ⑥ 峰值
+  if (showPeakCached && stat.peakR >= 0){
+    matG.strokeStyle = '#db6d28'; matG.lineWidth = 2; matG.strokeRect(stat.peakC * cell + 0.5, stat.peakR * cell + 0.5, cell, cell);
+  }
+}
+function setRoi(m){
+  roiMode = m;
+  ['roiAuto','roiRect','roiAll'].forEach(id => document.getElementById(id).classList.remove('on'));
+  document.getElementById(m === 'auto' ? 'roiAuto' : m === 'rect' ? 'roiRect' : 'roiAll').classList.add('on');
+  if (m !== 'rect') roi = null;
+  computeStat(); updateLive();
+}
+let dragStart = null;
+function cellAt(e){ const r = matCv.getBoundingClientRect(); return {c: Math.max(0, Math.min(N-1, Math.floor((e.clientX - r.left) / cell))), r: Math.max(0, Math.min(N-1, Math.floor((e.clientY - r.top) / cell)))}; }
+matCv.addEventListener('mousedown', e => { if (roiMode !== 'rect') return; dragStart = cellAt(e); roi = {r0: dragStart.r, r1: dragStart.r, c0: dragStart.c, c1: dragStart.c}; computeStat(); renderMat(); });
+matCv.addEventListener('mousemove', e => {
+  const p = cellAt(e);
+  if (dragStart){ roi = {r0: Math.min(dragStart.r, p.r), r1: Math.max(dragStart.r, p.r), c0: Math.min(dragStart.c, p.c), c1: Math.max(dragStart.c, p.c)}; computeStat(); renderMat(); }
+  const v = disp[p.r * N + p.c]; const t = document.getElementById('matTip');
+  t.innerHTML = `显示 <b>R${p.r} C${p.c}</b>（${p.c < 32 ? '左脚区' : '右脚区'}）<br>原始字节 #${IDX[p.r*N + p.c]}<br>ADC <b>${v}</b>${v <= noise() ? '（≤阈值，计 0）' : ''}`;
+  t.style.display = 'block'; t.style.left = (e.clientX + 14) + 'px'; t.style.top = (e.clientY + 14) + 'px';
+});
+matCv.addEventListener('mouseup', () => { dragStart = null; });
+matCv.addEventListener('mouseleave', () => { dragStart = null; document.getElementById('matTip').style.display = 'none'; });
+
+// ════════════════════════════════════════════════════
+// 打点
+// ════════════════════════════════════════════════════
+function doMark(){
+  if (manualMode){ manualMark(); return; }
+  if (!(matConnected && gauConnected && gaugeT)) return;
+  addPoint(Math.max(0, gaugeKgf - gaugeTareKgf));
+}
+function addPoint(kgf){
+  points.push({
+    t: new Date().toLocaleTimeString('zh-CN',{hour12:false}),
+    sum: Math.max(0, stat.sum - adcBase), rawSum: stat.sum, base: adcBase,
+    mean: stat.mean, active: stat.active, peak: stat.peak,
+    kgf, n: totalN(kgf), dead: deadLoadN(), kpa: toKpa(kgf), area: areaMM2(),
+    roi: roiMode === 'rect' && roi ? `R${roi.r0}-${roi.r1}xC${roi.c0}-${roi.c1}` : roiMode,
+    noise: noise(), stable: isStable(), src: matSource,
+  });
+  render();
+}
+function toggleAuto(){
+  autoRec = !autoRec; const b = document.getElementById('btnAuto');
+  if (autoRec){ const iv = Math.max(20, parseInt(document.getElementById('inIval').value) || 200); autoTimer = setInterval(doMark, iv); b.textContent = '⏹ 停止记录'; b.className = 'b-red'; log('开始连续记录，间隔 ' + iv + ' ms', 'ok'); }
+  else { clearInterval(autoTimer); autoTimer = null; b.textContent = '⏺ 连续记录'; b.className = 'b-warn'; log('停止连续记录，共 ' + points.length + ' 点', 'ok'); }
+}
+function doUndo(){ points.pop(); render(); }
+function doClear(){ if (points.length && !confirm('清空 ' + points.length + ' 个标定点？')) return; points = []; render(); }
+function delPoint(i){ points.splice(i,1); render(); }
+// 空格打点。只在焦点落在【要打字的】控件里时放行（数字/文本框、下拉），
+// 复选框、按钮上按空格也打点 —— 否则点完「启用手动输入」那个复选框后空格就失效了
+document.addEventListener('keydown', e => {
+  if (e.code !== 'Space') return;
+  const t = e.target, tag = t.tagName;
+  const typing = tag === 'SELECT' || tag === 'TEXTAREA' || (tag === 'INPUT' && !['checkbox','radio','range'].includes(t.type));
+  if (typing) return;
+  e.preventDefault(); doMark();
+});
+
+// ════════════════════════════════════════════════════
+// 拟合
+// ════════════════════════════════════════════════════
+function xOf(p){ return document.getElementById('selX').value === 'sum' ? p.sum : p.mean; }
+function yOf(p){ return document.getElementById('selY').value === 'n' ? p.n : p.kpa; }
+function xLabel(){ return document.getElementById('selX').value === 'sum' ? 'ROI ADC 总和' : '有效点 ADC 均值 (0-255)'; }
+function yLabel(){ return document.getElementById('selY').value === 'n' ? '总力 (N)' : '压强 (kPa)'; }
+
+function gauss(A, b){
+  const n = b.length;
+  for (let i = 0; i < n; i++){
+    let p = i; for (let r = i+1; r < n; r++) if (Math.abs(A[r][i]) > Math.abs(A[p][i])) p = r;
+    if (Math.abs(A[p][i]) < 1e-12) return null;
+    [A[i],A[p]] = [A[p],A[i]]; [b[i],b[p]] = [b[p],b[i]];
+    for (let r = i+1; r < n; r++){ const f = A[r][i]/A[i][i]; for (let c = i; c < n; c++) A[r][c] -= f*A[i][c]; b[r] -= f*b[i]; }
+  }
+  const x = new Array(n).fill(0);
+  for (let i = n-1; i >= 0; i--){ let s = b[i]; for (let c = i+1; c < n; c++) s -= A[i][c]*x[c]; x[i] = s/A[i][i]; }
+  return x;
+}
+function r2of(pts, f){
+  const mean = pts.reduce((s,p)=>s+yOf(p),0)/pts.length; let ssRes = 0, ssTot = 0;
+  for (const p of pts){ const d = yOf(p) - f(xOf(p)); ssRes += d*d; ssTot += (yOf(p)-mean)**2; }
+  return ssTot > 0 ? 1 - ssRes/ssTot : 1;
+}
+const fmt = v => Number(v.toPrecision(8));
+
+function computeFit(){
+  const kind = document.getElementById('selFit').value, pts = points;
+  if (kind === 'none' || pts.length < 2) return null;
+  if (kind === 'linear'){
+    const n = pts.length; let sx=0, sy=0, sxx=0, sxy=0;
+    for (const p of pts){ const x = xOf(p), y = yOf(p); sx+=x; sy+=y; sxx+=x*x; sxy+=x*y; }
+    const den = n*sxx - sx*sx; if (Math.abs(den) < 1e-9) return null;
+    const a = (n*sxy - sx*sy)/den, b = (sy - a*sx)/n;
+    const fn = x => a*x + b;
+    return {kind, fn, r2: r2of(pts, fn), params: {a, b}, expr: `y = ${fmt(a)} · x ${b>=0?'+':'−'} ${fmt(Math.abs(b))}`,
+      js: `x => ${fmt(a)} * x + (${fmt(b)})`, py: `lambda x: ${fmt(a)} * x + (${fmt(b)})`};
+  }
+  if (kind === 'quad'){
+    if (pts.length < 3) return null;
+    let S=[0,0,0,0,0], T=[0,0,0];
+    for (const p of pts){ const x = xOf(p), y = yOf(p); let xp = 1; for (let k = 0; k < 5; k++){ S[k] += xp; xp *= x; } T[0] += y; T[1] += y*x; T[2] += y*x*x; }
+    const sol = gauss([[S[0],S[1],S[2]],[S[1],S[2],S[3]],[S[2],S[3],S[4]]], T.slice()); if (!sol) return null;
+    const [c,b,a] = sol; const fn = x => a*x*x + b*x + c;
+    return {kind, fn, r2: r2of(pts, fn), params: {a, b, c}, expr: `y = ${fmt(a)} · x² ${b>=0?'+':'−'} ${fmt(Math.abs(b))} · x ${c>=0?'+':'−'} ${fmt(Math.abs(c))}`,
+      js: `x => ${fmt(a)} * x * x + (${fmt(b)}) * x + (${fmt(c)})`, py: `lambda x: ${fmt(a)} * x * x + (${fmt(b)}) * x + (${fmt(c)})`};
+  }
+  if (kind === 'power'){
+    // y = a·(x − x0)^b，x0 = 起压阈值，一维搜索使 R² 最大（对数域线性回归）
+    const pos = pts.filter(p => yOf(p) > 0 && xOf(p) > 0); if (pos.length < 2) return null;
+    const minX = Math.min(...pos.map(xOf));
+    const fitAt = x0 => {
+      const use = pos.filter(p => xOf(p) - x0 > 1e-6); if (use.length < 2) return null;
+      const n = use.length; let sx=0, sy=0, sxx=0, sxy=0;
+      for (const p of use){ const X = Math.log(xOf(p) - x0), Y = Math.log(yOf(p)); sx+=X; sy+=Y; sxx+=X*X; sxy+=X*Y; }
+      const den = n*sxx - sx*sx; if (Math.abs(den) < 1e-12) return null;
+      const b = (n*sxy - sx*sy)/den, a = Math.exp((sy - b*sx)/n); if (!isFinite(a) || !isFinite(b)) return null;
+      const fn = x => (x - x0) > 0 ? a*Math.pow(x-x0, b) : 0;
+      return {a, b, x0, fn, r2: r2of(pts, fn)};
+    };
+    let best = null, lo = 0, hi = Math.max(0, minX - 1e-3);
+    for (let pass = 0; pass < 5; pass++){
+      const step = (hi - lo)/40;
+      if (!(step > 0)){ const r = fitAt(lo); if (r && (!best || r.r2 > best.r2)) best = r; break; }
+      for (let x0 = lo; x0 <= hi + 1e-9; x0 += step){ const r = fitAt(x0); if (r && (!best || r.r2 > best.r2)) best = r; }
+      if (!best) break;
+      lo = Math.max(0, best.x0 - step); hi = Math.min(minX - 1e-3, best.x0 + step);
+    }
+    if (!best) return null;
+    const {a, b, x0, fn} = best;
+    return {kind, fn, r2: best.r2, params: {a, b, x0}, expr: `y = ${fmt(a)} · (x − ${fmt(x0)})^${fmt(b)}　（起压阈值 x₀ = ${fmt(x0)}）`,
+      js: `x => x > ${fmt(x0)} ? ${fmt(a)} * Math.pow(x - ${fmt(x0)}, ${fmt(b)}) : 0`,
+      py: `lambda x: ${fmt(a)} * (x - ${fmt(x0)}) ** ${fmt(b)} if x > ${fmt(x0)} else 0.0`};
+  }
+  return null;
+}
+
+let lastFit = null;
+function copyFit(kind){
+  if (!lastFit){ log('尚无拟合结果', 'wa'); return; }
+  const xk = document.getElementById('selX').value, yk = document.getElementById('selY').value;
+  const head = `// 矩侨足垫 64×64 标定  ${new Date().toLocaleString('zh-CN')}  n=${points.length}  R²=${lastFit.r2.toFixed(6)}\n`
+             + `// x = ${xLabel()}，y = ${yLabel()}；压头 ${areaMM2().toFixed(0)} mm²，噪声阈值 ${noise()}\n`;
+  let txt;
+  if (kind === 'py') txt = head.replace(/\/\//g, '#') + `adc_to_${yk === 'n' ? 'newton' : 'kpa'} = ${lastFit.py}\n`;
+  else if (kind === 'js') txt = head + `const adcTo${yk === 'n' ? 'Newton' : 'Kpa'} = ${lastFit.js};\n`;
+  else {
+    // 接入主程序：MeasurePage.handleFrame 里 `const pressure = sum;` 换成逐格换算
+    txt = head
+      + (xk === 'mean' && yk === 'kpa'
+        ? `// 贴到 client/src/lib/pressureCalib.ts（新建），MeasurePage.handleFrame 里把 \`const pressure = sum\` 换成 frameToNewton(frame, threshold)\n`
+          + `export const CELL_AREA_M2 = 49e-6; // 7mm 间距，单格 49 mm²\n`
+          + `/** 单个传感点 ADC(0-255) → 压强 kPa */\n`
+          + `export const adcToKpa = (x: number): number => ${lastFit.js.replace(/^x => /, '')};\n`
+          + `/** 整帧 → 总力 N：Σ kPa×1000 × 单格面积 */\n`
+          + `export function frameToNewton(frame: number[][], threshold: number): number {\n`
+          + `  let n = 0;\n  for (const row of frame) for (const v of row) if (v > threshold) n += adcToKpa(v) * 1000 * CELL_AREA_M2;\n  return n;\n}\n`
+          + `/** 平均压强 kPa = 总力 / 接触面积 */\n`
+          + `export function frameMeanKpa(frame: number[][], threshold: number): number {\n`
+          + `  let n = 0, cells = 0;\n  for (const row of frame) for (const v of row) if (v > threshold) { n += adcToKpa(v) * 1000 * CELL_AREA_M2; cells++; }\n  return cells ? n / (cells * CELL_AREA_M2) / 1000 : 0;\n}\n`
+        : `// ⚠ 当前选的是 x=${xk} / y=${yk}：只在接触面积与标定压头相同时成立。接入主程序请改用 x=均值、y=kPa 再复制。\n`
+          + `export const adcTo${yk === 'n' ? 'Newton' : 'Kpa'} = ${lastFit.js};\n`);
+  }
+  navigator.clipboard?.writeText(txt).then(() => log('已复制到剪贴板', 'ok'), () => log('复制失败，请手动选择文本', 'err'));
+}
+
+// ════════════════════════════════════════════════════
+// 图表
+// ════════════════════════════════════════════════════
+const CLR = {pt:'#388bfd', fit:'#db6d28', grid:'rgba(255,255,255,.06)', axis:'#30363d', ink2:'#8b949e', ink3:'#6e7681', surf:'#010409'};
+let plotted = [];
+function niceTicks(lo, hi, want){
+  if (hi <= lo) hi = lo + 1; const rawS = (hi - lo) / want; const mag = Math.pow(10, Math.floor(Math.log10(rawS))); const norm = rawS / mag;
+  const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag; const out = [];
+  for (let v = Math.ceil(lo/step)*step; v <= hi + step*1e-6; v += step) out.push(v); return out;
+}
+function drawChart(){
+  const cv = document.getElementById('chart'); const dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth, H = cv.clientHeight; cv.width = W*dpr; cv.height = H*dpr;
+  const g = cv.getContext('2d'); g.setTransform(dpr,0,0,dpr,0,0); g.clearRect(0,0,W,H); g.fillStyle = CLR.surf; g.fillRect(0,0,W,H); plotted = [];
+  const P = {l:62, r:18, t:16, b:40}, pw = W - P.l - P.r, ph = H - P.t - P.b;
+  if (!points.length){ g.fillStyle = CLR.ink3; g.font = '13px sans-serif'; g.textAlign = 'center'; g.fillText('尚无标定点 — 连接设备后按空格打点', W/2, H/2); return; }
+  const xs = points.map(xOf), ys = points.map(yOf);
+  const x0 = 0, x1 = Math.max(...xs) * 1.06 || 1, y0 = 0, y1 = Math.max(...ys) * 1.10 || 1;
+  const X = v => P.l + (v - x0)/(x1 - x0)*pw, Y = v => P.t + ph - (v - y0)/(y1 - y0)*ph;
+  g.font = '11px ui-monospace,Consolas,monospace'; g.lineWidth = 1;
+  const xt = niceTicks(x0, x1, 6), yt = niceTicks(y0, y1, 5);
+  g.strokeStyle = CLR.grid; g.textAlign = 'center'; g.fillStyle = CLR.ink3;
+  for (const v of xt){ const sx = X(v); g.beginPath(); g.moveTo(sx, P.t); g.lineTo(sx, P.t+ph); g.stroke(); g.fillText(Number(v.toFixed(1)), sx, P.t+ph+16); }
+  g.textAlign = 'right'; const yStep = yt.length > 1 ? yt[1]-yt[0] : y1; const yDec = yStep >= 10 ? 0 : yStep >= 1 ? 1 : 2;
+  for (const v of yt){ const sy = Y(v); g.beginPath(); g.moveTo(P.l, sy); g.lineTo(P.l+pw, sy); g.stroke(); g.fillText(v.toFixed(yDec), P.l-8, sy+4); }
+  g.strokeStyle = CLR.axis; g.beginPath(); g.moveTo(P.l, P.t); g.lineTo(P.l, P.t+ph); g.lineTo(P.l+pw, P.t+ph); g.stroke();
+  g.fillStyle = CLR.ink2; g.font = '11px sans-serif'; g.textAlign = 'center'; g.fillText(xLabel(), P.l+pw/2, H-6);
+  g.save(); g.translate(14, P.t+ph/2); g.rotate(-Math.PI/2); g.textAlign = 'center'; g.fillText(yLabel(), 0, 0); g.restore();
+  lastFit = computeFit();
+  if (lastFit){
+    g.strokeStyle = CLR.fit; g.lineWidth = 2; g.beginPath(); let started = false;
+    for (let i = 0; i <= 160; i++){ const xv = x0 + (x1-x0)*i/160; const yv = lastFit.fn(xv); if (!isFinite(yv)){ started = false; continue; }
+      const sx = X(xv), sy = Y(Math.max(y0, Math.min(y1, yv))); if (!started){ g.moveTo(sx, sy); started = true; } else g.lineTo(sx, sy); }
+    g.stroke();
+  }
+  const sorted = points.map((p,i)=>({p,i})).sort((a,b)=>xOf(a.p)-xOf(b.p));
+  for (const {p,i} of sorted){ const sx = X(xOf(p)), sy = Y(yOf(p)); plotted.push({sx, sy, p, i});
+    g.beginPath(); g.arc(sx, sy, 5.5, 0, 6.284); g.fillStyle = CLR.surf; g.fill(); g.beginPath(); g.arc(sx, sy, 4, 0, 6.284); g.fillStyle = CLR.pt; g.fill(); }
+  const lastP = plotted.find(o => o.i === points.length-1);
+  if (lastP){ g.beginPath(); g.arc(lastP.sx, lastP.sy, 6.5, 0, 6.284); g.strokeStyle = '#e6edf3'; g.lineWidth = 1.5; g.stroke(); }
+}
+const cvEl = document.getElementById('chart'), tip = document.getElementById('tip');
+cvEl.addEventListener('mousemove', e => {
+  const r = cvEl.getBoundingClientRect(); const mx = e.clientX - r.left, my = e.clientY - r.top; let best = null, bd = 400;
+  for (const o of plotted){ const d = (o.sx-mx)**2 + (o.sy-my)**2; if (d < bd){ bd = d; best = o; } }
+  if (best){ const p = best.p;
+    tip.innerHTML = `<b>#${best.i+1}</b> ${p.t}<br>ADC 总和 <b>${p.sum}</b> · 均值 <b>${p.mean.toFixed(1)}</b> · 有效 ${p.active} 格 · 峰 ${p.peak}<br>总力 <b>${p.n.toFixed(2)} N</b>（底重 ${p.dead.toFixed(2)} + 施加 ${(p.kgf*GRAVITY).toFixed(2)}）<br>压强 <b>${p.kpa.toFixed(2)} kPa</b> ÷ ${p.area.toFixed(0)} mm²<br>ROI ${p.roi} · ${p.stable ? '稳定' : '波动'}`;
+    tip.style.display = 'block'; tip.style.left = (e.clientX + 14) + 'px'; tip.style.top = (e.clientY + 14) + 'px';
+  } else tip.style.display = 'none';
+});
+cvEl.addEventListener('mouseleave', () => tip.style.display = 'none');
+window.addEventListener('resize', drawChart);
+
+// ════════════════════════════════════════════════════
+// 表格 / 渲染 / 导入导出
+// ════════════════════════════════════════════════════
+function renderTable(){
+  document.getElementById('tbody').innerHTML = points.map((p,i) => `<tr>
+    <td>${i+1}</td><td>${p.t}</td><td>${p.sum}</td><td>${p.mean.toFixed(1)}</td><td>${p.active}</td><td>${p.peak}</td>
+    <td>${p.n.toFixed(2)}</td><td style="color:#db6d28;font-weight:600">${p.kpa.toFixed(2)}</td>
+    <td class="del" onclick="delPoint(${i})">✕</td></tr>`).join('');
+  document.getElementById('bCount').textContent = points.length + ' 个标定点';
+}
+function render(){
+  renderTable(); drawChart();
+  const out = document.getElementById('fitOut'), r2el = document.getElementById('lgR2');
+  if (lastFit){
+    out.innerHTML = `<b>拟合式（x = ${xLabel()}，y = ${yLabel()}）：</b>\n${lastFit.expr}\n<b>JS：</b>${lastFit.js}\n<b>Python：</b>${lastFit.py}`;
+    r2el.textContent = `R² = ${lastFit.r2.toFixed(5)} · n = ${points.length}`;
+  } else {
+    out.textContent = points.length < 2 ? '尚无拟合结果 — 至少需要 2 个标定点。' : '当前拟合方式无解（二次至少 3 点；幂函数需要 y>0 的点），换一种试试。';
+    r2el.textContent = points.length ? `n = ${points.length}` : '';
+  }
+}
+const CSV_HEAD = ['idx','wall_time','adc_sum_roi','adc_raw_sum','adc_zero_base','adc_mean_active','active_cells','adc_peak',
+  'gauge_kgf','applied_N','dead_load_N','total_N','area_mm2','pressure_kPa','roi','noise_th','stable','source'];
+function exportCSV(){
+  if (!points.length){ log('无数据可导出', 'wa'); return; }
+  const rows = points.map((p,i) => [i+1, p.t, p.sum, p.rawSum, p.base, p.mean.toFixed(3), p.active, p.peak,
+    p.kgf.toFixed(4), (p.kgf*GRAVITY).toFixed(4), p.dead.toFixed(4), p.n.toFixed(4), p.area.toFixed(2), p.kpa.toFixed(4), p.roi, p.noise, p.stable ? 1 : 0, p.src].join(','));
+  if (lastFit) rows.push(`# fit,${document.getElementById('selFit').value},x=${document.getElementById('selX').value},y=${document.getElementById('selY').value},R2=${lastFit.r2.toFixed(6)},${lastFit.js.replace(/,/g,';')}`);
+  const blob = new Blob(['﻿' + CSV_HEAD.join(',') + '\n' + rows.join('\n')], {type:'text/csv;charset=utf-8'});
+  const a = document.createElement('a'); const ts = new Date().toISOString().slice(0,19).replace(/[:T]/g,'');
+  a.href = URL.createObjectURL(blob); a.download = `footpad_calib_${ts}.csv`; a.click(); URL.revokeObjectURL(a.href);
+  log('已导出 ' + points.length + ' 个标定点', 'ok');
+}
+function importCSV(file){
+  if (!file) return;
+  file.text().then(txt => {
+    const lines = txt.replace(/^﻿/, '').split(/\r?\n/).filter(l => l && !l.startsWith('#'));
+    const head = lines.shift().split(','); const col = k => head.indexOf(k);
+    let n = 0;
+    for (const l of lines){
+      const f = l.split(','); if (f.length < 14) continue;
+      const kgf = parseFloat(f[col('gauge_kgf')]);
+      points.push({ t: f[col('wall_time')], sum: +f[col('adc_sum_roi')], rawSum: +f[col('adc_raw_sum')], base: +f[col('adc_zero_base')],
+        mean: +f[col('adc_mean_active')], active: +f[col('active_cells')], peak: +f[col('adc_peak')],
+        kgf, n: +f[col('total_N')], dead: +f[col('dead_load_N')], kpa: +f[col('pressure_kPa')], area: +f[col('area_mm2')],
+        roi: f[col('roi')], noise: +f[col('noise_th')], stable: f[col('stable')] === '1', src: f[col('source')] || 'csv' });
+      n++;
+    }
+    log(`已导入 ${n} 个标定点`, 'ok'); render();
+  });
+}
+
+// ════════════════════════════════════════════════════
+// 初始化
+// ════════════════════════════════════════════════════
+noiseTh = Math.max(0, Math.min(255, parseInt(document.getElementById('inNoise').value) || 0));
+showValCached = $('ckVal').checked; showPeakCached = $('ckPeak').checked;
+setCellSize(8); updateArea(); refreshBtns(); render();
+// 未连接时的兜底心跳（压力计"x 秒前"等慢变文字）；连接后由 rAF 循环接管
+setInterval(() => { if (!matConnected && !gauConnected) updateLiveText(); }, 500);
+log('工具就绪。足垫：主程序开着点「后端桥」，没开点「串口 3M」；压力计：串口 2400，或勾「手动输入」用砝码。');
+</script>
+</body>
+</html>

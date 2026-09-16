@@ -57,6 +57,8 @@ function bridgeBase(): string {
   } catch {
     /* localStorage 不可用 */
   }
+  // 生产（安装包）里前端由后端托管：同源就是桥。dev 前端在 3000、WS 不走 Vite 代理，仍直连 8766
+  if (!import.meta.env.DEV && /^https?:$/.test(window.location.protocol)) return window.location.origin;
   return "http://127.0.0.1:8766";
 }
 const BRIDGE_HTTP = bridgeBase();

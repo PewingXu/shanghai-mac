@@ -9,7 +9,7 @@
  * 软硬仅通过材质观感体现（Shore A），不改几何。
  */
 
-import { Canvas, useThree } from '@react-three/fiber';
+import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera, ContactShadows } from '@react-three/drei';
 import { Suspense, useMemo, useRef, useEffect, useState, useCallback } from 'react';
 import * as THREE from 'three';
@@ -32,10 +32,12 @@ import {
   HEAT_MAX_MM,
   HEAT_MAX_STD_MM,
   ZERO_DEFORM,
+  topDisplacementMm,
   type InsoleStyle,
   type BaseDims,
   type DeformMm,
 } from '@/lib/insoleModel';
+import { convexHull, expandHull, hullCentroid, HULL_CLEAR } from '@/lib/leaderRoute';
 import {
   BUILTIN_SHELL,
   buildShellPair,
@@ -55,6 +57,345 @@ const SHELL_COLOR = '#AEB6BF';
 
 /** 鞋壳三态：仅鞋垫 / 仅鞋壳 / 装配 */
 export type ShellView = 'off' | 'only' | 'assembly';
+
+// ============ 「对比前后」标注锚点（移植自 aciki-plantar-pressure） ============
+
+/** 一个标注锚点：xN 足宽归一(0..1)，yN 足长归一(0 后跟..1 足尖)，都与形变公式同源 */
+export interface InsoleAnchor {
+  id: string;
+  xN: number;
+  yN: number;
+}
+
+/** 锚点投到画布上的 CSS 像素坐标（画布左上为原点） */
+export interface InsoleAnchorPoint {
+  id: string;
+  x: number;
+  y: number;
+}
+
+/**
+ * 一帧的投影结果。除了锚点，还带两样东西：
+ *   hull  —— 模型投影的凸包（已外扩 HULL_CLEAR），随机位每帧变；引线拿它绕行，见 lib/leaderRoute
+ *   rest* —— 模型的【旋转不变横向包络】，标注卡拿它定页边距
+ *
+ * rest* 是「把相机绕着支点转一整圈（方位角 360°、仰角走满 OrbitControls 的极角范围），
+ * 模型投影在屏幕横向上**永远**落在 [restLeft, restRight] 之内」的那条界。
+ * 卡片不遮鞋垫（任何朝向都不遮）+ 转的时候卡片一动不动，两件事同时成立。
+ * 它只随【画布尺寸 / 尺码 / 双脚间距 / 缩放距离】变，方位角和仰角怎么拖都不动。
+ *
+ * ⚠ 数组是复用的，回调里用完即弃，别存引用。
+ */
+export interface InsoleProjection {
+  points: InsoleAnchorPoint[];
+  /** 凸包顶点，扁平 [x,y,…]，有效 hullLen 个 */
+  hull: number[];
+  hullLen: number;
+  hullCx: number;
+  hullCy: number;
+  /** 旋转不变包络的左边界(px)。算不出来时为 0 */
+  restLeft: number;
+  /** 旋转不变包络的右边界(px)。算不出来时为 0（调用方据此判断「没有有效值」） */
+  restRight: number;
+}
+
+const topZNCache = new WeakMap<THREE.BufferGeometry, Map<string, number>>();
+
+/**
+ * 采样某 (xN,yN) 处的顶面高度，返回【归一化 zN】(0 底面 .. 1 最高点)。
+ *
+ * 用 zN 而不是 mm，是为了能挂在**未缩放的源几何**上缓存：prepareGeometry 只做三轴正缩放，
+ * 而 (x−xMin)/xRange 这类归一量在正缩放下不变，一份采样结果对该款式所有尺码都成立。
+ * 否则每拖一下厚度滑块 → 新的 preparedGeometry → 重新扫几十万个顶点，滑块直接卡住。
+ *
+ * 取「半径内顶点的最大 z」而不是射线求交：对几十万面的网格一次线性扫描更省事。
+ * 半径内取不到点就逐步放大（足尖/后缘附近顶点稀疏）。
+ */
+function sampleTopZN(geo: THREE.BufferGeometry, style: InsoleStyle, a: InsoleAnchor): number {
+  let byId = topZNCache.get(geo);
+  if (!byId) {
+    byId = new Map();
+    topZNCache.set(geo, byId);
+  }
+  const key = `${style}:${a.xN.toFixed(3)}:${a.yN.toFixed(3)}`;
+  const cached = byId.get(key);
+  if (cached !== undefined) return cached;
+
+  geo.computeBoundingBox();
+  const b = geo.boundingBox!;
+  const xMin = b.min.x;
+  const xRange = b.max.x - b.min.x || 1;
+  const zMin = b.min.z;
+  const zRange = b.max.z - b.min.z || 1;
+  // 足长归一与着色器同源（已扣掉尾端小舌头）
+  const { yStart, yRange } = lengthNorm(geo, style);
+  const tx = xMin + a.xN * xRange;
+  const ty = yStart + a.yN * yRange;
+
+  const pos = geo.attributes.position;
+  let best = -Infinity;
+  for (const r of [0.03, 0.06, 0.12, 0.25]) {
+    const rx = r * xRange;
+    const ry = r * yRange;
+    for (let i = 0; i < pos.count; i++) {
+      if (Math.abs(pos.getX(i) - tx) > rx) continue;
+      if (Math.abs(pos.getY(i) - ty) > ry) continue;
+      const z = pos.getZ(i);
+      if (z > best) best = z;
+    }
+    if (best > -Infinity) break;
+  }
+  const zN = best > -Infinity ? (best - zMin) / zRange : 1;
+  byId.set(key, zN);
+  return zN;
+}
+
+/**
+ * 32 个均匀铺在球面上的方向（Fibonacci 球）。取模型在这些方向上的最远顶点，
+ * 这组「支撑点」的凸包就近似模型的 3D 凸包 —— 而【投影的凸包 = 凸包的投影】，
+ * 所以每帧只投这 32 个点就能拿到屏幕轮廓，不必每帧碰几十万个顶点。
+ */
+const SUPPORT_DIRS = (() => {
+  const n = 32;
+  const dirs: number[] = [];
+  const ga = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < n; i++) {
+    const z = 1 - (2 * i + 1) / n;
+    const r = Math.sqrt(Math.max(0, 1 - z * z));
+    const th = i * ga;
+    dirs.push(Math.cos(th) * r, Math.sin(th) * r, z);
+  }
+  return dirs;
+})();
+
+const supportCache = new WeakMap<THREE.BufferGeometry, Float32Array>();
+
+/**
+ * 支撑点（毫米局部坐标）。挂在**已缩放的**几何上缓存：三轴缩放不一致，极值点会换。
+ * 顶点抽样上限 2 万：抽样只会让凸包略微内缩几个像素，而包本来还要外扩 HULL_CLEAR。
+ */
+function supportPoints(geo: THREE.BufferGeometry): Float32Array {
+  const hit = supportCache.get(geo);
+  if (hit) return hit;
+
+  const pos = geo.attributes.position;
+  const nDir = SUPPORT_DIRS.length / 3;
+  const bestDot = new Float64Array(nDir).fill(-Infinity);
+  const bestIdx = new Int32Array(nDir).fill(0);
+  const stride = Math.max(1, Math.ceil(pos.count / 20000));
+
+  for (let i = 0; i < pos.count; i += stride) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    for (let d = 0; d < nDir; d++) {
+      const dot = x * SUPPORT_DIRS[d * 3] + y * SUPPORT_DIRS[d * 3 + 1] + z * SUPPORT_DIRS[d * 3 + 2];
+      if (dot > bestDot[d]) {
+        bestDot[d] = dot;
+        bestIdx[d] = i;
+      }
+    }
+  }
+
+  const out = new Float32Array(nDir * 3);
+  for (let d = 0; d < nDir; d++) {
+    const i = bestIdx[d];
+    out[d * 3] = pos.getX(i);
+    out[d * 3 + 1] = pos.getY(i);
+    out[d * 3 + 2] = pos.getZ(i);
+  }
+  supportCache.set(geo, out);
+  return out;
+}
+
+/**
+ * OrbitControls 的极角范围。旋转不变包络要在**整个**范围上取最大值，
+ * 所以这两个数必须和 <OrbitControls minPolarAngle/maxPolarAngle> 同源，别各写一份。
+ */
+const POLAR_MIN = 0.2;
+const POLAR_MAX = Math.PI / 2.1;
+/** 极角采样段数：包络对极角不是单调的，只能采样取最大 */
+const POLAR_SAMPLES = 12;
+
+/**
+ * 模型投影在屏幕横向上的【旋转不变包络】半宽(px)：相机绕支点转任意方位角、
+ * 任意（范围内的）仰角，模型都不会超出支点两侧这么宽。
+ *
+ * 推导（up 恒为 +Y、无 roll）：设某点相对支点的水平半径 ρ、高度 y，相机极角 θ、距离 d，
+ *   max|x_px| = F·ρ / √((d − y·cos θ)² − ρ²·sin²θ)，F = (画布高/2)/tan(fov/2)
+ * 方位角被解析地消掉了，只有极角要采样。分母 ≤ 0 表示投影发散，返回 Infinity 让调用方退回设计值。
+ */
+function envelopeHalfWidth(
+  world: Float32Array,
+  tx: number, ty: number, tz: number,
+  dist: number,
+  focalPx: number,
+): number {
+  let best = 0;
+  for (let s = 0; s <= POLAR_SAMPLES; s++) {
+    const th = POLAR_MIN + ((POLAR_MAX - POLAR_MIN) * s) / POLAR_SAMPLES;
+    const ct = Math.cos(th);
+    const st2 = Math.sin(th) ** 2;
+    for (let i = 0; i < world.length; i += 3) {
+      const dx = world[i] - tx;
+      const dy = world[i + 1] - ty;
+      const dz = world[i + 2] - tz;
+      const rho2 = dx * dx + dz * dz;
+      const k = dist - dy * ct;
+      const den = k * k - rho2 * st2;
+      if (den <= 1e-6) return Infinity;
+      const w = focalPx * Math.sqrt(rho2 / den);
+      if (w > best) best = w;
+    }
+  }
+  return best;
+}
+
+/**
+ * 把锚点从「毫米几何坐标」投到画布像素，每帧回调一次。
+ *
+ * 每帧算而不是转完相机算一次：卡片钉在页面上、引线端点跟着模型跑，端点位置只有相机说了算，
+ * OrbitControls 的阻尼还会在松手后继续滑，只有逐帧投影才跟得住。
+ * 每帧只做几十个点的矩阵乘法，代价可忽略；关键是**回调里不能 setState**，
+ * 调用方拿到点后直接改 SVG 属性（见 InsoleCompareOverlay.update）。
+ */
+function useAnchorProjection(
+  meshRef: React.RefObject<THREE.Mesh | null>,
+  /** 未缩放的源几何：顶面高度在这上面采样并缓存 */
+  sourceGeo: THREE.BufferGeometry,
+  /** 缩放后、真正上屏的几何：锚点的毫米坐标要在它的包围盒里还原 */
+  scaledGeo: THREE.BufferGeometry,
+  style: InsoleStyle,
+  deform: DeformMm,
+  foot: 'left' | 'right',
+  anchors: InsoleAnchor[] | undefined,
+  onProject: ((p: InsoleProjection) => void) | undefined,
+  /** 这只脚沿世界 X 的偏移（双脚并排时非零）*/
+  positionX: number,
+) {
+  const { size } = useThree();
+  // 旋转支点：OrbitControls 挂了 makeDefault 才拿得到，拿不到就退回原点
+  const controls = useThree((s) => s.controls) as { target?: THREE.Vector3 } | null;
+  // 回调常是内联函数：放 ref 里，免得进 useMemo 依赖后每次渲染都重算锚点局部坐标
+  const cbRef = useRef(onProject);
+  cbRef.current = onProject;
+
+  // 锚点的毫米局部坐标：顶面采样高度 + 该点的形变抬升（与着色器同一个公式）
+  const locals = useMemo(() => {
+    if (!anchors?.length) return null;
+    scaledGeo.computeBoundingBox();
+    const b = scaledGeo.boundingBox!;
+    const xRange = b.max.x - b.min.x || 1;
+    const zRange = b.max.z - b.min.z || 1;
+    const { yStart, yRange } = lengthNorm(scaledGeo, style);
+    return anchors.map((a) => {
+      const zN = sampleTopZN(sourceGeo, style, a);
+      return {
+        id: a.id,
+        v: new THREE.Vector3(
+          b.min.x + a.xN * xRange,
+          yStart + a.yN * yRange,
+          b.min.z + zN * zRange + topDisplacementMm(a.yN, a.xN, deform, foot),
+        ),
+      };
+    });
+  }, [sourceGeo, scaledGeo, style, anchors, deform, foot]);
+
+  const support = useMemo(() => (anchors?.length ? supportPoints(scaledGeo) : null), [scaledGeo, anchors]);
+  // 输出全部复用：每帧新建对象会给 GC 添 60×N 个短命对象
+  const out = useRef<InsoleAnchorPoint[]>([]);
+  const tmp = useRef(new THREE.Vector3());
+  const flat = useRef<number[]>([]);
+  const payload = useRef<InsoleProjection>({
+    points: [], hull: [], hullLen: 0, hullCx: 0, hullCy: 0, restLeft: 0, restRight: 0,
+  });
+  const centroid = useRef<number[]>([0, 0]);
+
+  /** 支撑点的**世界**坐标：转的是相机不是模型，只在几何/摆位变化时算一次 */
+  const worldSupport = useMemo(() => {
+    if (!support) return null;
+    // 与上屏时同一套变换：mm 几何 → 缩放 → 绕 X 转 −90° → 沿 X 平移（见 <mesh>）
+    const m = new THREE.Matrix4()
+      .makeTranslation(positionX, 0, 0)
+      .multiply(new THREE.Matrix4().makeRotationX(-Math.PI / 2))
+      .multiply(new THREE.Matrix4().makeScale(SCENE_SCALE, SCENE_SCALE, SCENE_SCALE));
+    const v = new THREE.Vector3();
+    const w = new Float32Array(support.length);
+    for (let i = 0; i < support.length; i += 3) {
+      v.set(support[i], support[i + 1], support[i + 2]).applyMatrix4(m);
+      w[i] = v.x;
+      w[i + 1] = v.y;
+      w[i + 2] = v.z;
+    }
+    return w;
+  }, [support, positionX]);
+
+  useFrame(({ camera }) => {
+    const mesh = meshRef.current;
+    const cb = cbRef.current;
+    if (!mesh || !locals || !cb) return;
+
+    // ⚠ 必须先刷新相机矩阵：useFrame 跑在渲染之前，camera.position 已是这一帧的新值，
+    // 但 matrixWorldInverse 还是上一帧的 —— 不刷新就等于用旧机位投新坐标，旋转时圆点会脱离模型。
+    camera.updateMatrixWorld();
+    if (out.current.length !== locals.length) {
+      out.current = locals.map((l) => ({ id: l.id, x: 0, y: 0 }));
+    }
+
+    const toPxX = (ndcX: number) => ((ndcX + 1) / 2) * size.width;
+    const toPxY = (ndcY: number) => ((1 - ndcY) / 2) * size.height;
+
+    for (let i = 0; i < locals.length; i++) {
+      tmp.current.copy(locals[i].v).applyMatrix4(mesh.matrixWorld).project(camera);
+      const o = out.current[i];
+      o.id = locals[i].id;
+      o.x = toPxX(tmp.current.x);
+      o.y = toPxY(tmp.current.y);
+    }
+
+    // 投影轮廓：支撑点 → 屏幕 → 凸包 → 外扩
+    let hullLen = 0;
+    if (support) {
+      const n = support.length / 3;
+      for (let i = 0; i < n; i++) {
+        tmp.current
+          .set(support[i * 3], support[i * 3 + 1], support[i * 3 + 2])
+          .applyMatrix4(mesh.matrixWorld)
+          .project(camera);
+        flat.current[i * 2] = toPxX(tmp.current.x);
+        flat.current[i * 2 + 1] = toPxY(tmp.current.y);
+      }
+      hullLen = convexHull(flat.current, n, payload.current.hull);
+      expandHull(payload.current.hull, hullLen, HULL_CLEAR);
+      hullCentroid(payload.current.hull, hullLen, centroid.current);
+    }
+
+    const p = payload.current;
+    p.points = out.current;
+    p.hullLen = hullLen;
+    p.hullCx = centroid.current[0];
+    p.hullCy = centroid.current[1];
+
+    // 旋转不变包络：支点恒投在画布横向正中，包络以正中对称展开
+    p.restLeft = 0;
+    p.restRight = 0;
+    if (worldSupport && size.width && size.height) {
+      const t = controls?.target;
+      const tx = t?.x ?? 0;
+      const ty = t?.y ?? 0;
+      const tz = t?.z ?? 0;
+      const dist = Math.hypot(camera.position.x - tx, camera.position.y - ty, camera.position.z - tz);
+      // (画布高/2)/tan(fov/2)：透视投影矩阵的 [5] 就是 1/tan(fov/2)
+      const focalPx = (size.height / 2) * camera.projectionMatrix.elements[5];
+      const half = envelopeHalfWidth(worldSupport, tx, ty, tz, dist, focalPx);
+      if (Number.isFinite(half)) {
+        p.restLeft = size.width / 2 - half;
+        p.restRight = size.width / 2 + half;
+      }
+    }
+    cb(p);
+  });
+}
 
 // ============ 几何体加载（按 样式+脚 缓存） ============
 
@@ -215,6 +556,8 @@ function SingleStlInsole({
   firmness,
   foot,
   heatmap,
+  anchors,
+  onAnchorProject,
 }: {
   loaded: LoadedGeo;
   style: InsoleStyle;
@@ -229,6 +572,9 @@ function SingleStlInsole({
   foot: 'left' | 'right';
   /** 热力上色开关：成品垫按定制位移量，标准垫按相对基准厚度的型面起伏 */
   heatmap: boolean;
+  /** 「对比前后」标注锚点；传了就每帧把画布像素坐标回调出去 */
+  anchors?: InsoleAnchor[];
+  onAnchorProject?: (p: InsoleProjection) => void;
 }) {
   // 三款都注入着色器：标准垫的 deform 恒为 ZERO_DEFORM（personalDeform 对 param 返回零），
   // 几何一点不动，注入只为拿到热力上色。
@@ -347,9 +693,16 @@ function SingleStlInsole({
     };
   }, [preparedGeometry, material]);
 
+  const meshRef = useRef<THREE.Mesh>(null);
+  useAnchorProjection(
+    meshRef, loaded.geometry, preparedGeometry, style, deform, foot,
+    anchors, onAnchorProject, positionX,
+  );
+
   return (
     <group position={[positionX, 0, 0]}>
       <mesh
+        ref={meshRef}
         geometry={preparedGeometry}
         material={material}
         scale={[SCENE_SCALE, SCENE_SCALE, SCENE_SCALE]}
@@ -511,6 +864,8 @@ function InsoleScene({
   shellAdjust,
   shellLeft,
   shellRight,
+  anchors,
+  onAnchorProject,
 }: {
   activeFoot: 'left' | 'right' | 'both';
   autoRotate: boolean;
@@ -528,6 +883,8 @@ function InsoleScene({
   shellAdjust: ShellAdjust;
   shellLeft: LoadedShell | null;
   shellRight: LoadedShell | null;
+  anchors?: InsoleAnchor[];
+  onAnchorProject?: (p: InsoleProjection) => void;
 }) {
   const spacing = 1.6;
   const showInsole = shellView !== 'only';
@@ -570,6 +927,7 @@ function InsoleScene({
     <>
       <PerspectiveCamera makeDefault position={camPos} fov={35} />
       <OrbitControls
+        makeDefault
         enablePan
         enableZoom
         enableRotate
@@ -606,6 +964,8 @@ function InsoleScene({
             firmness={calcFirmness(leftParams)}
             foot="left"
             heatmap={heatmap}
+            anchors={activeFoot === 'left' ? anchors : undefined}
+            onAnchorProject={activeFoot === 'left' ? onAnchorProject : undefined}
           />
         )}
 
@@ -620,6 +980,8 @@ function InsoleScene({
             firmness={calcFirmness(rightParams)}
             foot="right"
             heatmap={heatmap}
+            anchors={activeFoot === 'right' ? anchors : undefined}
+            onAnchorProject={activeFoot === 'right' ? onAnchorProject : undefined}
           />
         )}
 
@@ -695,6 +1057,21 @@ interface StlInsoleViewerProps {
   onShellError?: (error: string) => void;
   /** 「定制对比」热力图是否默认打开（仅决定初始值，用户仍可用右上角按钮切换） */
   defaultHeatmap?: boolean;
+  /**
+   * 受控热力图开关：传了就由父组件说了算，画布右上那枚自带按钮同时隐藏。
+   * 方案页把开关搬到了画布左下角的「对比前后」按钮上，两处都画会出现两个都能点、状态各说各话的开关。
+   * 不传则维持组件自带按钮 + 内部状态（下载弹窗等处照旧）。
+   */
+  heatmap?: boolean;
+  /**
+   * 要投到屏幕上的标注锚点（「对比前后」的引线落点），与 onAnchorProject 配对。
+   * 传了就每帧把锚点的画布像素坐标回调出去，画什么由父组件决定（InsoleCompareOverlay）。
+   */
+  anchors?: InsoleAnchor[];
+  /** 每帧回调（约 60 次/秒）。⚠ 回调里【不要 setState】，直接改 DOM/SVG 属性 */
+  onAnchorProject?: (p: InsoleProjection) => void;
+  /** 隐藏画布内自带的色标图例（对比态下图例画在覆盖层里，两个会并存） */
+  hideLegend?: boolean;
 }
 
 // ============ 主组件 ============
@@ -716,6 +1093,10 @@ export function StlInsoleViewer({
   onShellInfo,
   onShellError,
   defaultHeatmap = false,
+  heatmap: heatmapProp,
+  anchors,
+  onAnchorProject,
+  hideLegend = false,
 }: StlInsoleViewerProps) {
   const [leftGeo, setLeftGeo] = useState<LoadedGeo | null>(null);
   const [rightGeo, setRightGeo] = useState<LoadedGeo | null>(null);
@@ -723,8 +1104,10 @@ export function StlInsoleViewer({
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [retryCount, setRetryCount] = useState(0);
-  // 定制形变热力图：初始值由父组件决定（方案页默认开，下载弹窗默认关显示鞋垫本色）
-  const [heatmap, setHeatmap] = useState(defaultHeatmap);
+  // 定制形变热力图：受控（父组件传 heatmap）优先；否则初始值由 defaultHeatmap 决定、自带按钮切换
+  const [heatmapSelf, setHeatmap] = useState(defaultHeatmap);
+  const heatControlled = heatmapProp !== undefined;
+  const heatmap = heatControlled ? heatmapProp : heatmapSelf;
 
   // 鞋壳状态独立于鞋垫：加载中/失败都不能顶掉已经画好的鞋垫
   const [shellLeft, setShellLeft] = useState<LoadedShell | null>(null);
@@ -875,6 +1258,8 @@ export function StlInsoleViewer({
           shellAdjust={shellAdjust}
           shellLeft={shellLeft}
           shellRight={shellRight}
+          anchors={anchors}
+          onAnchorProject={onAnchorProject}
         />
       </Canvas>
 
@@ -906,8 +1291,8 @@ export function StlInsoleViewer({
         ◆ 左键: 旋转 · 右键: 平移 · 滚轮: 缩放
       </div>
 
-      {/* 「仅鞋壳」态看不到鞋垫，定制对比无从谈起 */}
-      {shellView !== 'only' && (
+      {/* 「仅鞋壳」态看不到鞋垫，定制对比无从谈起。受控时按钮在父组件那边，这里不再画第二枚 */}
+      {shellView !== 'only' && !heatControlled && (
         <button
           type="button"
           onClick={() => setHeatmap((v) => !v)}
@@ -924,7 +1309,7 @@ export function StlInsoleViewer({
         </button>
       )}
 
-      {heatOn && shellView !== 'only' && <HeatLegend />}
+      {heatOn && shellView !== 'only' && !hideLegend && <HeatLegend />}
     </div>
   );
 }

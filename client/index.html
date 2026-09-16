@@ -44,10 +44,7 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
-    <script
-      defer
-      src="%VITE_ANALYTICS_ENDPOINT%/umami"
-      data-website-id="%VITE_ANALYTICS_WEBSITE_ID%"></script>
+    <!-- 模板自带的 Manus 统计脚本已移除：展会机离线、且 env 未配置时它会对后端发一个 404 的 /umami 请求 -->
   </body>
 
 </html>

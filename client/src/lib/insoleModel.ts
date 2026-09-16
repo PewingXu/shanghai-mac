@@ -196,6 +196,18 @@ const ARCH_HALF_WIDTH = 0.18;
 const HEEL_ZONE = 0.35;
 
 /**
+ * 两个凸起区在足长归一轴上的位置，供「对比前后」的标注锚点用 ——
+ * 卡片要钉在足弓最强处和足跟缓冲最强处，位置必须和下面这套公式同源，
+ * 否则引线指的点和真正抬起来的地方会差开。
+ */
+export const DEFORM_ZONE_YN = {
+  /** 足弓 cos² 剖面的峰 */
+  arch: ARCH_CENTER,
+  /** 足跟缓冲的峰在 yN=0；取 0.08 是为了让锚点落在跟杯上而不是后缘那条棱上 */
+  heel: 0.08,
+} as const;
+
+/**
  * 内外侧朝向：网格 +X 是否为内侧（拇趾侧）。经验值——
  * 若预览里足弓支撑出现在外侧（小趾侧），把此值改为 false 即可整体翻转。
  */
@@ -239,6 +251,19 @@ function displacementMm(
     heelAt = d.heelMm * c * c;
   }
   return topW * (archAt + heelAt + d.baseMm);
+}
+
+/**
+ * 顶面(topW=1)在某点抬起多少 mm。「对比前后」的引线锚点 z 偏移走这里，
+ * 保证锚点落在着色器实际顶起来的那个面上 —— 不要在 UI 层另写一份近似。
+ */
+export function topDisplacementMm(
+  yN: number,
+  xN: number,
+  d: DeformMm,
+  foot: 'left' | 'right',
+): number {
+  return displacementMm(yN, xN, 1, d, foot);
 }
 
 /**

@@ -367,15 +367,24 @@ def calculate_cop_trajectories(df, left_curve, right_curve, threshold_ratio):
     right_left_index, right_right_index = find_pressure_peak_interval(right_curve, threshold_ratio)
     left_serial_matrix_cop = []
     right_serial_matrix_cop = []
+    # 某只脚没踩上（整个半区为 0）时 calculate_cop_corrected 会抛「当前无压力值」，
+    # 以前这里不接、整次 /analyze 直接 500。单脚测量是合法场景：无压力的帧跳过，
+    # 该脚轨迹为空 → 逐脚 COP 指标全 0 → 报告页把那只脚置灰。
     for index in range(left_left_index, left_right_index + 1):
         matrix = [df.iloc[index]['data'][i * 64:(i + 1) * 64] for i in range(64)]
         left_matrix = [row[:32] for row in matrix]
-        leftIn, rightIn = calculate_cop_corrected(left_matrix, False)
+        try:
+            leftIn, rightIn = calculate_cop_corrected(left_matrix, False)
+        except ValueError:
+            continue
         left_serial_matrix_cop.append([leftIn, rightIn])
     for index in range(right_left_index, right_right_index + 1):
         matrix = [df.iloc[index]['data'][i * 64:(i + 1) * 64] for i in range(64)]
         right_matrix = [row[32:] for row in matrix]
-        leftIn, rightIn = calculate_cop_corrected(right_matrix, True)
+        try:
+            leftIn, rightIn = calculate_cop_corrected(right_matrix, True)
+        except ValueError:
+            continue
         right_serial_matrix_cop.append([leftIn, rightIn])
     return left_serial_matrix_cop, right_serial_matrix_cop
 
@@ -796,44 +805,53 @@ def calculate_single_frame_arch_features(frame_data, contact_threshold=2.0,
             thr=contact_threshold,
             min_pressure_ratio=min_pressure_ratio,
         )
-        if left_area is None or right_area is None:
+        # 两只脚都没踩上才算无效帧。只有一只脚（单脚测量）是合法场景：
+        # 没踩上的那只给一份「空脚」记录（指标 None、坐标空），别让整帧、整次分析报废。
+        if left_area is None and right_area is None:
             return None
-        left_max_area = left_area[0]
-        right_max_area = right_area[0]
-        left_section_coords = divide_x_regions(left_max_area)
-        right_section_coords = divide_x_regions(right_max_area)
-        left_area_ai, left_area_type = calculate_region_areas(left_section_coords)
-        right_area_ai, right_area_type = calculate_region_areas(right_section_coords)
-        left_clarke_angle, left_clarke_type = calculate_clarke(left_section_coords, False)
-        right_clarke_angle, right_clarke_type = calculate_clarke(right_section_coords, True)
-        left_staheli, left_distance_middle, left_distance_heel = calculate_staheli(left_section_coords, False)
-        right_staheli, right_distance_middle, right_distance_heel = calculate_staheli(right_section_coords, True)
         return {
-            'left_foot': {
-                'area_index': left_area_ai,
-                'area_type': left_area_type,
-                'clarke_angle': left_clarke_angle,
-                'clarke_type': left_clarke_type,
-                'staheli_ratio': left_staheli,
-                'distance_middle': left_distance_middle,
-                'distance_heel': left_distance_heel,
-                'section_coords': left_section_coords,
-                'max_area': left_max_area
-            },
-            'right_foot': {
-                'area_index': right_area_ai,
-                'area_type': right_area_type,
-                'clarke_angle': right_clarke_angle,
-                'clarke_type': right_clarke_type,
-                'staheli_ratio': right_staheli,
-                'distance_middle': right_distance_middle,
-                'distance_heel': right_distance_heel,
-                'section_coords': right_section_coords,
-                'max_area': right_max_area
-            }
+            'left_foot': _one_foot_arch_features(left_area, False),
+            'right_foot': _one_foot_arch_features(right_area, True),
         }
     except:
         return None
+
+
+def _empty_foot_arch_features():
+    """没踩上的那只脚：指标 None（多帧平均会跳过 None）、分区/最大连通域为空列表。"""
+    return {
+        'area_index': None,
+        'area_type': "无数据",
+        'clarke_angle': None,
+        'clarke_type': "无数据",
+        'staheli_ratio': None,
+        'distance_middle': None,
+        'distance_heel': None,
+        'section_coords': [[], [], [], []],
+        'max_area': [],
+    }
+
+
+def _one_foot_arch_features(area, is_right):
+    """单只脚的足弓特征；area 为 detect_heel_for_frame 的返回（None = 该脚无接触）。"""
+    if area is None:
+        return _empty_foot_arch_features()
+    max_area = area[0]
+    section_coords = divide_x_regions(max_area)
+    area_ai, area_type = calculate_region_areas(section_coords)
+    clarke_angle, clarke_type = calculate_clarke(section_coords, is_right)
+    staheli, distance_middle, distance_heel = calculate_staheli(section_coords, is_right)
+    return {
+        'area_index': area_ai,
+        'area_type': area_type,
+        'clarke_angle': clarke_angle,
+        'clarke_type': clarke_type,
+        'staheli_ratio': staheli,
+        'distance_middle': distance_middle,
+        'distance_heel': distance_heel,
+        'section_coords': section_coords,
+        'max_area': max_area,
+    }
 
 
 def calculate_average_frame_data(data_array, total_curve=None):
@@ -1192,6 +1210,12 @@ def calculate_sway_features(cop_trajectory, fps=42, r_radius=0.1, time_window=0.
 
 
 def visualize_foot_regions(ax, section_coords, max_area, colors, section_names, title):
+    # 单脚测量：没踩上的那只 max_area 为空 → 画一个空图，别让 min() 把整份 PDF 炸掉
+    if not max_area:
+        ax.set_title(title)
+        ax.text(0.5, 0.5, "未采集", ha='center', va='center', transform=ax.transAxes, color='#999999')
+        ax.set_xticks([]); ax.set_yticks([])
+        return
     all_x = [coord[0] for coord in max_area]
     all_y = [coord[1] for coord in max_area]
     x_min, x_max = min(all_x), max(all_x)
@@ -1342,10 +1366,23 @@ def calculate_region_pressures(section_coords, matrix):
 
 
 def calculate_cop_time_series(left_cop, right_cop, additional_data, dt=0.024):
+    """
+    COP 时间序列指标（报告页「COP 平衡指标」8 项的数据源，单位统一为 mm / mm² / mm/s）。
+
+    ⚠ 历史口径：只算【一只脚】—— 左右两条轨迹里点数多的那条（点数相同取左）。
+    双脚站立时通常就是左脚，前端曾把它当"双脚"展示。现保留本函数作兼容字段，
+    报告页改用 cop_time_series_left / cop_time_series_right（见 cal_cop_fromData），
+    由用户在界面上切换左右脚。
+    """
     if len(left_cop) >= len(right_cop):
         cop_trajectory = left_cop
     else:
         cop_trajectory = right_cop
+    return _cop_time_series_of(cop_trajectory, dt)
+
+
+def _cop_time_series_of(cop_trajectory, dt=0.024):
+    """单条 COP 轨迹 [[row, col], ...] → 时间序列指标。轨迹为空（该脚未踩上）返回全 0。"""
     if not cop_trajectory:
         return {
             'time_series': None,
@@ -2401,16 +2438,16 @@ def cal_cop_fromData(data_array, threshold_ratio=0.8, fps=42, r_radius=0.1, time
     # ✅ 使用峰值帧计算COP中心
     cop_results = calculate_feet_centers_and_distances(df, left_curve, right_curve)
 
-    # 尺寸（基于可视化帧的max_area）
-    x_left_coords = [coord[0] for coord in left_max_area]
-    y_left_coords = [coord[1] for coord in left_max_area]
-    left_length = (max(x_left_coords) - min(x_left_coords) + 1) * 0.7 + 1.5
-    left_width = (max(y_left_coords) - min(y_left_coords) + 1) * 0.7 + 1.5
+    # 尺寸（基于可视化帧的max_area）。单脚测量时另一只 max_area 为空 → 尺寸记 0，前端显示"—"
+    def _foot_dims(max_area):
+        if not max_area:
+            return 0.0, 0.0
+        xs = [coord[0] for coord in max_area]
+        ys = [coord[1] for coord in max_area]
+        return (max(xs) - min(xs) + 1) * 0.7 + 1.5, (max(ys) - min(ys) + 1) * 0.7 + 1.5
 
-    x_right_coords = [coord[0] for coord in right_max_area]
-    y_right_coords = [coord[1] for coord in right_max_area]
-    right_length = (max(x_right_coords) - min(x_right_coords) + 1) * 0.7 + 1.5
-    right_width = (max(y_right_coords) - min(y_right_coords) + 1) * 0.7 + 1.5
+    left_length, left_width = _foot_dims(left_max_area)
+    right_length, right_width = _foot_dims(right_max_area)
 
     # ✅ 使用可视化帧计算压力分布
     matrix = np.array(peak_frame_data, dtype=float).reshape(64, 64)
@@ -2437,6 +2474,9 @@ def cal_cop_fromData(data_array, threshold_ratio=0.8, fps=42, r_radius=0.1, time
         'arch_features': arch_results,
         'additional_data': additional_data,
         'cop_time_series': calculate_cop_time_series(left_cop, right_cop, additional_data),
+        # 逐脚指标：报告页「COP 平衡指标」按左/右切换用。某脚没踩上则该脚轨迹为空 → 全 0，前端据此置灰
+        'cop_time_series_left': _cop_time_series_of(left_cop),
+        'cop_time_series_right': _cop_time_series_of(right_cop),
         'left_cop_trajectory': left_cop,    # 原始COP轨迹点 [[x,y], ...]
         'right_cop_trajectory': right_cop,  # 原始COP轨迹点 [[x,y], ...]
     }
@@ -2448,7 +2488,9 @@ def cal_cop_fromData(data_array, threshold_ratio=0.8, fps=42, r_radius=0.1, time
     else:
         print(f"\n=== 单帧数据分析结果 ===")
 
-    print(f"足弓指数： 左 {arch_results['left_foot']['area_index']:.4f} / 右 {arch_results['right_foot']['area_index']:.4f}")
+    # 单脚测量时另一只 area_index 为 None，不能用 :.4f 直接格式化
+    _fmt = lambda v: f"{v:.4f}" if v is not None else "—"
+    print(f"足弓指数： 左 {_fmt(arch_results['left_foot']['area_index'])} / 右 {_fmt(arch_results['right_foot']['area_index'])}")
     print(f"足弓类型： 左 {arch_results['left_foot']['area_type']} / 右 {arch_results['right_foot']['area_type']}")
 
 

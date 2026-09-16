@@ -107,17 +107,44 @@ bash release/build-installer-mac.sh
 
 ---
 
+## 二·五、打 Windows 安装包
+
+在 **Windows** 机器上双击（或在 cmd 里运行）：
+
+```bat
+release\build-installer.cmd
+```
+
+产物：`release\dist\矩侨工业足底压力分析-Setup-<版本>.exe`（约 275 MB）。
+
+脚本做的事，与 macOS 版一一对应：
+
+1. `pnpm build` 编译前端到 `dist/public`。
+2. 准备嵌入式 Python 3.12 运行时到 `release/dist/python-rt`：首次会从 python.org 下载 embed 包、装 pip、按 `requirements.lock.txt` 装齐依赖，并把 VC++ 运行库 DLL 从本机 System32 拷进去（numpy / OpenCV 依赖，干净电脑常缺）。已有就跳过；要重建先删掉该目录。
+3. 复制六个后端 `.py` 到 `release/dist/backend`。
+4. `electron-builder` 出 NSIS 安装包。首次会下载 Electron 和 NSIS 工具，已配国内镜像。
+
+前置：Windows 上装好 Node.js 18+ 和 pnpm（`corepack enable` 即可）。
+
+装到别的 Windows 电脑：双击安装，不需要装 Python 或任何运行环境。首次运行会弹 SmartScreen 蓝色警告（未签名），点“更多信息”再点“仍要运行”。有足垫需装 CH343 串口驱动。启动日志在 `%TEMP%\juqiao-shell.log`，数据在 `%APPDATA%\juqiao-plantar-pressure-app\aciki-data`。
+
+**改后端不用重打包**：后端源码以 `.py` 形式放在安装目录 `resources\backend\`，直接替换文件重开应用即可。改前端或壳才需要重新打包。
+
+**改压强标定公式**：只改 `client/src/lib/pressureCalib.ts` 里 `adcToKpa` 的三个系数，然后重新打包。标定工具见 `tools/calibrate_pressure.html` 与 `tools/README-calibration.md`。
+
 ## 三、项目结构
 
 ```
 client/src/
   pages/Home.tsx          单页状态机：landing → measure → report → solution / history
   pages/MeasurePage.tsx   采集：3D/2D 实时热力图、30s 倒计时、导入回放、手动选口
-  pages/ReportPage.tsx    报告：足底尺寸 / 足弓 / 压力面积 / COP，脚模在上数据在下
-  pages/SolutionPage.tsx  方案：标准晶格鞋垫 3D 预览、参数调节、STL 导出
+  pages/ReportPage.tsx    报告：足底尺寸 / 足弓 / 压力面积 / COP（左右脚切换），脚模在上数据在下
+  pages/SolutionPage.tsx  方案：标准晶格鞋垫 3D 预览、对比前后、参数调节、STL 导出
   pages/RecordsPage.tsx   体验记录：回看历史报告与方案
-  lib/deviceManager.ts    足垫连接（串口桥优先，Web Serial 兜底）
+  lib/deviceManager.ts    足垫连接（串口桥优先，手动选口兜底，Web Serial 兜底）
+  lib/pressureCalib.ts    ADC → kPa 标定公式（采集页压强/总力由此换算）
   lib/pythonApi.ts        调 Python /analyze
+tools/calibrate_pressure.html   足垫压力标定工具（配 tools/README-calibration.md）
   components/             BrandLogo、PortPickerModal、StlInsoleViewer、FeetModel3D…
 api_server.py             FastAPI：分析 / 用户 / 记录 / 鞋壳 / 设备 接口，打包时兼托管前端
 serial_bridge.py          串口桥：扫描 COM 口、AT 校验设备码、WebSocket 推帧、手动选口
@@ -133,6 +160,11 @@ release/build-installer.cmd      Windows 打包
 ### 数据流
 
 采集页收帧 → 30 秒结束后调 `POST /analyze` → 结果经 `aciki-analysis-done` 事件广播 → 报告页渲染、AppContext 落盘一条记录 → 方案页从同一份分析结果换算鞋垫参数 → 用户改的参数存回该记录的快照。
+
+### 压强与 COP 的口径
+
+- 采集页「压强」：每个有效格（ADC 高于噪声阈值）先按 `pressureCalib.ts` 的标定曲线换成 kPa，Σ kPa×单格面积 = 总力 N，总力 ÷ 双脚接触面积 = 平均压强 kPa。双脚一起算。
+- 报告页「COP 平衡指标」：**单脚**指标，后端对左右脚各算一份（`cop_time_series_left / _right`），卡片右上角切换。某脚没踩上则该脚按钮置灰。老记录只有合并字段 `cop_time_series`，它算的是轨迹点数多的那只脚，前端按点数归到对应脚上。
 
 ### 设备连接
 

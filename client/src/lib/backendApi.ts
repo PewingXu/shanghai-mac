@@ -3,7 +3,11 @@
  * 挂在 Python 后端(8766)：dev 经 Vite 代理 /pyapi，生产直连 127.0.0.1:8766
  * ——与 pythonApi.ts 同一后端、同一 base 规则。
  */
-const BASE = import.meta.env.DEV ? "/pyapi" : "http://127.0.0.1:8766";
+// 生产（安装包）里前端由后端本身托管（ACIKI_STATIC_DIR），所以直接用同源地址：
+// 后端换端口、被占用改端口都不用动前端。origin 不是 http(s)（如 file://）才退回 8766。
+const BASE = import.meta.env.DEV
+  ? "/pyapi"
+  : /^https?:$/.test(window.location.protocol) ? window.location.origin : "http://127.0.0.1:8766";
 
 export interface ApiUser {
   id: number;

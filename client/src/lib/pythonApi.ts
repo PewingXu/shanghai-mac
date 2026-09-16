@@ -7,7 +7,10 @@
  * 生产模式：直接访问 http://127.0.0.1:8766
  */
 
-const PYTHON_API_BASE = import.meta.env.DEV ? '/pyapi' : 'http://127.0.0.1:8766';
+// 生产（安装包）里前端由后端本身托管，直接用同源地址（与 backendApi 同一规则）
+const PYTHON_API_BASE = import.meta.env.DEV
+  ? '/pyapi'
+  : /^https?:$/.test(window.location.protocol) ? window.location.origin : 'http://127.0.0.1:8766';
 
 export interface PythonAnalysisResult {
   success: boolean;
@@ -18,7 +21,11 @@ export interface PythonAnalysisResult {
     right_sway_features: Record<string, number>;
     arch_features: PythonArchFeatures;
     additional_data: PythonAdditionalData;
-    cop_time_series: PythonCOPTimeSeries; // 英文键名的 COP 时间序列指标
+    /** 兼容字段：只算一只脚（左右轨迹里点数多的那条）。报告页改用下面两个逐脚字段 */
+    cop_time_series: PythonCOPTimeSeries;
+    /** 逐脚 COP 指标（后端 2026-09 起返回；老记录没有 → 前端退回 cop_time_series） */
+    cop_time_series_left?: PythonCOPTimeSeries;
+    cop_time_series_right?: PythonCOPTimeSeries;
     left_cop_trajectory?: number[][];  // 原始COP轨迹 [[x,y], ...]
     right_cop_trajectory?: number[][]; // 原始COP轨迹 [[x,y], ...]
   };

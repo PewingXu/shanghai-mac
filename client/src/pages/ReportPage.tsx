@@ -8,6 +8,7 @@
  */
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useApp, type MeasureAnalysis } from "@/contexts/AppContext";
+import type { PythonCOPTimeSeries } from "@/lib/pythonApi";
 import { formatUserId } from "@/lib/utils";
 import FeetModel3D, {
   equalizeZoneBounds,
@@ -159,8 +160,10 @@ function VMeasureLine({ left, top, bottom, color = "#073BA3" }: { left: string; 
 // 报告页脚模缩放：与采集页默认档（MeasurePage.MODEL_SCALE_DEFAULT = 3.5）一致，
 // 舞台高度也按采集页同一公式给（100vh − 顶栏 − 控制坞），两页脚模像素尺寸相同
 const REPORT_FOOT_SCALE = 3.5;
-// 分区色块相对脚模投影矩形的放大系数（1.0=恰好填满投影矩形；>1 放大整簇，格间距不变）
-const ZONE_FILL_SCALE = 1.15;
+// 分区色块簇贴合脚模真实轮廓（趾尖/脚跟/最宽两侧四个切点围成的框），X/Y 各自按轴缩放，
+// 再向内收一点——脚在趾部与脚跟处收窄，四角的格子若顶到切点框边就会露到脚模外面。
+const ZONE_FIT_X = 0.94;
+const ZONE_FIT_Y = 0.97;
 
 /**
  * 足部主舞台：足底尺寸（俯视）与足弓分析（站姿）共用同一 Canvas。
@@ -216,21 +219,29 @@ function FootStage({ dims, arch, mode }: { dims: ReportData["dims"]; arch: Repor
   }, [analysis]);
 
   const zoneCanvasRef = useRef<HTMLCanvasElement>(null);
-  // 分区绘制几何：左右脚 bounds 等化 → 等比缩放、居中于各自脚模投影矩形（放大铺满脚模）
+  // 分区绘制几何：左右脚 bounds 等化 → 格子簇按轴压进脚模真实轮廓框里。
+  // 不用投影包围盒（3D 盒子 8 角投影出来比俯视轮廓大一圈，脚有厚度），而用 FeetModel3D 给的
+  // 四个轮廓切点：toe/heel 定纵向、sideL/sideR 定横向。X/Y 各自缩放（格子略非正方，肉眼看不出），
+  // 保证传感器格子的外接框与脚模轮廓框重合、再整体内收 ZONE_FIT_*，四角不会露出脚外。
   const geo = useMemo(() => {
     if (!rects || !box) return null;
     const eq = equalizeZoneBounds(sections.left, sections.right);
-    const calc = (secs: ZoneSections, eqB: ZoneBounds | null, rect: FootAnno["rect"]): FootZoneGeo | null => {
+    const calc = (secs: ZoneSections, eqB: ZoneBounds | null, anno: FootAnno): FootZoneGeo | null => {
       if (!eqB) return null;
       const rows = eqB.rMax - eqB.rMin + 1;
       const cols = eqB.cMax - eqB.cMin + 1;
-      const rx = (rect.left / 100) * box.w;
-      const ry = (rect.top / 100) * box.h;
-      const rw = (rect.width / 100) * box.w;
-      const rh = (rect.height / 100) * box.h;
-      const scale = Math.min(rw / cols, rh / rows) * ZONE_FILL_SCALE; // 放大铺满脚模
-      const x0 = rx + (rw - cols * scale) / 2;
-      const y0 = ry + (rh - rows * scale) / 2;
+      // 轮廓框（px）：四个切点围成；切点非有限数（模型还没算出来）时退回投影矩形
+      const fin = (v: number, fb: number) => (Number.isFinite(v) ? v : fb);
+      const fx0 = (fin(Math.min(anno.sideL.x, anno.sideR.x), anno.rect.left) / 100) * box.w;
+      const fx1 = (fin(Math.max(anno.sideL.x, anno.sideR.x), anno.rect.left + anno.rect.width) / 100) * box.w;
+      const fy0 = (fin(Math.min(anno.toe.y, anno.heel.y), anno.rect.top) / 100) * box.h;
+      const fy1 = (fin(Math.max(anno.toe.y, anno.heel.y), anno.rect.top + anno.rect.height) / 100) * box.h;
+      const fw = (fx1 - fx0) * ZONE_FIT_X;
+      const fh = (fy1 - fy0) * ZONE_FIT_Y;
+      const scaleX = fw / cols;
+      const scaleY = fh / rows;
+      const x0 = (fx0 + fx1) / 2 - fw / 2;
+      const y0 = (fy0 + fy1) / 2 - fh / 2;
       let dMin = Infinity;
       let dMax = -Infinity;
       secs.forEach((sec) =>
@@ -241,10 +252,11 @@ function FootStage({ dims, arch, mode }: { dims: ReportData["dims"]; arch: Repor
       );
       if (!isFinite(dMin)) return null;
       const span = dMax - dMin + 1;
-      const at = (cum: number) => ((y0 + (dMin - eqB.rMin + (cum / 15) * span) * scale) / box.h) * 100;
+      const at = (cum: number) => ((y0 + (dMin - eqB.rMin + (cum / 15) * span) * scaleY) / box.h) * 100;
       return {
         eqB,
-        scale,
+        scaleX,
+        scaleY,
         x0,
         y0,
         centers: [at(1.5), at(5), at(9), at(13)],
@@ -252,8 +264,8 @@ function FootStage({ dims, arch, mode }: { dims: ReportData["dims"]; arch: Repor
       };
     };
     return {
-      left: calc(sections.left, eq.left, rects.left.rect),
-      right: calc(sections.right, eq.right, rects.right.rect),
+      left: calc(sections.left, eq.left, rects.left),
+      right: calc(sections.right, eq.right, rects.right),
     };
   }, [sections, rects, box]);
 
@@ -271,19 +283,20 @@ function FootStage({ dims, arch, mode }: { dims: ReportData["dims"]; arch: Repor
     if (mode !== "pressure" || !geo || !settled) return;
     const drawSide = (secs: ZoneSections, g: FootZoneGeo | null) => {
       if (!g) return;
-      // 格间距固定为"放大前基准格距"的 10%（除掉 FILL_SCALE）→ 整簇放大但缝不变
-      const gap = Math.max(1, (g.scale / ZONE_FILL_SCALE) * 0.1);
-      const size = g.scale - gap;
-      const rad = Math.min(2.5, size * 0.16);
+      // 格间距取短边的 10%，两轴同一条缝；格子按各轴步距画成略非正方的圆角矩形
+      const gap = Math.max(1, Math.min(g.scaleX, g.scaleY) * 0.1);
+      const w = g.scaleX - gap;
+      const h = g.scaleY - gap;
+      const rad = Math.min(2.5, Math.min(w, h) * 0.16);
       secs.forEach((sec, zi) => {
         ctx.fillStyle = ZONE_CELL_COLORS[zi % ZONE_CELL_COLORS.length];
         (sec ?? []).forEach((p) => {
           if (!p || p.length < 2) return;
           const [r, c] = p;
-          const x = g.x0 + (c - g.eqB.cMin) * g.scale + gap / 2;
-          const y = g.y0 + (r - g.eqB.rMin) * g.scale + gap / 2;
+          const x = g.x0 + (c - g.eqB.cMin) * g.scaleX + gap / 2;
+          const y = g.y0 + (r - g.eqB.rMin) * g.scaleY + gap / 2;
           ctx.beginPath();
-          ctx.roundRect(x, y, size, size, rad);
+          ctx.roundRect(x, y, w, h, rad);
           ctx.fill();
         });
       });
@@ -365,11 +378,10 @@ function FootStage({ dims, arch, mode }: { dims: ReportData["dims"]; arch: Repor
       side: "left" | "right",
     ) => {
       if (!g) return;
-      const cell = g.scale;
-      // 网格(row, 全局col) → 画布像素（+0.5 落到格心）；与热力图贴图区域同一映射 → 天然对齐
+      // 网格(row, 全局col) → 画布像素（+0.5 落到格心）；与分区格子同一映射 → 天然对齐
       const toPx = (row: number, colGlobal: number) => ({
-        x: g.x0 + (colGlobal - g.eqB.cMin + 0.5) * cell,
-        y: g.y0 + (row - g.eqB.rMin + 0.5) * cell,
+        x: g.x0 + (colGlobal - g.eqB.cMin + 0.5) * g.scaleX,
+        y: g.y0 + (row - g.eqB.rMin + 0.5) * g.scaleY,
       });
       // 热力图已由 FeetModel3D 烤到 3D 脚面（采集页做法），此处只叠 COP 轨迹 + 内外侧线
       // 平滑折线（二次贝塞尔过中点）→ 线条顺滑不生硬
@@ -965,7 +977,8 @@ function demoSections(mirror: boolean): ZoneSections {
 /** 单只脚格子覆盖层的绘制几何（px 坐标 + 百分比标注位） */
 interface FootZoneGeo {
   eqB: ZoneBounds;
-  scale: number; // 单格边长 px（左右脚统一）
+  scaleX: number; // 单格横向步距 px（按脚模轮廓宽压缩）
+  scaleY: number; // 单格纵向步距 px（按脚模轮廓长压缩）
   x0: number; // 格子簇左上角 px
   y0: number;
   centers: number[]; // 四区标签中心 y%
@@ -1015,8 +1028,8 @@ function View2DZones() {
 const REPORT_DATA = {
   dims: { leftLen: 270, rightLen: 272, leftWid: 183, rightWid: 180 },
   arch: {
-    left: { index: 0.272, type: "扁平足", mli: 0.89, risk: "足内翻风险", riskColor: "#ff5a2c" },
-    right: { index: 0.285, type: "扁平足", mli: 1.02, risk: "正常受力", riskColor: "#2fb56b" },
+    left: { index: 0.272, type: "扁平足", mli: 0.89, risk: "足内翻风险", riskColor: "#ff5a2c", absent: false },
+    right: { index: 0.285, type: "扁平足", mli: 1.02, risk: "正常受力", riskColor: "#2fb56b", absent: false },
   },
   // 顶部"报告分析总结"卡的演示兜底（真实测量时由 buildReportData 以同源数据覆盖）
   summary: {
@@ -1052,9 +1065,30 @@ const REPORT_DATA = {
     { label: "前后方向标准差", value: "4.72", unit: "mm", icon: "cop-std-ap" },
     { label: "左右方向标准差", value: "0.21", unit: "mm", icon: "cop-std-ml" },
   ],
+  /** 逐脚 COP 指标；某脚没踩上（轨迹为空）为 null → 界面上该脚置灰不可选 */
+  copBySide: {
+    left: null as { label: string; value: string; unit: string; icon: string }[] | null,
+    right: null as { label: string; value: string; unit: string; icon: string }[] | null,
+  },
 };
 
 type ReportData = typeof REPORT_DATA;
+type CopRows = ReportData["cop"];
+
+/** Python cop_time_series → 卡片 8 行。轨迹为空时后端返回全 0（path_length=0），视为该脚无数据 */
+function copRowsOf(cts: PythonCOPTimeSeries | null | undefined): CopRows | null {
+  if (!cts || !(cts.path_length > 0)) return null;
+  return [
+    { label: "轨迹长度", value: cts.path_length.toFixed(2), unit: "mm", icon: "cop-track-length" },
+    { label: "活动总面积", value: cts.contact_area.toFixed(2), unit: "mm²", icon: "cop-active-area" },
+    { label: "最大摆幅", value: cts.major_axis.toFixed(2), unit: "mm", icon: "cop-max-sway" },
+    { label: "稳定摆幅", value: cts.minor_axis.toFixed(2), unit: "mm", icon: "cop-stable-sway" },
+    { label: "最大离心", value: cts.max_displacement.toFixed(2), unit: "mm", icon: "cop-max-eccentric" },
+    { label: "偏移平衡速度", value: cts.avg_velocity.toFixed(2), unit: "mm/s", icon: "cop-drift-speed" },
+    { label: "前后方向标准差", value: cts.std_x.toFixed(2), unit: "mm", icon: "cop-std-ap" },
+    { label: "左右方向标准差", value: cts.std_y.toFixed(2), unit: "mm", icon: "cop-std-ml" },
+  ];
+}
 
 /**
  * 把一次测量的真实分析结果映射成报告数据；任何缺失字段回退演示值。
@@ -1087,12 +1121,16 @@ function buildReportData(a: MeasureAnalysis | null): ReportData {
         riskColor = "#2fb56b";
       }
     }
+    // 单脚测量：后端对没踩上的脚给 area_index=null / area_type="无数据"（不是 undefined），
+    // 不能落到演示兜底值上冒充有数据；标成 absent，卡片显示"未采集"
+    const absent = !!d && f != null && f.area_index == null;
     return {
-      index: f?.area_index ?? base.arch[side].index,
-      type: f?.area_type ?? base.arch[side].type,
-      mli: mli ?? base.arch[side].mli,
-      risk,
-      riskColor,
+      index: absent ? 0 : (f?.area_index ?? base.arch[side].index),
+      type: absent ? "未采集" : (f?.area_type ?? base.arch[side].type),
+      mli: absent ? 0 : (mli ?? base.arch[side].mli),
+      risk: absent ? "该脚未踩上足垫" : risk,
+      riskColor: absent ? "#8c96ad" : riskColor,
+      absent,
     };
   };
 
@@ -1110,6 +1148,7 @@ function buildReportData(a: MeasureAnalysis | null): ReportData {
     dims: {
       // Python 的 left_length/width 单位是 cm（(格数)×0.7cm + 1.5，垫子点间距 7mm），
       // 前端展示单位 mm → ×10 换算（曾直接当 mm 显示导致"足长 26mm"）
+      // 单脚测量时后端把没踩上那只的长宽记 0 → 前端显示 0，Num 组件对 0 画"—"
       leftLen: ad ? Math.round(ad.left_length * 10) : base.dims.leftLen,
       rightLen: ad ? Math.round(ad.right_length * 10) : base.dims.rightLen,
       leftWid: ad ? Math.round(ad.left_width * 10) : base.dims.leftWid,
@@ -1157,18 +1196,18 @@ function buildReportData(a: MeasureAnalysis | null): ReportData {
       // 平衡评价（展示文案，阈值可按需调整）：静态站立 COP 轨迹越短平衡控制越稳
       copNote: cop ? (cop.path_length <= 500 ? "平衡控制良好" : "平衡波动较大") : "",
     },
-    cop: cop
-      ? [
-          { label: "轨迹长度", value: cop.path_length.toFixed(2), unit: "mm", icon: "cop-track-length" },
-          { label: "活动总面积", value: cop.contact_area.toFixed(2), unit: "mm²", icon: "cop-active-area" },
-          { label: "最大摆幅", value: cop.major_axis.toFixed(2), unit: "mm", icon: "cop-max-sway" },
-          { label: "稳定摆幅", value: cop.minor_axis.toFixed(2), unit: "mm", icon: "cop-stable-sway" },
-          { label: "最大离心", value: cop.max_displacement.toFixed(2), unit: "mm", icon: "cop-max-eccentric" },
-          { label: "偏移平衡速度", value: cop.avg_velocity.toFixed(2), unit: "mm/s", icon: "cop-drift-speed" },
-          { label: "前后方向标准差", value: cop.std_x.toFixed(2), unit: "mm", icon: "cop-std-ap" },
-          { label: "左右方向标准差", value: cop.std_y.toFixed(2), unit: "mm", icon: "cop-std-ml" },
-        ]
-      : base.cop,
+    // 兼容字段（老记录只有它）：点数多的那只脚
+    cop: copRowsOf(cop) ?? base.cop,
+    // 逐脚：新后端直接给；老记录没有逐脚字段时，按轨迹点数把 cop_time_series 归到它实际算的那只脚上
+    copBySide: (() => {
+      const l = copRowsOf(d?.cop_time_series_left);
+      const r = copRowsOf(d?.cop_time_series_right);
+      if (l || r || !d) return { left: l, right: r };
+      const legacy = copRowsOf(cop);
+      const nl = d.left_cop_trajectory?.length ?? 0;
+      const nr = d.right_cop_trajectory?.length ?? 0;
+      return nl >= nr ? { left: legacy, right: null } : { left: null, right: legacy };
+    })(),
   };
 }
 
@@ -1185,6 +1224,12 @@ const RP = {
 
 /** 等宽数字 + 小单位 */
 function Num({ v, unit, size = 22 }: { v: string | number; unit?: string; size?: number }) {
+  // 0 表示"该项没有数据"（单脚测量时另一只脚的尺寸后端记 0）：画"—"、不带单位
+  if (v === 0 || v === "0") {
+    return (
+      <span style={{ fontFamily: RP.num, fontSize: `${size}px`, fontWeight: 700, lineHeight: 1, color: RP.muted, whiteSpace: "nowrap" }}>—</span>
+    );
+  }
   return (
     <span style={{ display: "inline-flex", alignItems: "baseline", gap: "3px", whiteSpace: "nowrap" }}>
       <span
@@ -1292,16 +1337,16 @@ function ArchCol({ side, data }: { side: "left" | "right"; data: typeof REPORT_D
     <div style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
       <SideLabel side={side} />
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
-        <div style={{ fontSize: "26px", fontWeight: 700, color: RP.ink, lineHeight: 1, whiteSpace: "nowrap" }}>{shortType}</div>
-        <img src={RICON(icon)} alt="" style={{ width: "36px", height: "36px", flexShrink: 0, opacity: 0.9 }} />
+        <div style={{ fontSize: "26px", fontWeight: 700, color: data.absent ? RP.muted : RP.ink, lineHeight: 1, whiteSpace: "nowrap" }}>{shortType}</div>
+        <img src={RICON(icon)} alt="" style={{ width: "36px", height: "36px", flexShrink: 0, opacity: data.absent ? 0.3 : 0.9 }} />
       </div>
-      {/* 列宽不够时两项换行，而不是压过分隔线盖到邻列 */}
+      {/* 列宽不够时两项换行，而不是压过分隔线盖到邻列。单脚测量时该脚无数据 → 画「—」 */}
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "4px 12px", marginTop: "10px", fontSize: "12px", color: RP.muted }}>
         <span style={{ whiteSpace: "nowrap" }}>
-          足弓指数 <b style={{ fontFamily: RP.num, color: RP.ink, fontWeight: 700 }}>{data.index.toFixed(3)}</b>
+          足弓指数 <b style={{ fontFamily: RP.num, color: RP.ink, fontWeight: 700 }}>{data.absent ? "—" : data.index.toFixed(3)}</b>
         </span>
         <span style={{ whiteSpace: "nowrap" }}>
-          MLI <b style={{ fontFamily: RP.num, color: RP.ink, fontWeight: 700 }}>{data.mli.toFixed(2)}</b>
+          MLI <b style={{ fontFamily: RP.num, color: RP.ink, fontWeight: 700 }}>{data.absent ? "—" : data.mli.toFixed(2)}</b>
         </span>
       </div>
       <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", marginTop: "8px", fontSize: "12px", fontWeight: 700, color: data.riskColor }}>
@@ -1331,6 +1376,13 @@ function ReportPanel({
   // 压力 / 面积 双模式互切
   const [mode, setMode] = useState<"pressure" | "area">("pressure");
   const P = data;
+  // COP 卡的左/右脚切换。默认选有数据的那只（双脚都有则左）；数据换了（新测量/回看）重新落默认
+  const [copSide, setCopSide] = useState<"left" | "right">("left");
+  useEffect(() => {
+    setCopSide(P.copBySide.left ? "left" : P.copBySide.right ? "right" : "left");
+  }, [P.copBySide.left, P.copBySide.right]);
+  const copRows = P.copBySide[copSide] ?? P.copBySide.left ?? P.copBySide.right ?? P.cop;
+  const copIsDemo = !P.copBySide.left && !P.copBySide.right;
 
   const zonesOf = (side: "left" | "right") => {
     if (mode === "pressure") {
@@ -1371,6 +1423,11 @@ function ReportPanel({
   };
 
   const leftRatio = P.pressure.leftRatio;
+  // 面积模式的左右占比：与压力模式共用同一条双向平衡条，两种模式底部结构完全一致 → 切换不跳动
+  const areaSum = P.area.leftTotal + P.area.rightTotal;
+  const leftAreaRatio = areaSum > 0 ? Math.round((P.area.leftTotal / areaSum) * 100) : 50;
+  const ratio = mode === "pressure" ? leftRatio : leftAreaRatio;
+  const balanced = Math.abs(ratio - 50) <= 5;
 
   return (
     <div className="rp-panel">
@@ -1440,41 +1497,66 @@ function ReportPanel({
       >
         <TwoCols left={footCol("left")} right={footCol("right")} />
 
+        {/* 底部：两种模式同一结构（一行文字 + 一条平衡条），高度恒定，切换时四节等高的行不会跳 */}
         <div style={{ borderTop: `1px solid ${RP.rule}`, marginTop: "12px", paddingTop: "10px" }}>
-          {mode === "pressure" ? (
-            <>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "6px" }}>
-                <span style={{ fontSize: "11px", color: RP.muted }}>
-                  左右压力比 <b style={{ fontFamily: RP.num, color: RP.ink }}>{leftRatio}</b> : <b style={{ fontFamily: RP.num, color: RP.ink }}>{100 - leftRatio}</b>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "6px", gap: "12px" }}>
+            <span style={{ fontSize: "11px", color: RP.muted, whiteSpace: "nowrap" }}>
+              {mode === "pressure" ? "左右压力比" : "左右面积比"}{" "}
+              <b style={{ fontFamily: RP.num, color: RP.ink }}>{ratio}</b> : <b style={{ fontFamily: RP.num, color: RP.ink }}>{100 - ratio}</b>
+              {mode === "area" && (
+                <span style={{ marginLeft: "10px" }}>
+                  合计 <b style={{ fontFamily: RP.num, color: RP.ink }}>{P.area.bothTotal}</b> cm²
                 </span>
-                <span style={{ fontSize: "11px", fontWeight: 700, color: Math.abs(leftRatio - 50) <= 5 ? "#2fb56b" : "#ff5a2c" }}>
-                  {Math.abs(leftRatio - 50) <= 5 ? "分布均衡" : `偏向${leftRatio > 50 ? "左" : "右"}脚`}
-                </span>
-              </div>
-              {/* 双向平衡条：中央 50% 刻度，左侧品牌蓝、右侧浅蓝 */}
-              <div style={{ position: "relative", height: "8px", borderRadius: "999px", background: "rgba(0,53,155,0.14)", overflow: "hidden" }}>
-                <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${leftRatio}%`, background: RP.brand, transition: "width 300ms cubic-bezier(0.23,1,0.32,1)" }} />
-                <div style={{ position: "absolute", left: "50%", top: 0, bottom: 0, width: "2px", marginLeft: "-1px", background: "#fff" }} />
-              </div>
-            </>
-          ) : (
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "16px" }}>
-              <span style={{ fontSize: "11px", color: RP.muted, display: "flex", alignItems: "baseline", gap: "8px" }}>
-                双脚总面积 <Num v={P.area.bothTotal} unit="cm²" size={16} />
-              </span>
-              <span style={{ fontSize: "11px", color: RP.muted, display: "flex", alignItems: "baseline", gap: "8px" }}>
-                左右差异 <Num v={P.area.diff} unit="cm²" size={16} />
-              </span>
-            </div>
-          )}
+              )}
+            </span>
+            <span style={{ fontSize: "11px", fontWeight: 700, whiteSpace: "nowrap", color: balanced ? "#2fb56b" : "#ff5a2c" }}>
+              {balanced ? "分布均衡" : `偏向${ratio > 50 ? "左" : "右"}脚`}
+            </span>
+          </div>
+          {/* 双向平衡条：中央 50% 刻度，左侧品牌蓝、右侧浅蓝 */}
+          <div style={{ position: "relative", height: "8px", borderRadius: "999px", background: "rgba(0,53,155,0.14)", overflow: "hidden" }}>
+            <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${ratio}%`, background: RP.brand, transition: "width 300ms cubic-bezier(0.23,1,0.32,1)" }} />
+            <div style={{ position: "absolute", left: "50%", top: 0, bottom: 0, width: "2px", marginLeft: "-1px", background: "#fff" }} />
+          </div>
         </div>
       </PanelSection>
 
-      {/* COP 平衡指标：两列定义表，每行 标签 …… 数值 */}
-      <PanelSection id="cop" active={active} onSelect={onSelect} zh="COP 平衡指标" en="Center of Pressure">
+      {/* COP 平衡指标：单脚指标，左/右切换（与压力卡的分段开关同款）；没踩上的脚置灰不可选 */}
+      <PanelSection
+        id="cop"
+        active={active}
+        onSelect={onSelect}
+        zh="COP 平衡指标"
+        en="Center of Pressure"
+        right={
+          <div className="rp-seg" role="tablist" aria-label="左脚 / 右脚">
+            {(["left", "right"] as const).map((s) => {
+              const has = !!P.copBySide[s] || copIsDemo;
+              return (
+                <button
+                  key={s}
+                  role="tab"
+                  aria-selected={copSide === s}
+                  disabled={!has}
+                  title={has ? undefined : `${s === "left" ? "左" : "右"}脚未采到压力中心轨迹`}
+                  className={`rp-seg-btn${copSide === s ? " is-on" : ""}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (!has) return;
+                    setCopSide(s);
+                    onSelect("cop");
+                  }}
+                >
+                  {s === "left" ? "左脚" : "右脚"}
+                </button>
+              );
+            })}
+          </div>
+        }
+      >
         {/* 4 行等分剩余高度，每行内容垂直居中；分隔线随行距一起铺开 */}
         <div style={{ flex: 1, display: "grid", gridTemplateColumns: "1fr 1fr", gridAutoRows: "1fr", columnGap: "18px", rowGap: "0" }}>
-          {P.cop.map((c, i) => (
+          {copRows.map((c, i) => (
             <div
               key={c.label}
               style={{
@@ -1778,6 +1860,8 @@ export default function ReportPage({
           transition: background 160ms ease, color 160ms ease;
         }
         .rp-seg-btn.is-on { background: #fff; color: #00359B; box-shadow: 0 1px 4px rgba(0,53,155,0.18); }
+        /* 没踩上的脚：置灰、不可点，悬停有 title 说明原因 */
+        .rp-seg-btn:disabled { opacity: 0.4; cursor: not-allowed; }
       `}</style>
     </div>
   );

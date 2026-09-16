@@ -18,7 +18,8 @@ import { formatUserId } from "@/lib/utils";
 import { useDeviceConnectionStatus } from "@/hooks/useDeviceConnectionStatus";
 // 解决方案页与报告页同一套浅色渐变背景（见下方 PageBg）
 import { StlInsoleViewer, type StlInsoleParams } from "@/components/StlInsoleViewer";
-import { STYLE_DEFS, productBaseHeightMm, personalDeform, ZERO_DEFORM, type InsoleStyle, type DeformMm } from "@/lib/insoleModel";
+import InsoleCompareOverlay, { compareAnchors, type InsoleCompareOverlayHandle } from "@/components/InsoleCompareOverlay";
+import { STYLE_DEFS, productBaseHeightMm, personalDeform, ZERO_DEFORM, HEAT_MAX_MM, HEAT_MAX_STD_MM, type InsoleStyle, type DeformMm } from "@/lib/insoleModel";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { apiSaveRecordSolution } from "@/lib/backendApi";
 import {
@@ -261,6 +262,66 @@ function PillButton({ children, onClick, filled }: { children: React.ReactNode; 
     >
       {children}
     </button>
+  );
+}
+
+// ─── 「对比前后」按钮（移植自 aciki-plantar-pressure，配色换成本项目品牌蓝） ─────────
+/**
+ * 按钮里那枚图标：实线「[」｜ 中缝 ｜ 虚线「]」—— 左边是已有的（标准垫），
+ * 右边虚着的是待生成的（定制垫）。
+ */
+function CompareIcon({ on }: { on: boolean }) {
+  const c = on ? "#fff" : C.primary;
+  return (
+    <svg width="25" height="26" viewBox="0 0 24 24" fill="none" style={{ display: "block" }}>
+      <path d="M6.8 2.8H1.4v17.5h5.4" stroke={c} strokeWidth="2" strokeLinecap="square" />
+      <path d="M12 0.95v22.2" stroke={c} strokeWidth="2.1" />
+      <path d="M15 2.8h7.5v17.5H15" stroke={c} strokeWidth="2" strokeDasharray="1.9 1.9" />
+    </svg>
+  );
+}
+
+/**
+ * 「对比前后」：开着时 3D 用热力图画出相对标准垫的定制量（加厚红 / 减薄蓝），
+ * 并进全屏对比态。蹲在画布左下角（操作提示上方），两态标签不同：
+ *   常态   —— 白底气泡「对比前后」+ 下指小三角（页面主要入口，要显眼）
+ *   对比态 —— 深底小胶囊「关闭对比」（整屏浅色，白底气泡糊在背景里；且必须有字说明它还是开关）
+ */
+function ComparePrePostButton({ on, onToggle }: { on: boolean; onToggle: () => void }) {
+  return (
+    <div style={{ position: "absolute", left: "12px", bottom: "40px", zIndex: 46, display: "flex", flexDirection: "column", alignItems: "center", gap: on ? "8px" : "16px" }}>
+      <div style={{ position: "relative" }}>
+        <div
+          style={
+            on
+              ? { background: "#111", borderRadius: "8px", height: "26px", padding: "0 11px", display: "flex", alignItems: "center", fontSize: "13px", fontWeight: 600, color: "#fff", whiteSpace: "nowrap", boxShadow: "0 2px 10px rgba(0,0,0,0.22)" }
+              : { background: "#fff", borderRadius: "9px", height: "34px", padding: "0 14px", display: "flex", alignItems: "center", fontSize: "15px", fontWeight: 700, color: "#17191C", whiteSpace: "nowrap", boxShadow: "0 3px 12px rgba(26,58,122,0.16)" }
+          }
+        >
+          {on ? "关闭对比" : "对比前后"}
+        </div>
+        {!on && (
+          <div style={{ position: "absolute", left: "50%", top: "100%", transform: "translateX(-50%)", width: 0, height: 0, borderLeft: "7px solid transparent", borderRight: "7px solid transparent", borderTop: "8px solid #fff" }} />
+        )}
+      </div>
+      <button
+        onClick={onToggle}
+        aria-pressed={on}
+        title={on ? "关闭对比，返回解决方案界面" : "显示相对标准垫的定制量"}
+        style={{
+          width: on ? "48px" : "52px", height: on ? "48px" : "52px",
+          borderRadius: on ? "10px" : "14px",
+          border: `2px solid ${on ? "#3E75E3" : "rgba(10,57,151,0.35)"}`,
+          background: on ? C.primary : "#E9F0FF",
+          cursor: "pointer",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          boxShadow: on ? "0 4px 14px rgba(0,53,159,0.3)" : "0 2px 8px rgba(26,58,122,0.12)",
+          transition: "all 0.16s",
+        }}
+      >
+        <CompareIcon on={on} />
+      </button>
+    </div>
   );
 }
 
@@ -599,9 +660,9 @@ function BottomBar({ userName, userId, onBack, onRestart, onDownload, downloadRe
 
 // ─── 厚度三条（抽屉/细节复用） ────────────────────────────────────────────────
 // drawerMode：抽屉（第2页）里前两项无滑块，仅步进；细节面板（第3页）三项均带滑块。
-function ThicknessSliders({ fs, sys, onParams, drawerMode, style }: { fs: FootState; sys?: FootState; onParams: (p: Partial<InsoleParams>) => void; drawerMode?: boolean; style: InsoleStyle }) {
-  // 成品垫(proportional)：基础厚度默认=原生高度按鞋码换算(约 50~57mm，见 baseThicknessCmForSize)，
-  // 量程较大；调节方式与标准垫一致——抽屉里只给 −/+ 步进，不出滑块。
+function ThicknessSliders({ fs, sys, onParams, style }: { fs: FootState; sys?: FootState; onParams: (p: Partial<InsoleParams>) => void; drawerMode?: boolean; style: InsoleStyle }) {
+  // 三条厚度全部给滑块 + 系统值刻度（此前抽屉里前两条只有 −/+ 步进，与足跟缓冲、软硬不一致，
+  // 用户明确要滑块）。展会版只有标准垫，基础厚度 1.5~6mm / 足弓 1~12mm 量程都适合拖。
   const proportional = STYLE_DEFS[style].heightMode === "proportional";
   return (
     <>
@@ -611,10 +672,9 @@ function ThicknessSliders({ fs, sys, onParams, drawerMode, style }: { fs: FootSt
           tip={TIP.base}
           value={fs.params.baseThickness * 10}
           min={20} max={70} step={0.5}
-          hints={drawerMode ? undefined : ["20mm", "70mm"]}
+          hints={["20mm", "70mm"]}
           tightHints
-          systemValue={drawerMode ? undefined : (sys ? sys.params.baseThickness * 10 : undefined)}
-          noSlider={drawerMode}
+          systemValue={sys ? sys.params.baseThickness * 10 : undefined}
           onChange={(v) => onParams({ baseThickness: v / 10 })}
         />
       ) : (
@@ -623,10 +683,9 @@ function ThicknessSliders({ fs, sys, onParams, drawerMode, style }: { fs: FootSt
           tip={TIP.baseAdaptive}
           value={fs.params.baseThickness * 10}
           min={1.5} max={6} step={0.1}
-          hints={drawerMode ? undefined : ["1.5mm", "6.0mm 最大"]}
+          hints={["1.5mm", "6.0mm 最大"]}
           tightHints
-          systemValue={drawerMode ? undefined : (sys ? sys.params.baseThickness * 10 : undefined)}
-          noSlider={drawerMode}
+          systemValue={sys ? sys.params.baseThickness * 10 : undefined}
           onChange={(v) => onParams({ baseThickness: v / 10 })}
         />
       )}
@@ -638,8 +697,7 @@ function ThicknessSliders({ fs, sys, onParams, drawerMode, style }: { fs: FootSt
         min={1} max={12} step={0.1}
         hints={["+1mm 维持", "+12mm 最大矫正"]}
         tightHints
-        systemValue={drawerMode ? undefined : (sys ? sys.params.archCorrection : undefined)}
-        noSlider={drawerMode}
+        systemValue={sys ? sys.params.archCorrection : undefined}
         onChange={(v) => onParams({ archCorrection: Math.round(v * 10) / 10 })}
       />
       <StepperSliderRow
@@ -649,7 +707,7 @@ function ThicknessSliders({ fs, sys, onParams, drawerMode, style }: { fs: FootSt
         min={0} max={30} step={1}
         hints={["0mm 无缓冲", "30mm 最大缓冲"]}
         tightHints
-        systemValue={drawerMode ? undefined : (sys ? sys.params.heelThickness : undefined)}
+        systemValue={sys ? sys.params.heelThickness : undefined}
         onChange={(v) => onParams({ heelThickness: v })}
       />
     </>
@@ -722,6 +780,17 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
   const snapshotRef = useRef(selectedSolution);
 
   const [side, setSide] = useState<Side>("left");
+  // 「对比前后」（移植自 aciki-plantar-pressure）：3D 用热力图画相对标准垫的定制量（加厚红 / 减薄蓝），
+  // 并切成全屏对比态：隐藏下方参数面板，3D 舞台占满，叠上两张标注卡 + 引线 + 竖排色标。
+  const [compareOn, setCompareOn] = useState(false);
+  // 对比态的标注覆盖层。引线要跟着 3D 旋转每帧动，走 imperative 句柄直接改 SVG 属性——
+  // 这页一千多行，60fps 的 setState 会把整页一起重渲染
+  const compareRef = useRef<InsoleCompareOverlayHandle>(null);
+  const compareAnchorList = useMemo(() => compareAnchors(side), [side]);
+  // 稳定引用：进 StlInsoleViewer 后要参与 useMemo 依赖，内联箭头函数会让锚点每次渲染重算
+  const handleAnchorProject = useCallback((proj: Parameters<InsoleCompareOverlayHandle["update"]>[0]) => {
+    compareRef.current?.update(proj);
+  }, []);
   const [overlay, setOverlay] = useState<Overlay>("main");
 
 
@@ -964,6 +1033,18 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
   const deformLeft = useMemo<DeformMm>(() => (viewState ? toDeform(sizedFoot("left", viewState.left), INSOLE_STYLE) : ZERO_DEFORM), [viewState, sizedFoot]);
   const deformRight = useMemo<DeformMm>(() => (viewState ? toDeform(sizedFoot("right", viewState.right), INSOLE_STYLE) : ZERO_DEFORM), [viewState, sizedFoot]);
 
+  // 「对比前后」标注卡的数值。必须放在下面那个 early return 之前——hooks 数量不能随加载态变。
+  // 标准垫的 deformLeft/Right 恒为 ZERO_DEFORM（它整只 Z 缩放、没有着色器位移量，见 personalDeform），
+  // 直接喂给标注卡会显示 +0.0mm。卡片要讲的是「这块垫子相对标准平底板定制了多少」——
+  // 与着色器 uHeatMode=1 的口径一致（z − 基础厚度）：足弓 = 矫正厚度，足跟 = 缓冲厚度，
+  // 基础 = 基础厚度 − 3mm 基准。这三个数与参数面板上写的一字不差。
+  const compareDeform = useMemo<DeformMm>(() => {
+    if (!viewState) return ZERO_DEFORM;
+    if (STYLE_DEFS[INSOLE_STYLE].heightMode === "proportional") return side === "left" ? deformLeft : deformRight;
+    const fs = sizedFoot(side, viewState[side]);
+    return { archMm: fs.params.archCorrection, heelMm: fs.params.heelThickness, baseMm: fs.params.baseThickness * 10 - 3 };
+  }, [side, viewState, sizedFoot, deformLeft, deformRight]);
+
   if (!committed || !viewState || !stlLeft || !stlRight) {
     return (
       <div style={{ minHeight: "100vh", position: "relative", overflow: "hidden", fontFamily: '"PingFang SC","Microsoft YaHei","Helvetica Neue",Arial,sans-serif' }}>
@@ -978,6 +1059,11 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
 
   const cur = viewState[side];
   const sideLabel = side === "left" ? "左" : "右";
+
+  // ── 全屏对比态 ──
+  // 色标满量程与着色器同一把尺：标准垫 HEAT_MAX_STD_MM，成品垫 HEAT_MAX_MM。
+  const compareMode = compareOn;
+  const compareFull = STYLE_DEFS[INSOLE_STYLE].heightMode === "proportional" ? HEAT_MAX_MM : HEAT_MAX_STD_MM;
 
   // 匹配鞋码：用户已填鞋垫长度→按输入换算；未填→用分析报告结果。
   // 这个码就是基础厚度的换算依据（baseThicknessCmForSize），显示的码与厚度必然对得上。
@@ -1123,13 +1209,23 @@ export default function SolutionPage({ onRestart, onHistory, onBack, onViewRepor
               rightParams={stlRight}
               leftDeform={deformLeft}
               rightDeform={deformRight}
-              defaultHeatmap
+              heatmap={compareMode}
+              anchors={compareMode ? compareAnchorList : undefined}
+              onAnchorProject={compareMode ? handleAnchorProject : undefined}
+              hideLegend={compareMode}
             />
+
+            {/* 对比态：标注卡 + 引线 + 竖排色标。数值全部由 compareDeform 算出，随方案参数实时变 */}
+            {compareMode && <InsoleCompareOverlay ref={compareRef} deform={compareDeform} fullScaleMm={compareFull} />}
+
+            {/* 左下：对比前后 / 关闭对比 */}
+            <ComparePrePostButton on={compareMode} onToggle={() => setCompareOn((v) => !v)} />
           </div>
         </section>
 
-        {/* 下：方案参数面板（三卡横排） */}
-        <section className="sol-panel">
+        {/* 下：方案参数面板（三卡横排）。对比态整块让位（3D 占满）；
+            用 display:none 而不是卸载 —— 面板里的受控输入（鞋垫长宽）卸载会丢焦点与光标位置 */}
+        <section className="sol-panel" style={{ display: compareMode ? "none" : undefined }}>
           <div className="sol-panel-head">
             <span style={{ fontSize: "18px", fontWeight: 800, color: "#17191C" }}>{sideLabel}脚解决方案</span>
             <button
